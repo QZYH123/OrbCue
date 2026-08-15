@@ -1,0 +1,7 @@
+include CONTEXT.md
+include README.md
+include pyproject.toml
+recursive-include docs *.md *.json *.txt
+recursive-include examples *
+recursive-include scripts *.py
+recursive-include tests *.py *.json

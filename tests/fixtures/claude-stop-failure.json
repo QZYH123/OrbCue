@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "StopFailure",
+  "session_id": "claude-session-123",
+  "error": "model provider returned an error",
+  "cwd": "/home/user/project"
+}

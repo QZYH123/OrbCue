@@ -1,0 +1,7 @@
+{
+  "event": "session.failed",
+  "session_id": "dsh-session-1",
+  "source": "dsh",
+  "profile": "headless",
+  "error": "non-zero exit"
+}

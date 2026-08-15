@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "SessionEnd",
+  "session_id": "claude-session-123",
+  "reason": "exit",
+  "cwd": "/home/user/project"
+}
