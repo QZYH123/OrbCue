@@ -624,7 +624,7 @@
             <article class="connection-card">
               <div class="agent-icon">{agent.name.slice(0, 1).toUpperCase()}</div>
               <div class="connection-content">
-                <div class="session-topline"><strong>{agent.name}</strong><span class:connected={record}>{record ? '已连接' : agentConnectable(agent) ? '可连接' : 'Windows PATH'}</span></div>
+                <div class="session-topline"><strong>{agent.name}</strong><span class:connected={record}>{record ? '已连接' : agentConnectable(agent) ? '可连接' : '未连接'}</span></div>
                 <div class="session-id" title={agent.path}>{agent.path}</div>
                 {#if record}<p>{record.limitation}</p>{/if}
               </div>

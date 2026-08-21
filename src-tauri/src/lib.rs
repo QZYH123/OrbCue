@@ -1,4 +1,5 @@
 mod focus;
+mod region;
 mod toast;
 #[cfg(windows)]
 mod wsl_session;
@@ -438,6 +439,7 @@ pub fn run() {
             let app_handle = app.handle().clone();
             configure_windows(&app_handle);
             position_ball(&app_handle);
+            region::apply_ball_region_for(&app_handle);
             install_tray(app);
 
             let handle = app.handle().clone();
@@ -511,6 +513,20 @@ pub fn run() {
             }
             tauri::RunEvent::WindowEvent {
                 label,
+                event: tauri::WindowEvent::Resized(_),
+                ..
+            } if label == "ball" => {
+                region::apply_ball_region_for(app);
+            }
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::ScaleFactorChanged { .. },
+                ..
+            } if label == "ball" => {
+                region::apply_ball_region_for(app);
+            }
+            tauri::RunEvent::WindowEvent {
+                label,
                 event: tauri::WindowEvent::CloseRequested { api, .. },
                 ..
             } if label == "ball" => {
@@ -566,7 +582,7 @@ fn configure_windows(app: &AppHandle) {
         };
         let _ = window.set_always_on_top(true);
         if label == "ball" {
-            let size = tauri::LogicalSize::new(112.0, 112.0);
+            let size = tauri::LogicalSize::new(64.0, 64.0);
             let _ = window.set_size(tauri::Size::Logical(size));
         }
     }

@@ -1,7 +1,7 @@
 # Windows 呈现层打磨：发现、摆放、真圆
 
-**Status:** ready-for-agent
-**Labels:** ready-for-agent
+**Status:** complete
+**Labels:** completed
 
 ## Problem Statement
 

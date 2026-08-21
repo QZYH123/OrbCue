@@ -16,6 +16,7 @@ dependencies = [
  "agent-activity-dock-core",
  "agent-activity-dock-ipc",
  "agent-activity-dock-service",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tauri",

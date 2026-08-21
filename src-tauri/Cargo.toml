@@ -27,3 +27,6 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
