@@ -1,4 +1,4 @@
-import type { AgentInventory, DiscoveredAgent } from './types';
+import type { AgentInventory, AgentSide } from './types';
 
 export function inventoryHasRows(inventory: AgentInventory): boolean {
   return inventory.discovered.length > 0 || inventory.connected.length > 0;
@@ -11,7 +11,6 @@ export function showDetectingPlaceholder(
   return refreshing && !inventoryHasRows(inventory);
 }
 
-export function agentConnectable(agent: DiscoveredAgent): boolean {
-  if (agent.connectable === false) return false;
-  return agent.origin !== 'windows';
+export function sideLabel(side: AgentSide): string {
+  return side === 'wsl' ? 'WSL' : 'Windows';
 }

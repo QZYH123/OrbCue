@@ -7,10 +7,10 @@
   import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-shortcut';
   import { onAction } from '@tauri-apps/plugin-notification';
   import { onMount } from 'svelte';
-  import type { AgentInventory, AuditEntry, ConnectionPreview, DiscoveredAgent, FocusResult, SessionSnapshot, Snapshot, SnapshotMessage } from './types';
+  import type { AgentInventory, AgentSide, AuditEntry, ConnectionPreview, DiscoveredAgent, FocusResult, SessionSnapshot, Snapshot, SnapshotMessage } from './types';
   import { emptySnapshot } from './types';
   import { highlightFromNotificationExtra, sessionHighlightKey } from './highlight';
-  import { agentConnectable, showDetectingPlaceholder } from './inventory';
+  import { inventoryHasRows, showDetectingPlaceholder, sideLabel } from './inventory';
   import { clampToWorkArea, shouldHidePanelOnBallDrag } from './placement';
   import { groupSessionsByProject, shortenProjectPath } from './projectPath';
 
@@ -54,12 +54,16 @@
   $: connectionAgents = [
     ...inventory.discovered,
     ...inventory.connected
-      .filter((record) => !inventory.discovered.some((agent) => agent.name === record.name))
+      .filter(
+        (record) =>
+          !inventory.discovered.some(
+            (agent) => agent.name === record.name && agent.side === record.side,
+          ),
+      )
       .map((record) => ({
         name: record.name,
         path: record.original,
-        origin: 'wsl' as const,
-        connectable: true,
+        side: record.side,
       })),
   ];
 
@@ -268,7 +272,8 @@
       maybeOpenOnboarding();
     } catch (error) {
       connectionError = String(error);
-      inventoryRefreshing = false;
+    } finally {
+      if (inventoryHasRows(inventory)) inventoryRefreshing = false;
     }
   }
 
@@ -284,8 +289,8 @@
     }
   }
 
-  function connected(name: string) {
-    return inventory.connected.find((record) => record.name === name);
+  function connected(name: string, side: AgentSide) {
+    return inventory.connected.find((record) => record.name === name && record.side === side);
   }
 
   async function connectAgent(agent: DiscoveredAgent) {
@@ -298,6 +303,7 @@
       connectionPreview = await invoke<ConnectionPreview>('preview_connect', {
         name: agent.name,
         original: agent.path,
+        side: agent.side,
       });
     } catch (error) {
       previewError = String(error);
@@ -317,7 +323,11 @@
     if (!pendingAgent || !connectionPreview) return;
     connectionError = '';
     try {
-      await invoke('connect_agent', { name: pendingAgent.name, original: pendingAgent.path });
+      await invoke('connect_agent', {
+        name: pendingAgent.name,
+        original: pendingAgent.path,
+        side: pendingAgent.side,
+      });
       closeConnectDialog();
       await refreshAgents();
       if (inventory.connected.length > 0) {
@@ -339,10 +349,10 @@
     if (event.key === 'Escape' && pendingAgent) closeConnectDialog();
   }
 
-  async function disconnectAgent(name: string) {
+  async function disconnectAgent(name: string, side: AgentSide) {
     connectionError = '';
     try {
-      await invoke('disconnect_agent', { name });
+      await invoke('disconnect_agent', { name, side });
       await refreshAgents();
     } catch (error) {
       connectionError = String(error);
@@ -619,21 +629,22 @@
         <div class="empty compact"><span>○</span><p>PATH 中没有检测到支持的 Agent</p><small>目前支持 Claude、Grok Build、Codex 和 DSH</small></div>
       {:else}
         <div class="connection-list">
-          {#each connectionAgents as agent (agent.name)}
-            {@const record = connected(agent.name)}
+          {#each connectionAgents as agent (agent.side + ':' + agent.name)}
+            {@const record = connected(agent.name, agent.side)}
             <article class="connection-card">
               <div class="agent-icon">{agent.name.slice(0, 1).toUpperCase()}</div>
               <div class="connection-content">
-                <div class="session-topline"><strong>{agent.name}</strong><span class:connected={record}>{record ? '已连接' : agentConnectable(agent) ? '可连接' : '未连接'}</span></div>
+                <div class="session-topline">
+                  <span class="agent-name"><strong>{agent.name}</strong><span class="side-badge side-{agent.side}">{sideLabel(agent.side)}</span></span>
+                  <span class:connected={record}>{record ? '已连接' : '可连接'}</span>
+                </div>
                 <div class="session-id" title={agent.path}>{agent.path}</div>
                 {#if record}<p>{record.limitation}</p>{/if}
               </div>
               {#if record}
-                <button class="secondary-button" onclick={() => disconnectAgent(agent.name)}>断开</button>
-              {:else if agentConnectable(agent)}
-                <button class="primary-button" onclick={() => connectAgent(agent)}>连接</button>
+                <button class="secondary-button" onclick={() => disconnectAgent(agent.name, agent.side)}>断开</button>
               {:else}
-                <span class="origin-tag">Windows PATH</span>
+                <button class="primary-button" onclick={() => connectAgent(agent)}>连接</button>
               {/if}
             </article>
           {/each}
@@ -643,8 +654,8 @@
       {#if pendingAgent}
         <div class="modal-backdrop" role="presentation" onclick={(event) => event.target === event.currentTarget && closeConnectDialog()}>
           <dialog open class="confirm-dialog" aria-labelledby="connect-title">
-            <h2 id="connect-title">连接 {pendingAgent.name}</h2>
-            <p>Dock 将使用现有可执行文件：</p>
+            <h2 id="connect-title">连接 {pendingAgent.name}<span class="side-badge side-{pendingAgent.side}">{sideLabel(pendingAgent.side)}</span></h2>
+            <p>Dock 将在 {sideLabel(pendingAgent.side)} 侧使用现有可执行文件：</p>
             <code>{pendingAgent.path}</code>
             {#if previewLoading}
               <p class="dialog-note">正在生成预览</p>

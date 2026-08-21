@@ -179,7 +179,13 @@ mod tests {
         let mut state = DockState::new();
         state.apply(event("e1", EventKind::Started));
         let completed = state.apply(event("e2", EventKind::Completed));
-        assert_eq!(completed.attention.as_ref().map(|item| item.reason.as_str()), Some("completed"));
+        assert_eq!(
+            completed
+                .attention
+                .as_ref()
+                .map(|item| item.reason.as_str()),
+            Some("completed")
+        );
         let sink = RecordingSink::ok();
         assert_eq!(
             dispatch_attention_toast(&sink, completed.attention.as_ref(), true),

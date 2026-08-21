@@ -28,6 +28,8 @@
   "deep_link": "https://example.invalid/session/123",
   "cwd": "/home/user/project",
   "workspace_root": "/home/user/project",
+  "parent_session_id": "optional-parent-session",
+  "terminal_id": "optional-terminal-identity",
   "requires_user_action": false,
   "metadata": {"workspace": "optional-bounded-value"}
 }
@@ -35,9 +37,15 @@
 
 必填字段是 `version`、`type`、`event_id`、`source`、`session_id` 和 RFC3339 `occurred_at`。`severity` 默认为 `info`，其余字段可省略。未知 JSON 字段会被忽略；Dock 不把原始 payload 写入状态文件。
 
-可选 `cwd` / `workspace_root`，以及 metadata 同义键 `workspaceRoot`、`workspace_root`、`cwd`；空字符串视为缺失。路径只使用这些明确字段，不会读取磁盘或进程工作目录。
+可选 `cwd` / `workspace_root`，以及 metadata 同义键 `workspaceRoot`、`workspace_root`、`cwd`；空字符串视为缺失。路径只使用这些明确字段，不会读取磁盘或进程工作目录。路径按发送侧原样保存，不做 WSL ↔ Windows 翻译。
 
-大小限制：`event_id` 128 字节、`source` 64 字节、`session_id` 256 字节、`summary` 512 字节、`deep_link` 2048 字节、`cwd` / `workspace_root` 各 256 字节、metadata 最多 32 项且 key/value 各 256 字节。
+可选 `parent_session_id` 标记子代理事件，长度上限与 `session_id` 相同（256 字节）；空字符串视为缺失。带 parent 的事件永不创建独立会话，也不进入 `sessions` 计数。`waiting_input` / `permission_requested` / `failed` 在父会话（`source` + `parent_session_id`）存在时折叠为父会话的 attention / failed 标记，并复用已有 attention 去重。父会话不存在，或其他事件类型，一律 accepted 且无副作用。
+
+可选 `terminal_id` 标识同一用户终端，长度上限 128 字节；空字符串视为缺失。`dock` CLI 在 hook 与 `start`/`complete` 等事件命令上自动附加，所有平台同一顺序：`AGENT_ACTIVITY_DOCK_TERMINAL_ID` 显式覆盖（设成空串则省略、不再探测）→ 自身 tty（Unix `ttyname(stderr/stdin)` 再 `/dev/tty`）→ **祖先进程 tty**（Linux 沿 `/proc/<pid>/stat` 的 ppid 最多向上 10 级，读 fd 0/1/2 的 readlink 或 stat 第 7 字段 `tty_nr`，再经 `ttyname` 规范成与自身 tty 相同的 `/dev/pts/N` 形式）→ `WT_SESSION`（垫底，主要给没有 `/proc` 的 Windows 原生进程）。同一终端里 wrapper 与 setsid hook 必须落到同一个设备路径才能互相顶替；`WT_SESSION` 不能当主键，否则同一 WT 标签里的 tmux pane 会误合成一条。`started` / `working` / `idle` 且无 `parent_session_id` 的事件若带 `terminal_id` T，会先移除同一 T 下的其他会话（跨 source，一个终端同一时刻只有一个前台主会话；移除记入 audit），再创建或更新目标会话。无 `terminal_id` 的事件和会话不受影响；带 parent 的事件永不触发顶替。`state.json` 会保存 `terminal_id`，缺省字段的旧文件仍可读取。
+
+同一条 CLI 事件路径上，无 parent 的 `started` / `working` / `idle` / `completed` / `failed` / `waiting_input` / `permission_requested` 还会把标题写成 `{source} · {项目路径末段}`（无路径时只写 `{source}`）。末段算法与跳回用的 `project_path_hint` 同源。标题写入是尽力而为：部分 WSL→Windows Terminal 组合不转发 OSC 标题（实测存在标签标题恒为配置名、任何写入都不生效的环境），自己重写标题的 TUI 也会覆盖它；标题写入不是跳回前提。Unix 先向 `/dev/tty` 写 OSC `\x1b]0;…\x07`；没有控制终端但祖先 tty 存在时，以 `O_WRONLY|O_NOCTTY` 打开该 pts 写同一序列。Windows `dock.exe` 调用 `SetConsoleTitleW`。`AGENT_ACTIVITY_DOCK_NO_TITLE=1` 完全跳过；写失败静默忽略，不影响事件投递和退出码。面板「回去」首选事件到达时捕获的前台终端窗口句柄（presenter 校验为终端类窗口才记录）；句柄缺失或失效时，才在终端类窗口（Windows Terminal / conhost / alacritty 等）里按标题匹配，先项目名末段、零匹配再用 `source` 子串兜底；浏览器标签不参与。任一步多匹配或两级都零匹配则报「终端窗口匹配不唯一」或「没有找到匹配的终端窗口」并列线索。这一过滤只发生在用户点「回去」时，不做状态推断。Windows Terminal 只暴露活动标签标题，后台标签仍可能找不到。
+
+大小限制：`event_id` / `terminal_id` 各 128 字节、`source` 64 字节、`session_id` / `parent_session_id` 各 256 字节、`summary` 512 字节、`deep_link` 2048 字节、`cwd` / `workspace_root` 各 256 字节、metadata 最多 32 项且 key/value 各 256 字节。
 
 事件时间超过当前时间 24 小时，或超前超过 5 分钟，会返回 `stale_event`。这避免服务离线恢复后突然播放很久以前的提醒。`DockEvent::new` 也会生成当前 RFC3339 时间；外部集成不应发送伪造的 epoch 时间。
 
@@ -56,6 +64,8 @@
 | `session.closed` | 会话真正关闭 | 从打开列表和总数中移除 |
 
 打开中的会话在 `completed` / `failed` / `cancelled` 之后仍可再次进入工作。只有 `session.closed` 会从打开总数中移除该会话。事件 ID 在有界窗口内去重。
+
+小球上的工作数 / 追踪数只统计**主会话**：`started` / `working` / `idle` 可为未知 key 创建记录；`waiting_input` / `permission_requested` / `completed` / `failed` / `cancelled` 对未知会话 accepted，但不建记录、不发 attention。因此用户 reset/clear 之后迟到的 stop / notification 不会凭空复活计数。这类孤儿事件只写 debug 日志，不进 128 条上限的 audit 流。
 
 ## Response and queries
 
@@ -114,8 +124,9 @@ dock reset --source claude --session-id session-123
 
 | source | 输入 | 能力 |
 | --- | --- | --- |
-| Claude | `settings.json` hooks：`SessionStart`、`PreToolUse`、`PermissionRequest`、`SessionEnd`、`StopFailure` | working、permission、completed、failed |
-| Codex | 结构化 notification payload | working、completed、failed、cancelled |
-| DSH | `session.*` projection payload | working、waiting、completed、failed、cancelled |
+| Claude | `settings.json` hooks：`SessionStart`、`PreToolUse`、`PermissionRequest`、`SessionEnd`、`StopFailure`；`SubagentStart` / `SubagentStop` 及带 parent 线索的 payload | working、permission、completed、failed；子代理填 `parent_session_id` 或丢弃 |
+| Codex | 结构化 notification payload | working、completed、failed、cancelled；payload 带 parent 线索时填 `parent_session_id` |
+| DSH | `session.*` projection payload | working、waiting、completed、failed、cancelled；payload 带 parent 线索时填 `parent_session_id` |
+| Grok | 结构化 hook payload | idle、working、permission、completed、failed、closed；带 `subagentType` 的 payload 仍丢弃 |
 
 适配器只读取结构化 stdin。即使 payload 含有 `transcript_path`，也不会打开、保存或转发该路径。

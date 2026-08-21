@@ -38,7 +38,7 @@ dock connect grok
 dock connect codex
 ```
 
-Windows PowerShell 把 `scripts/windows/dock.ps1` 放到 PATH（或保存成 `dock.ps1` 后 `. $PROFILE` 里定义 `Set-Alias dock ...`），即可在 pwsh 里执行同样的 `dock start` / `dock status`。它会调用 WSL 里的 `~/.local/bin/dock`，不要再单独开一个 Windows `dockd`。
+Windows PowerShell 把 `scripts/windows/dock.ps1` 放到 PATH（或保存成 `dock.ps1` 后 `. $PROFILE` 里定义 `Set-Alias dock ...`），即可在 pwsh 里执行同样的 `dock start` / `dock status`。与 presenter 同目录的 `dock.exe` 在本机 named pipe 无 daemon、或设置 `AGENT_ACTIVITY_DOCK_FORWARD=wsl` 时，也会把事件/查询透传到 WSL `~/.local/bin/dock`。不要再单独开一个 Windows `dockd`。`AGENT_ACTIVITY_DOCK_WSL_DISTRO` 对这两种转发都生效。
 
 停止 daemon：
 
@@ -65,7 +65,7 @@ npm run tauri -- build --runner cargo-xwin --target x86_64-pc-windows-msvc --bun
 
 ## 连接已有 Agent
 
-桌面版第一次打开连接页面时，会发现 PATH 中已有的 `claude`、`grok`、`codex` 和 `dsh`，逐个显示变更内容并等待确认。连接只生成可撤销的用户级 wrapper、Claude Hook 或 Grok Hook，不替换原始可执行文件：
+桌面版第一次打开连接页面时，会分别发现 WSL 登录 PATH（并忽略 `/mnt/*`）和 Windows PATH 上的 `claude`、`grok`、`codex` 和 `dsh`；同名工具两侧各算一条。逐个显示变更内容并等待确认。连接只生成可撤销的用户级 wrapper、Claude Hook 或 Grok Hook，不替换原始可执行文件：
 
 ```bash
 cargo run -p agent-activity-dock-cli -- agents
@@ -95,7 +95,7 @@ dock acknowledge --source claude --session-id my-task
 dock reset --source claude --session-id my-task
 ```
 
-`dock reset` 是显式的陈旧状态恢复操作，不会向 Agent 发送任何控制命令。
+`dock reset` 是显式的陈旧状态恢复操作，不会向 Agent 发送任何控制命令。reset 之后迟到的 `complete` / `waiting` / `failed` 不会复活该会话。带 `parent_session_id` 的子代理事件不计入小球上的主会话数。「回去」主机制是事件时刻的前台窗口捕获（新会话或转入 working 时记下当时的终端 HWND，窗口级不是标签级）；前提是 presenter 当时已在运行。标题级联只是兜底：部分 WSL+WT 环境 OSC 转发不通，标签会一直停在发行版名。`AGENT_ACTIVITY_DOCK_NO_TITLE=1` 可关闭写标题。
 
 ## 隐私与可靠性
 
@@ -110,4 +110,4 @@ dock reset --source claude --session-id my-task
 
 Win+WSL 的最低可用路径是 WSL 中的 `dockd` + `dock` CLI + 可撤销连接。桌面路径是 Windows presenter + `dock bridge`，两者共用同一个 WSL daemon。Unix 使用当前用户 socket；Windows named pipe 代码仍保留，但 Win+WSL presenter 不再走这条路径。macOS 安装包尚未验证。
 
-旧的 Python/Electron MVP 仍保留在仓库中用于历史验收；`start-dock.sh` 已经改为启动 Rust `dockd`。
+`start-dock.sh` / `stop-dock.sh` 管理 Rust `dockd`。

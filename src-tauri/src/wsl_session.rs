@@ -61,20 +61,9 @@ struct DisconnectJson {
     disconnected: bool,
 }
 
-pub fn agent_inventory() -> crate::AgentInventory {
-    match wsl_dock_json::<InventoryJson>(&["agents", "--json"]) {
-        Ok(inventory) => crate::AgentInventory {
-            discovered: inventory.discovered,
-            connected: inventory.connected,
-        },
-        Err(error) => {
-            eprintln!("Agent Activity Dock: {error}");
-            crate::AgentInventory {
-                discovered: Vec::new(),
-                connected: Vec::new(),
-            }
-        }
-    }
+pub fn raw_inventory() -> Result<(Vec<DiscoveredAgent>, Vec<ConnectionRecord>), String> {
+    let inventory = wsl_dock_json::<InventoryJson>(&["agents", "--json"])?;
+    Ok((inventory.discovered, inventory.connected))
 }
 
 pub fn preview_connect(name: &str, original: &str) -> Result<ConnectionPreview, String> {
@@ -198,8 +187,22 @@ fn wsl_dock_json<T: for<'de> Deserialize<'de>>(args: &[&str]) -> Result<T, Strin
     if !output.status.success() {
         return Err(bridge_failure(format!(" ({})", output.status), &stderr));
     }
-    serde_json::from_str(stdout.trim())
-        .map_err(|error| format!("cannot parse WSL dock JSON ({error}): {}", stdout.trim()))
+    parse_wsl_json(&stdout)
+}
+
+fn parse_wsl_json<T: for<'de> Deserialize<'de>>(stdout: &str) -> Result<T, String> {
+    let trimmed = stdout.trim();
+    if let Ok(parsed) = serde_json::from_str(trimmed) {
+        return Ok(parsed);
+    }
+    let start = trimmed
+        .find('{')
+        .ok_or_else(|| format!("cannot parse WSL dock JSON: {}", trimmed))?;
+    let end = trimmed
+        .rfind('}')
+        .ok_or_else(|| format!("cannot parse WSL dock JSON: {}", trimmed))?;
+    serde_json::from_str(&trimmed[start..=end])
+        .map_err(|error| format!("cannot parse WSL dock JSON ({error}): {trimmed}"))
 }
 
 fn spawn_bridge(stderr: Stdio) -> Result<Child, String> {

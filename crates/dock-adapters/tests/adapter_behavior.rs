@@ -17,6 +17,65 @@ fn claude_adapter_uses_only_hook_metadata() {
 }
 
 #[test]
+fn claude_named_subagent_hooks_are_dropped_without_parent() {
+    assert!(claude_hook(&serde_json::json!({
+        "hook_event_name": "SubagentStop",
+        "session_id": "child-1"
+    }))
+    .is_none());
+    assert!(claude_hook(&serde_json::json!({
+        "hook_event_name": "SubagentStart",
+        "session_id": "child-1"
+    }))
+    .is_none());
+}
+
+#[test]
+fn claude_subagent_clues_fill_parent_when_present() {
+    let event = claude_hook(&serde_json::json!({
+        "hook_event_name": "PermissionRequest",
+        "session_id": "child-1",
+        "parent_session_id": "parent-1"
+    }))
+    .unwrap();
+    assert_eq!(event.kind, EventKind::PermissionRequested);
+    assert_eq!(event.parent_session_id.as_deref(), Some("parent-1"));
+}
+
+#[test]
+fn claude_unknown_subagent_shape_stays_a_main_session() {
+    let event = claude_hook(&serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "session_id": "main-1",
+        "subagentType": "explore"
+    }))
+    .unwrap();
+    assert_eq!(event.kind, EventKind::Working);
+    assert_eq!(event.session_id, "main-1");
+    assert_eq!(event.parent_session_id, None);
+}
+
+#[test]
+fn dsh_and_codex_copy_parent_session_id() {
+    let dsh = dsh_projection(&serde_json::json!({
+        "event": "session.waiting_input",
+        "session_id": "child",
+        "parent_session_id": "parent"
+    }))
+    .unwrap();
+    assert_eq!(dsh.parent_session_id.as_deref(), Some("parent"));
+
+    let codex = codex_notification(&serde_json::json!({
+        "type": "failed",
+        "session_id": "child",
+        "parentSessionId": "parent"
+    }))
+    .unwrap();
+    assert_eq!(codex.kind, EventKind::Failed);
+    assert_eq!(codex.parent_session_id.as_deref(), Some("parent"));
+}
+
+#[test]
 fn projection_adapters_reject_unknown_payloads_without_throwing() {
     assert!(dsh_projection(&serde_json::json!({"event":"unknown"})).is_none());
     assert!(codex_notification(&serde_json::json!({"type":"unknown"})).is_none());

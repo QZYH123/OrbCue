@@ -79,7 +79,8 @@ mod win32 {
     }
 
     unsafe fn set_elliptic_region(hwnd: isize, region: CircleRegion) {
-        let hrgn = unsafe { CreateEllipticRgn(region.left, region.top, region.right, region.bottom) };
+        let hrgn =
+            unsafe { CreateEllipticRgn(region.left, region.top, region.right, region.bottom) };
         if hrgn == 0 {
             return;
         }

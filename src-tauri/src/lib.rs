@@ -4,16 +4,15 @@ mod toast;
 #[cfg(windows)]
 mod wsl_session;
 
-#[cfg(not(windows))]
-use agent_activity_dock_connect::ConnectionManager;
-use agent_activity_dock_connect::{ConnectionPreview, ConnectionRecord, DiscoveredAgent};
+use agent_activity_dock_connect::{
+    AgentOrigin, ConnectionManager, ConnectionPreview, ConnectionRecord, DiscoveredAgent,
+};
 use agent_activity_dock_core::{dispatch_attention_toast, highlight_target, ToastDispatch};
 use agent_activity_dock_ipc::SnapshotView;
 use agent_activity_dock_service::SnapshotMessage;
 #[cfg(not(windows))]
 use agent_activity_dock_service::{attach_or_listen, DockSession};
 use focus::FocusResult;
-use toast::PresenterToastSink;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -28,6 +27,7 @@ use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WebviewWindow,
 };
 use tauri_plugin_opener::OpenerExt;
+use toast::PresenterToastSink;
 
 struct AppService(Mutex<Option<Arc<dyn PresenterSession>>>);
 static LAST_BALL_SAVE_MS: AtomicU64 = AtomicU64::new(0);
@@ -36,10 +36,41 @@ static NOTIFICATION_FAIL_LOGGED: AtomicBool = AtomicBool::new(false);
 static INVENTORY_CACHE: Mutex<Option<AgentInventory>> = Mutex::new(None);
 static INVENTORY_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AgentSide {
+    Wsl,
+    Windows,
+}
+
+impl AgentSide {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "wsl" => Ok(Self::Wsl),
+            "windows" => Ok(Self::Windows),
+            other => Err(format!("invalid side: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct InventoryAgent {
+    name: String,
+    path: PathBuf,
+    side: AgentSide,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct InventoryConnection {
+    #[serde(flatten)]
+    record: ConnectionRecord,
+    side: AgentSide,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct AgentInventory {
-    discovered: Vec<DiscoveredAgent>,
-    connected: Vec<ConnectionRecord>,
+    discovered: Vec<InventoryAgent>,
+    connected: Vec<InventoryConnection>,
 }
 
 pub(crate) trait PresenterSession: Send + Sync {
@@ -78,13 +109,11 @@ impl PresenterSession for DockSession {
     }
 }
 
-#[cfg(not(windows))]
 fn connection_manager(app: &AppHandle) -> ConnectionManager {
     let dock_binary = dock_binary_path(app);
     ConnectionManager::from_environment(dock_binary)
 }
 
-#[cfg(not(windows))]
 fn dock_binary_path(app: &AppHandle) -> PathBuf {
     if let Some(path) = std::env::var_os("AGENT_ACTIVITY_DOCK_DOCK_BINARY")
         .filter(|value| !value.is_empty())
@@ -97,15 +126,18 @@ fn dock_binary_path(app: &AppHandle) -> PathBuf {
     if let Ok(resource_dir) = app.path().resource_dir() {
         candidates.push(resource_dir.join("binaries").join(sidecar_name()));
         candidates.push(resource_dir.join("dock").join(sidecar_name()));
+        candidates.push(resource_dir.join("dock.exe"));
         candidates.push(resource_dir.join("dock"));
     }
     if let Ok(executable) = std::env::current_exe() {
         if let Some(parent) = executable.parent() {
             candidates.push(parent.join(sidecar_name()));
+            candidates.push(parent.join("dock.exe"));
             candidates.push(parent.join("dock"));
             candidates.push(parent.join("binaries").join(sidecar_name()));
         }
     }
+    candidates.push(PathBuf::from("dock.exe"));
     candidates.push(PathBuf::from("dock"));
     candidates
         .into_iter()
@@ -113,9 +145,14 @@ fn dock_binary_path(app: &AppHandle) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("dock"))
 }
 
-#[cfg(not(windows))]
 fn sidecar_name() -> String {
-    let target = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    let target = if cfg!(all(windows, target_arch = "x86_64")) {
+        return "dock-x86_64-pc-windows-msvc.exe".to_owned();
+    } else if cfg!(all(windows, target_arch = "aarch64")) {
+        return "dock-aarch64-pc-windows-msvc.exe".to_owned();
+    } else if cfg!(windows) {
+        return "dock.exe".to_owned();
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         "x86_64-unknown-linux-gnu"
     } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
         "aarch64-unknown-linux-gnu"
@@ -197,19 +234,76 @@ fn publish_inventory(app: &AppHandle, inventory: AgentInventory) {
 }
 
 fn load_fresh_inventory(app: &AppHandle) -> AgentInventory {
+    let mut discovered = Vec::new();
+    let mut connected = Vec::new();
+
     #[cfg(windows)]
     {
-        let _ = app;
-        wsl_session::agent_inventory()
+        let manager = connection_manager(app);
+        discovered.extend(
+            manager
+                .discover()
+                .into_iter()
+                .map(|agent| sided_discovered(agent, AgentSide::Windows)),
+        );
+        connected.extend(
+            manager
+                .records()
+                .into_iter()
+                .map(|record| sided_connection(record, AgentSide::Windows)),
+        );
+        match wsl_session::raw_inventory() {
+            Ok((wsl_discovered, wsl_connected)) => {
+                discovered.extend(
+                    wsl_discovered
+                        .into_iter()
+                        .filter(|agent| agent.origin != AgentOrigin::Windows)
+                        .map(|agent| sided_discovered(agent, AgentSide::Wsl)),
+                );
+                connected.extend(
+                    wsl_connected
+                        .into_iter()
+                        .map(|record| sided_connection(record, AgentSide::Wsl)),
+                );
+            }
+            Err(error) => eprintln!("Agent Activity Dock: {error}"),
+        }
     }
+
     #[cfg(not(windows))]
     {
         let manager = connection_manager(app);
-        AgentInventory {
-            discovered: manager.discover(),
-            connected: manager.records(),
-        }
+        discovered.extend(
+            manager
+                .discover()
+                .into_iter()
+                .filter(|agent| agent.origin != AgentOrigin::Windows)
+                .map(|agent| sided_discovered(agent, AgentSide::Wsl)),
+        );
+        connected.extend(
+            manager
+                .records()
+                .into_iter()
+                .map(|record| sided_connection(record, AgentSide::Wsl)),
+        );
     }
+
+    AgentInventory {
+        discovered,
+        connected,
+    }
+}
+
+fn sided_discovered(agent: DiscoveredAgent, side: AgentSide) -> InventoryAgent {
+    InventoryAgent {
+        name: agent.name,
+        path: agent.path,
+        side,
+    }
+}
+
+fn sided_connection(record: ConnectionRecord, side: AgentSide) -> InventoryConnection {
+    InventoryConnection { record, side }
 }
 
 fn spawn_inventory_refresh(app: AppHandle) {
@@ -244,14 +338,28 @@ fn preview_connect(
     app: AppHandle,
     name: String,
     original: PathBuf,
+    side: String,
 ) -> Result<ConnectionPreview, String> {
-    #[cfg(windows)]
-    {
-        let _ = app;
-        return wsl_session::preview_connect(&name, &original.to_string_lossy());
+    match AgentSide::parse(&side)? {
+        AgentSide::Wsl => {
+            #[cfg(windows)]
+            {
+                let _ = app;
+                return wsl_session::preview_connect(&name, &original.to_string_lossy());
+            }
+            #[cfg(not(windows))]
+            connection_manager(&app).preview(&name, &original)
+        }
+        AgentSide::Windows => {
+            #[cfg(windows)]
+            return connection_manager(&app).preview(&name, &original);
+            #[cfg(not(windows))]
+            {
+                let _ = (app, name, original);
+                Err("windows connections are only available on the Windows presenter".to_owned())
+            }
+        }
     }
-    #[cfg(not(windows))]
-    connection_manager(&app).preview(&name, &original)
 }
 
 #[tauri::command]
@@ -259,25 +367,52 @@ fn connect_agent(
     app: AppHandle,
     name: String,
     original: PathBuf,
+    side: String,
 ) -> Result<ConnectionRecord, String> {
-    #[cfg(windows)]
-    {
-        let _ = app;
-        return wsl_session::connect_agent(&name, &original.to_string_lossy());
+    match AgentSide::parse(&side)? {
+        AgentSide::Wsl => {
+            #[cfg(windows)]
+            {
+                let _ = app;
+                return wsl_session::connect_agent(&name, &original.to_string_lossy());
+            }
+            #[cfg(not(windows))]
+            connection_manager(&app).connect(&name, &original)
+        }
+        AgentSide::Windows => {
+            #[cfg(windows)]
+            return connection_manager(&app).connect(&name, &original);
+            #[cfg(not(windows))]
+            {
+                let _ = (app, name, original);
+                Err("windows connections are only available on the Windows presenter".to_owned())
+            }
+        }
     }
-    #[cfg(not(windows))]
-    connection_manager(&app).connect(&name, &original)
 }
 
 #[tauri::command]
-fn disconnect_agent(app: AppHandle, name: String) -> Result<bool, String> {
-    #[cfg(windows)]
-    {
-        let _ = app;
-        return wsl_session::disconnect_agent(&name);
+fn disconnect_agent(app: AppHandle, name: String, side: String) -> Result<bool, String> {
+    match AgentSide::parse(&side)? {
+        AgentSide::Wsl => {
+            #[cfg(windows)]
+            {
+                let _ = app;
+                return wsl_session::disconnect_agent(&name);
+            }
+            #[cfg(not(windows))]
+            connection_manager(&app).disconnect(&name)
+        }
+        AgentSide::Windows => {
+            #[cfg(windows)]
+            return connection_manager(&app).disconnect(&name);
+            #[cfg(not(windows))]
+            {
+                let _ = (app, name);
+                Err("windows connections are only available on the Windows presenter".to_owned())
+            }
+        }
     }
-    #[cfg(not(windows))]
-    connection_manager(&app).disconnect(&name)
 }
 
 #[tauri::command]
@@ -444,10 +579,16 @@ pub fn run() {
 
             let handle = app.handle().clone();
             handle.emit("dock:snapshot", &initial)?;
+            let mut previous_sessions = initial.snapshot.sessions.clone();
             std::thread::Builder::new()
                 .name("dock-ui-updates".to_owned())
                 .spawn(move || {
                     for update in updates {
+                        focus::apply_snapshot_captures(
+                            &previous_sessions,
+                            &update.snapshot.sessions,
+                        );
+                        previous_sessions = update.snapshot.sessions.clone();
                         let attention = update.attention.clone();
                         if handle.emit("dock:snapshot", &update).is_err() {
                             break;
@@ -660,7 +801,9 @@ fn monitor_for(window: &WebviewWindow) -> Option<tauri::Monitor> {
         })
 }
 
-fn monitor_work_area(monitor: &tauri::Monitor) -> (PhysicalPosition<i32>, tauri::PhysicalSize<u32>) {
+fn monitor_work_area(
+    monitor: &tauri::Monitor,
+) -> (PhysicalPosition<i32>, tauri::PhysicalSize<u32>) {
     let work = monitor.work_area();
     (work.position, work.size)
 }

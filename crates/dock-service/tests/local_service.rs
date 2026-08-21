@@ -86,6 +86,10 @@ fn restart_recovers_minimal_state_without_replaying_attention() {
     let service = spawn_persistent(&first_path, &state_path).unwrap();
     send(
         &first_path,
+        DockEvent::new("e0", EventKind::Started, "claude", "s1"),
+    );
+    send(
+        &first_path,
         DockEvent::new("e1", EventKind::Failed, "claude", "s1")
             .with_summary("must remain ephemeral"),
     );

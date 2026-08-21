@@ -166,7 +166,11 @@ h1 { margin: 0; font-size: 17px; letter-spacing: -.03em; }
 .onboarding-banner p { margin: 4px 0 7px; color: #8fa8c3; line-height: 1.45; }
 .connections-toolbar { display: flex; align-items: center; gap: 10px; margin: 0 2px 9px; }
 .refresh-hint { color: #8497b1; font-size: 11px; }
-.origin-tag { flex: 0 0 auto; padding: 4px 8px; border: 1px solid #3a4650; border-radius: 99px; color: #8ea0b6; font-size: 10px; white-space: nowrap; }
+.agent-name { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.side-badge { flex: 0 0 auto; padding: 2px 7px; border-radius: 99px; font-size: 9px; font-weight: 800; letter-spacing: .06em; white-space: nowrap; }
+.side-badge.side-wsl { color: #93dcab; background: rgba(31, 77, 51, .55); }
+.side-badge.side-windows { color: #93c4f2; background: rgba(29, 61, 95, .6); }
+.confirm-dialog h2 .side-badge { margin-left: 8px; vertical-align: 2px; }
 .connection-list { display: grid; gap: 7px; }
 .connection-card { display: flex; align-items: center; gap: 10px; padding: 10px 11px; border: 1px solid #333e45; border-radius: 11px; background: rgba(27,34,39,.86); }
 .agent-icon { width: 28px; height: 28px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 9px; color: #9fd1ff; background: #193653; font-size: 12px; font-weight: 800; }

@@ -47,6 +47,7 @@ dependencies = [
  "agent-activity-dock-ipc",
  "agent-activity-dock-service",
  "clap",
+ "libc",
  "serde_json",
  "time",
 ]

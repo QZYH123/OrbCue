@@ -4,13 +4,19 @@
 //! snapshots. Rendering, transport and Agent-specific adapters stay outside
 //! this boundary.
 
+mod capture;
 mod jump;
 mod notify;
 
-pub use jump::{focus_decision, select_unique_window_title, FocusDecision, FocusRequest};
+pub use capture::{captured_keys_to_drop, sessions_to_capture, CaptureSession, SessionKey};
+pub use jump::{
+    focus_decision, is_terminal_window_candidate, process_image_file_name, project_path_hint,
+    select_unique_window_title, select_window_by_hints, session_terminal_title, FocusDecision,
+    FocusRequest, TERMINAL_PROCESS_NAMES, TERMINAL_WINDOW_CLASSES,
+};
 pub use notify::{
-    dispatch_attention_toast, highlight_key, highlight_target, toast_for_attention, HighlightTarget,
-    NotificationSink, ToastDispatch, ToastSpec,
+    dispatch_attention_toast, highlight_key, highlight_target, toast_for_attention,
+    HighlightTarget, NotificationSink, ToastDispatch, ToastSpec,
 };
 
 use serde::{Deserialize, Serialize};
@@ -19,6 +25,7 @@ use time::{Duration, OffsetDateTime};
 
 pub const EVENT_VERSION: u16 = 1;
 pub const MAX_EVENT_ID_LEN: usize = 128;
+pub const MAX_TERMINAL_ID_LEN: usize = 128;
 pub const MAX_SOURCE_LEN: usize = 64;
 pub const MAX_SESSION_ID_LEN: usize = 256;
 pub const MAX_SUMMARY_LEN: usize = 512;
@@ -116,6 +123,10 @@ pub struct DockEvent {
     pub workspace_root: Option<String>,
     #[serde(default)]
     pub window_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_id: Option<String>,
     #[serde(default)]
     pub requires_user_action: Option<bool>,
     #[serde(default)]
@@ -139,6 +150,8 @@ impl DockEvent {
             cwd: None,
             workspace_root: None,
             window_title: None,
+            parent_session_id: None,
+            terminal_id: None,
             requires_user_action: None,
             metadata: BTreeMap::new(),
         }
@@ -161,6 +174,18 @@ impl DockEvent {
 
     pub fn requiring_user_action(mut self, required: bool) -> Self {
         self.requires_user_action = Some(required);
+        self
+    }
+
+    pub fn with_parent_session_id(mut self, parent_session_id: impl Into<String>) -> Self {
+        let parent = parent_session_id.into();
+        self.parent_session_id = (!parent.is_empty()).then_some(parent);
+        self
+    }
+
+    pub fn with_terminal_id(mut self, terminal_id: impl Into<String>) -> Self {
+        let terminal_id = terminal_id.into();
+        self.terminal_id = (!terminal_id.is_empty()).then_some(terminal_id);
         self
     }
 }
@@ -243,6 +268,8 @@ pub struct PersistedSession {
     pub requires_user_action: bool,
     pub acknowledged: bool,
     pub occurred_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -258,6 +285,7 @@ struct SessionRecord {
     requires_user_action: bool,
     acknowledged: bool,
     occurred_at: String,
+    terminal_id: Option<String>,
 }
 
 /// Deterministic in-memory session registry.
@@ -288,6 +316,9 @@ impl DockState {
             {
                 continue;
             }
+            let terminal_id = normalize_optional(&item.terminal_id)
+                .filter(|value| valid_len(value, MAX_TERMINAL_ID_LEN))
+                .map(str::to_owned);
             let key = session_key(&item.source, &item.session_id);
             state.sessions.insert(
                 key,
@@ -303,6 +334,7 @@ impl DockState {
                     requires_user_action: item.requires_user_action,
                     acknowledged: item.acknowledged,
                     occurred_at: item.occurred_at,
+                    terminal_id,
                 },
             );
         }
@@ -322,6 +354,7 @@ impl DockState {
                 requires_user_action: record.requires_user_action,
                 acknowledged: record.acknowledged,
                 occurred_at: record.occurred_at.clone(),
+                terminal_id: record.terminal_id.clone(),
             })
             .collect();
         sessions.sort_by(|left, right| left.occurred_at.cmp(&right.occurred_at));
@@ -411,9 +444,21 @@ impl DockState {
             return self.accepted(None);
         }
 
+        if let Some(parent_id) = normalize_optional(&event.parent_session_id).map(str::to_owned) {
+            return self.apply_child_event(event, parent_id);
+        }
+
         let key = session_key(&event.source, &event.session_id);
-        let previous_state = self.sessions.get(&key).map(|record| record.state);
         let kind = event.kind;
+        if matches!(
+            kind,
+            EventKind::Started | EventKind::Working | EventKind::Idle
+        ) {
+            if let Some(terminal_id) = normalize_optional(&event.terminal_id).map(str::to_owned) {
+                self.retire_other_terminal_sessions(&terminal_id, &key);
+            }
+        }
+        let previous_state = self.sessions.get(&key).map(|record| record.state);
         let result = match kind {
             EventKind::Idle => self.apply_idle(&key, event),
             EventKind::Started | EventKind::Working => self.apply_working(&key, event),
@@ -546,19 +591,7 @@ impl DockState {
             });
             return TransitionResult::accepted(event.event_id, attention);
         }
-        self.sessions.insert(
-            key.to_owned(),
-            SessionRecord::new(&event, SessionState::NeedsAttention, Some(reason)),
-        );
-        TransitionResult::accepted(
-            event.event_id.clone(),
-            Some(Attention {
-                source: event.source,
-                session_id: event.session_id,
-                reason: reason.to_owned(),
-                severity,
-            }),
-        )
+        TransitionResult::accepted(event.event_id, None)
     }
 
     fn apply_terminal(
@@ -586,20 +619,73 @@ impl DockState {
             });
             return TransitionResult::accepted(event.event_id, attention);
         }
-        let pending = state != SessionState::Cancelled;
-        self.sessions.insert(
-            key.to_owned(),
-            SessionRecord::new(&event, state, pending.then_some(reason)),
+        TransitionResult::accepted(event.event_id, None)
+    }
+
+    fn apply_child_event(&mut self, event: DockEvent, parent_id: String) -> ApplyResult {
+        let parent_key = session_key(&event.source, &parent_id);
+        let foldable = matches!(
+            event.kind,
+            EventKind::WaitingInput | EventKind::PermissionRequested | EventKind::Failed
         );
-        TransitionResult::accepted(
-            event.event_id.clone(),
-            (pending).then(|| Attention {
-                source: event.source,
-                session_id: event.session_id,
-                reason: reason.to_owned(),
-                severity,
-            }),
-        )
+        if !foldable || !self.sessions.contains_key(&parent_key) {
+            self.remember_event(&event.event_id);
+            return self.accepted(None);
+        }
+
+        let previous_state = self.sessions.get(&parent_key).map(|record| record.state);
+        let kind = event.kind;
+        let mut folded = event;
+        folded.session_id = parent_id;
+        let result = match kind {
+            EventKind::WaitingInput => {
+                self.apply_attention(&parent_key, folded, "input", Severity::Attention)
+            }
+            EventKind::PermissionRequested => {
+                self.apply_attention(&parent_key, folded, "permission", Severity::Attention)
+            }
+            EventKind::Failed => self.apply_terminal(
+                &parent_key,
+                folded,
+                SessionState::Failed,
+                "failed",
+                Severity::Error,
+            ),
+            _ => unreachable!("non-foldable child events return earlier"),
+        };
+
+        if result.reason.is_none() {
+            self.remember_event(&result.event_id);
+            let current_state = self.sessions.get(&parent_key).map(|record| record.state);
+            if previous_state != current_state {
+                if let Some(record) = self.sessions.get(&parent_key).cloned() {
+                    self.remember_audit(&record);
+                }
+            }
+            self.accepted(result.attention)
+        } else {
+            self.rejected(
+                result
+                    .reason
+                    .unwrap_or_else(|| "invalid_transition".to_owned()),
+            )
+        }
+    }
+
+    fn retire_other_terminal_sessions(&mut self, terminal_id: &str, keep_key: &str) {
+        let stale: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|(key, record)| {
+                key.as_str() != keep_key && record.terminal_id.as_deref() == Some(terminal_id)
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in stale {
+            if let Some(record) = self.sessions.remove(&key) {
+                self.remember_audit(&record);
+            }
+        }
     }
 
     fn apply_closed(&mut self, key: &str, event: DockEvent) -> TransitionResult {
@@ -703,6 +789,7 @@ impl SessionRecord {
             requires_user_action: event.requires_user_action.unwrap_or(false),
             acknowledged: reason.is_none(),
             occurred_at: event.occurred_at.clone(),
+            terminal_id: normalize_optional(&event.terminal_id).map(str::to_owned),
         }
     }
 
@@ -736,6 +823,9 @@ fn update_record(record: &mut SessionRecord, event: &DockEvent) {
     if let Some(required) = event.requires_user_action {
         record.requires_user_action = required;
     }
+    if let Some(terminal_id) = normalize_optional(&event.terminal_id) {
+        record.terminal_id = Some(terminal_id.to_owned());
+    }
     record.occurred_at = event.occurred_at.clone();
 }
 
@@ -751,6 +841,13 @@ fn nonempty_path(value: Option<&str>) -> Option<String> {
     value.and_then(|path| (!path.is_empty()).then(|| path.to_owned()))
 }
 
+fn normalize_optional(value: &Option<String>) -> Option<&str> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
 fn validate_event(event: &DockEvent) -> Option<String> {
     if event.version != EVENT_VERSION {
         return Some("unsupported_version".to_owned());
@@ -761,6 +858,16 @@ fn validate_event(event: &DockEvent) -> Option<String> {
         || event.occurred_at.is_empty()
     {
         return Some("invalid_event".to_owned());
+    }
+    if let Some(parent) = normalize_optional(&event.parent_session_id) {
+        if !valid_len(parent, MAX_SESSION_ID_LEN) {
+            return Some("invalid_event".to_owned());
+        }
+    }
+    if let Some(terminal_id) = normalize_optional(&event.terminal_id) {
+        if !valid_len(terminal_id, MAX_TERMINAL_ID_LEN) {
+            return Some("invalid_event".to_owned());
+        }
     }
     if event
         .summary
@@ -853,14 +960,6 @@ impl TransitionResult {
             event_id,
             attention,
             reason: None,
-        }
-    }
-
-    fn rejected(event_id: String, reason: &str) -> Self {
-        Self {
-            event_id,
-            attention: None,
-            reason: Some(reason.to_owned()),
         }
     }
 }

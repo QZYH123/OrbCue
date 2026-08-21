@@ -372,6 +372,233 @@ fn later_events_keep_window_title_unless_a_new_value_arrives() {
 }
 
 #[test]
+fn unknown_session_attention_and_terminal_do_not_create_records() {
+    let mut state = DockState::new();
+    for (id, kind) in [
+        ("e1", EventKind::WaitingInput),
+        ("e2", EventKind::PermissionRequested),
+        ("e3", EventKind::Completed),
+        ("e4", EventKind::Failed),
+        ("e5", EventKind::Cancelled),
+    ] {
+        let result = state.apply(event(id, kind, "unknown"));
+        assert!(result.accepted, "{kind:?} should be accepted");
+        assert!(
+            result.attention.is_none(),
+            "{kind:?} should have no attention"
+        );
+        assert_eq!(result.snapshot.tracked_count, 0);
+        assert!(result.snapshot.sessions.is_empty());
+    }
+}
+
+#[test]
+fn reset_then_late_completed_does_not_resurrect() {
+    let mut state = DockState::new();
+    state.apply(event("e1", EventKind::Started, "a"));
+    state.reset("claude", "a");
+    let late = state.apply(event("e2", EventKind::Completed, "a"));
+    assert!(late.accepted);
+    assert!(late.attention.is_none());
+    assert_eq!(late.snapshot.tracked_count, 0);
+    assert!(late
+        .snapshot
+        .sessions
+        .iter()
+        .all(|session| session.session_id != "a"));
+}
+
+#[test]
+fn parent_waiting_folds_into_parent_attention() {
+    let mut state = DockState::new();
+    state.apply(event("e1", EventKind::Started, "parent"));
+    let result =
+        state.apply(event("e2", EventKind::WaitingInput, "child").with_parent_session_id("parent"));
+    assert!(result.accepted);
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(result.snapshot.sessions.len(), 1);
+    assert_eq!(result.snapshot.sessions[0].session_id, "parent");
+    assert_eq!(result.snapshot.sessions[0].mark, "?");
+    assert_eq!(result.snapshot.pending_mark, "?");
+    assert_eq!(
+        result
+            .attention
+            .as_ref()
+            .map(|item| item.session_id.as_str()),
+        Some("parent")
+    );
+    assert_eq!(
+        result.attention.as_ref().map(|item| item.reason.as_str()),
+        Some("input")
+    );
+}
+
+#[test]
+fn missing_parent_child_event_has_no_side_effects() {
+    let mut state = DockState::new();
+    let result = state.apply(
+        event("e1", EventKind::WaitingInput, "child").with_parent_session_id("missing-parent"),
+    );
+    assert!(result.accepted);
+    assert!(result.attention.is_none());
+    assert_eq!(result.snapshot.tracked_count, 0);
+    assert!(result.snapshot.sessions.is_empty());
+}
+
+#[test]
+fn child_sessions_are_not_counted() {
+    let mut state = DockState::new();
+    state.apply(event("e1", EventKind::Started, "parent"));
+    let result =
+        state.apply(event("e2", EventKind::Started, "child").with_parent_session_id("parent"));
+    assert!(result.accepted);
+    assert_eq!(result.snapshot.working_count, 1);
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(result.snapshot.sessions.len(), 1);
+    assert_eq!(result.snapshot.sessions[0].session_id, "parent");
+}
+
+#[test]
+fn empty_parent_session_id_is_treated_as_missing() {
+    let mut state = DockState::new();
+    let mut started = event("e1", EventKind::Started, "s1");
+    started.parent_session_id = Some(String::new());
+    let result = state.apply(started);
+    assert!(result.accepted);
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(result.snapshot.sessions[0].session_id, "s1");
+}
+
+#[test]
+fn parent_failed_folds_into_parent_failed_mark() {
+    let mut state = DockState::new();
+    state.apply(event("e1", EventKind::Started, "parent"));
+    let result =
+        state.apply(event("e2", EventKind::Failed, "child").with_parent_session_id("parent"));
+    assert!(result.accepted);
+    assert_eq!(result.snapshot.sessions[0].state, SessionState::Failed);
+    assert_eq!(result.snapshot.pending_mark, "!");
+    assert_eq!(result.attention.as_ref().unwrap().reason, "failed");
+}
+
+#[test]
+fn parent_waiting_reuses_attention_dedup() {
+    let mut state = DockState::new();
+    state.apply(event("e1", EventKind::Started, "parent"));
+    let first =
+        state.apply(event("e2", EventKind::WaitingInput, "child").with_parent_session_id("parent"));
+    assert!(first.attention.is_some());
+    let repeat = state.apply(
+        event("e3", EventKind::WaitingInput, "other-child").with_parent_session_id("parent"),
+    );
+    assert!(repeat.attention.is_none());
+    assert_eq!(repeat.snapshot.tracked_count, 1);
+}
+
+#[test]
+fn oversized_parent_session_id_is_rejected() {
+    let mut oversized = event("e1", EventKind::Started, "s1");
+    oversized.parent_session_id = Some("x".repeat(257));
+    let mut state = DockState::new();
+    assert_eq!(
+        state.apply(oversized).rejection_reason.as_deref(),
+        Some("invalid_event")
+    );
+    assert_eq!(state.snapshot().tracked_count, 0);
+}
+
+#[test]
+fn same_terminal_id_started_replaces_the_previous_session() {
+    let mut state = DockState::new();
+    state.apply(event("e1", EventKind::Started, "old").with_terminal_id("pts-1"));
+    let replaced = state.apply(event("e2", EventKind::Idle, "fresh").with_terminal_id("pts-1"));
+    assert!(replaced.accepted);
+    assert_eq!(replaced.snapshot.tracked_count, 1);
+    assert_eq!(replaced.snapshot.sessions.len(), 1);
+    assert_eq!(replaced.snapshot.sessions[0].session_id, "fresh");
+    assert_eq!(replaced.snapshot.sessions[0].mark, "o");
+}
+
+#[test]
+fn same_terminal_id_replaces_across_sources() {
+    let mut state = DockState::new();
+    state.apply(event("e1", EventKind::Started, "claude-s").with_terminal_id("term"));
+    let grok = DockEvent::new("e2", EventKind::Idle, "grok", "grok-s").with_terminal_id("term");
+    let replaced = state.apply(grok);
+    assert_eq!(replaced.snapshot.sessions.len(), 1);
+    assert_eq!(replaced.snapshot.sessions[0].source, "grok");
+    assert_eq!(replaced.snapshot.sessions[0].session_id, "grok-s");
+}
+
+#[test]
+fn events_without_terminal_id_do_not_replace() {
+    let mut state = DockState::new();
+    state.apply(event("e1", EventKind::Started, "one"));
+    let second = state.apply(event("e2", EventKind::Started, "two"));
+    assert_eq!(second.snapshot.tracked_count, 2);
+}
+
+#[test]
+fn parent_events_do_not_replace_the_terminal_session() {
+    let mut state = DockState::new();
+    state.apply(event("e1", EventKind::Started, "parent").with_terminal_id("term"));
+    let child = event("e2", EventKind::Started, "child")
+        .with_parent_session_id("parent")
+        .with_terminal_id("term");
+    let result = state.apply(child);
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(result.snapshot.sessions[0].session_id, "parent");
+}
+
+#[test]
+fn terminal_replacement_is_recorded_in_audit() {
+    let mut state = DockState::new();
+    state.apply(event("e1", EventKind::Started, "old").with_terminal_id("term"));
+    let replaced = state.apply(event("e2", EventKind::Started, "fresh").with_terminal_id("term"));
+    assert!(replaced
+        .snapshot
+        .audit
+        .iter()
+        .any(|entry| entry.session_id == "old"));
+    assert!(replaced
+        .snapshot
+        .audit
+        .iter()
+        .any(|entry| entry.session_id == "fresh"));
+}
+
+#[test]
+fn persisted_state_round_trips_terminal_id() {
+    let mut state = DockState::new();
+    state.apply(event("e1", EventKind::Started, "keep").with_terminal_id("term-keep"));
+    let persisted = state.persisted();
+    assert_eq!(
+        persisted.sessions[0].terminal_id.as_deref(),
+        Some("term-keep")
+    );
+    let json = serde_json::to_string(&persisted).unwrap();
+    assert!(json.contains("term-keep"));
+
+    let mut restored = DockState::from_persisted(serde_json::from_str(&json).unwrap());
+    let replaced =
+        restored.apply(event("e2", EventKind::Idle, "after-restart").with_terminal_id("term-keep"));
+    assert_eq!(replaced.snapshot.sessions.len(), 1);
+    assert_eq!(replaced.snapshot.sessions[0].session_id, "after-restart");
+}
+
+#[test]
+fn missing_terminal_id_in_old_state_json_defaults_to_none() {
+    let json = r#"{"version":1,"sessions":[{"source":"claude","session_id":"legacy","state":"working","attention_reason":null,"requires_user_action":false,"acknowledged":true,"occurred_at":"2026-08-16T00:00:00Z"}]}"#;
+    let restored = DockState::from_persisted(serde_json::from_str(json).unwrap());
+    assert_eq!(restored.snapshot().sessions[0].session_id, "legacy");
+    let persisted = restored.persisted();
+    assert_eq!(persisted.sessions[0].terminal_id, None);
+    assert!(!serde_json::to_string(&persisted)
+        .unwrap()
+        .contains("terminal_id"));
+}
+
+#[test]
 fn audit_stream_is_bounded_and_contains_no_event_content() {
     let mut state = DockState::new();
     for index in 0..140 {

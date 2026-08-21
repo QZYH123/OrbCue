@@ -633,23 +633,41 @@ impl ConnectionManager {
 }
 
 pub(crate) fn candidate_names(name: &str) -> Vec<String> {
-    #[cfg(windows)]
+    let mut names = vec![name.to_owned()];
+    let extensions = env::var_os("PATHEXT")
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                ".COM;.EXE;.BAT;.CMD".to_owned()
+            } else {
+                ".exe;.cmd;.bat;.ps1".to_owned()
+            }
+        });
+    for extension in extensions
+        .split(';')
+        .map(str::trim)
+        .filter(|extension| !extension.is_empty())
     {
-        let mut names = vec![name.to_owned()];
-        let extensions = env::var_os("PATHEXT")
-            .map(|value| value.to_string_lossy().to_string())
-            .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_owned());
-        for extension in extensions
-            .split(';')
-            .filter(|extension| !extension.is_empty())
-        {
-            names.push(format!("{name}{extension}"));
-        }
-        names
+        let extension = if extension.starts_with('.') {
+            extension.to_owned()
+        } else {
+            format!(".{extension}")
+        };
+        push_unique_ignore_case(&mut names, format!("{name}{extension}"));
+        push_unique_ignore_case(
+            &mut names,
+            format!("{name}{}", extension.to_ascii_lowercase()),
+        );
     }
-    #[cfg(not(windows))]
+    names
+}
+
+fn push_unique_ignore_case(names: &mut Vec<String>, candidate: String) {
+    if !names
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(&candidate))
     {
-        vec![name.to_owned()]
+        names.push(candidate);
     }
 }
 

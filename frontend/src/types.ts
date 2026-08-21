@@ -58,11 +58,12 @@ export interface SnapshotMessage {
   attention: Attention | null;
 }
 
+export type AgentSide = 'wsl' | 'windows';
+
 export interface DiscoveredAgent {
   name: string;
   path: string;
-  origin?: 'wsl' | 'windows';
-  connectable?: boolean;
+  side: AgentSide;
 }
 
 export type ConnectionMethod = 'Wrapper' | 'ClaudeHook' | 'GrokHook';
@@ -77,6 +78,7 @@ export interface ConnectionRecord {
   capabilities: string[];
   limitation: string;
   installed_at: string;
+  side: AgentSide;
 }
 
 export interface PreviewFile {

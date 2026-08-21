@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { agentConnectable, inventoryHasRows, showDetectingPlaceholder } from './inventory';
-import type { AgentInventory, DiscoveredAgent } from './types';
+import { inventoryHasRows, showDetectingPlaceholder, sideLabel } from './inventory';
+import type { AgentInventory } from './types';
 
 const empty: AgentInventory = { discovered: [], connected: [] };
 const cached: AgentInventory = {
-  discovered: [{ name: 'claude', path: '/home/u/.local/bin/claude', origin: 'wsl', connectable: true }],
+  discovered: [{ name: 'claude', path: '/home/u/.local/bin/claude', side: 'wsl' }],
   connected: [],
 };
 
@@ -16,14 +16,8 @@ describe('inventory display', () => {
     expect(showDetectingPlaceholder(empty, false)).toBe(false);
   });
 
-  it('does not offer connect for Windows PATH entries', () => {
-    const windows: DiscoveredAgent = {
-      name: 'claude',
-      path: '/mnt/c/Users/u/AppData/Roaming/npm/claude',
-      origin: 'windows',
-      connectable: false,
-    };
-    expect(agentConnectable(windows)).toBe(false);
-    expect(agentConnectable({ name: 'claude', path: '/home/u/.local/bin/claude' })).toBe(true);
+  it('labels both sides for the connection cards', () => {
+    expect(sideLabel('wsl')).toBe('WSL');
+    expect(sideLabel('windows')).toBe('Windows');
   });
 });

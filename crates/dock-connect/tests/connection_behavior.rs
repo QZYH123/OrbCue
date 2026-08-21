@@ -478,9 +478,10 @@ fn discover_from_path_finds_local_bin_and_prefers_wsl_over_windows() {
 
     fs::remove_file(&wsl_claude).unwrap();
     let windows_only = manager.discover_from_path(&windows_first);
-    assert_eq!(windows_only.len(), 1);
-    assert_eq!(windows_only[0].path, windows_claude);
-    assert_eq!(windows_only[0].origin, AgentOrigin::Windows);
-    assert!(!windows_only[0].connectable);
+    assert!(
+        windows_only.is_empty(),
+        "/mnt/* Windows interop agents are discovered on the Windows side: {windows_only:?}"
+    );
+    let _ = windows_claude;
     fs::remove_dir_all(root).unwrap();
 }

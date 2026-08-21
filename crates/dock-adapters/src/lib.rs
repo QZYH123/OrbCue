@@ -11,13 +11,16 @@ pub fn claude_hook(payload: &Value) -> Option<DockEvent> {
         .or_else(|| payload.get("hook_event"))
         .and_then(Value::as_str)?;
     let kind = match event_name {
-        "SessionStart" | "PreToolUse" => EventKind::Working,
+        "SessionStart" | "PreToolUse" | "SubagentStart" => EventKind::Working,
         "PermissionRequest" => EventKind::PermissionRequested,
-        "SessionEnd" => EventKind::Completed,
+        "SessionEnd" | "SubagentStop" => EventKind::Completed,
         "StopFailure" => EventKind::Failed,
         _ => return None,
     };
     let session_id = payload.get("session_id").and_then(Value::as_str)?;
+    if is_named_subagent_hook(event_name) && extract_parent(payload).is_none() {
+        return None;
+    }
     let mut event = make_event("claude", session_id, kind, payload);
     if kind == EventKind::PermissionRequested {
         event.severity = Severity::Attention;
@@ -148,7 +151,27 @@ fn make_event(source: &str, session_id: &str, kind: EventKind, payload: &Value) 
     {
         event.workspace_root = Some(workspace_root.to_owned());
     }
+    if let Some(parent) = extract_parent(payload) {
+        event.parent_session_id = Some(parent);
+    }
     event
+}
+
+fn extract_parent(payload: &Value) -> Option<String> {
+    payload
+        .get("parent_session_id")
+        .or_else(|| payload.get("parentSessionId"))
+        .or_else(|| payload.get("parent_id"))
+        .or_else(|| payload.get("parentId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn is_named_subagent_hook(event_name: &str) -> bool {
+    let normalized = event_name.replace('-', "_").to_ascii_lowercase();
+    normalized.contains("subagent")
 }
 
 fn kind_name(kind: EventKind) -> &'static str {

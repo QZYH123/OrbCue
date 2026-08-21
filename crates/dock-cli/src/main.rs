@@ -1,6 +1,8 @@
 use agent_activity_dock_adapters::{claude_hook, codex_notification, dsh_projection, grok_hook};
 use agent_activity_dock_connect::{ConnectionManager, ConnectionPreview, PreviewAction};
-use agent_activity_dock_core::{DockEvent, EventKind, Severity, EVENT_VERSION};
+use agent_activity_dock_core::{
+    session_terminal_title, DockEvent, EventKind, Severity, EVENT_VERSION,
+};
 use agent_activity_dock_ipc::{
     default_endpoint, default_state_path, local_connect, local_set_recv_timeout,
     local_set_send_timeout, local_try_clone, IpcRequest, SnapshotView, WireResponse,
@@ -8,6 +10,7 @@ use agent_activity_dock_ipc::{
 use agent_activity_dock_service::attach_or_listen;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::Value;
+use std::ffi::OsString;
 use std::fs;
 use std::io::Read;
 use std::io::{BufRead, BufReader, Write};
@@ -115,8 +118,12 @@ fn main() {
     let cli = Cli::parse();
     let endpoint = cli
         .socket
+        .clone()
         .or_else(|| std::env::var_os("AGENT_ACTIVITY_DOCK_SOCKET").map(PathBuf::from))
         .unwrap_or_else(default_endpoint);
+    if should_forward_to_wsl(&cli.command, &endpoint) {
+        std::process::exit(forward_to_wsl());
+    }
     if matches!(
         &cli.command,
         Command::Agents | Command::Connect { .. } | Command::Disconnect { .. }
@@ -299,12 +306,14 @@ fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
         HookProvider::Dsh => dsh_projection(&payload),
         HookProvider::Grok => grok_hook(&payload),
     };
-    let Some(event) = event else {
+    let Some(mut event) = event else {
         if json_output {
             println!("{{\"accepted\":false,\"rejection_reason\":\"unmapped_event\"}}");
         }
         return;
     };
+    attach_terminal_id(&mut event);
+    maybe_set_terminal_title(&event);
     match send(endpoint, &IpcRequest::Event(event)) {
         Ok(response) => {
             if json_output {
@@ -385,7 +394,371 @@ fn event_request(args: &EventArgs, kind: EventKind) -> Result<IpcRequest, String
     if args.requires_user_action {
         event = event.requiring_user_action(true);
     }
+    attach_terminal_id(&mut event);
+    maybe_set_terminal_title(&event);
     Ok(IpcRequest::Event(event))
+}
+
+fn attach_terminal_id(event: &mut DockEvent) {
+    if event.terminal_id.is_none() {
+        event.terminal_id = resolve_terminal_id();
+    }
+}
+
+fn resolve_terminal_id() -> Option<String> {
+    match std::env::var("AGENT_ACTIVITY_DOCK_TERMINAL_ID") {
+        Ok(value) => {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_owned())
+        }
+        Err(_) => choose_terminal_id(
+            None,
+            own_tty_id().as_deref(),
+            ancestor_tty_id().as_deref(),
+            wt_session_id().as_deref(),
+        ),
+    }
+}
+
+fn choose_terminal_id(
+    explicit: Option<&str>,
+    own_tty: Option<&str>,
+    ancestor_tty: Option<&str>,
+    wt_session: Option<&str>,
+) -> Option<String> {
+    [explicit, own_tty, ancestor_tty, wt_session]
+        .into_iter()
+        .find_map(|value| value.map(str::trim).filter(|value| !value.is_empty()))
+        .map(str::to_owned)
+}
+
+fn wt_session_id() -> Option<String> {
+    std::env::var("WT_SESSION")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn own_tty_id() -> Option<String> {
+    #[cfg(unix)]
+    {
+        unix_tty_id()
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+fn ancestor_tty_id() -> Option<String> {
+    #[cfg(unix)]
+    {
+        unix_ancestor_tty_id()
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+fn maybe_set_terminal_title(event: &DockEvent) {
+    if !should_set_terminal_title(event) {
+        return;
+    }
+    let path = event
+        .workspace_root
+        .as_deref()
+        .or(event.cwd.as_deref())
+        .filter(|value| !value.is_empty());
+    let title = session_terminal_title(&event.source, path);
+    write_terminal_title(&title);
+}
+
+fn should_set_terminal_title(event: &DockEvent) -> bool {
+    if title_setting_suppressed() {
+        return false;
+    }
+    if event
+        .parent_session_id
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return false;
+    }
+    matches!(
+        event.kind,
+        EventKind::Started
+            | EventKind::Working
+            | EventKind::Idle
+            | EventKind::Completed
+            | EventKind::Failed
+            | EventKind::WaitingInput
+            | EventKind::PermissionRequested
+    )
+}
+
+fn title_setting_suppressed() -> bool {
+    std::env::var("AGENT_ACTIVITY_DOCK_NO_TITLE")
+        .ok()
+        .is_some_and(|value| value == "1")
+}
+
+fn write_terminal_title(title: &str) {
+    #[cfg(unix)]
+    {
+        let sequence = format!("\x1b]0;{title}\x07");
+        if let Some(mut tty) = open_controlling_tty() {
+            let _ = tty.write_all(sequence.as_bytes());
+            let _ = tty.flush();
+            return;
+        }
+        if let Some(path) = ancestor_tty_id() {
+            if let Some(mut tty) = open_tty_write_only(&path) {
+                let _ = tty.write_all(sequence.as_bytes());
+                let _ = tty.flush();
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        windows_console::set_title(title);
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = title;
+    }
+}
+
+#[cfg(windows)]
+mod windows_console {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetConsoleTitleW(title: *const u16) -> i32;
+    }
+
+    pub fn set_title(title: &str) {
+        let mut wide: Vec<u16> = std::ffi::OsStr::new(title).encode_wide().collect();
+        wide.push(0);
+        unsafe {
+            let _ = SetConsoleTitleW(wide.as_ptr());
+        }
+    }
+}
+
+#[cfg(unix)]
+fn open_controlling_tty() -> Option<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .ok()
+}
+
+#[cfg(unix)]
+fn open_tty_write_only(path: impl AsRef<std::path::Path>) -> Option<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NOCTTY)
+        .open(path)
+        .ok()
+}
+
+#[cfg(unix)]
+fn ttyname_string(fd: i32) -> Option<String> {
+    unsafe {
+        let ptr = libc::ttyname(fd);
+        if ptr.is_null() {
+            return None;
+        }
+        std::ffi::CStr::from_ptr(ptr)
+            .to_str()
+            .ok()
+            .map(str::to_owned)
+    }
+}
+
+#[cfg(unix)]
+fn unix_tty_id() -> Option<String> {
+    use std::os::fd::AsRawFd;
+    ttyname_string(libc::STDERR_FILENO)
+        .or_else(|| ttyname_string(libc::STDIN_FILENO))
+        .or_else(|| open_controlling_tty().and_then(|file| ttyname_string(file.as_raw_fd())))
+}
+
+#[cfg(unix)]
+fn canonical_tty_id(path: &std::path::Path) -> Option<String> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOCTTY)
+        .open(path)
+        .ok()
+        .or_else(|| open_tty_write_only(path))?;
+    if unsafe { libc::isatty(file.as_raw_fd()) } == 0 {
+        return None;
+    }
+    ttyname_string(file.as_raw_fd())
+}
+
+#[cfg(unix)]
+fn looks_like_tty_path(path: &str) -> bool {
+    path != "/dev/tty"
+        && (path.starts_with("/dev/pts/")
+            || path
+                .strip_prefix("/dev/tty")
+                .is_some_and(|rest| !rest.is_empty()))
+}
+
+#[cfg(unix)]
+fn parse_proc_stat(contents: &str) -> Option<(i32, u32)> {
+    let end = contents.rfind(')')?;
+    let mut fields = contents.get(end + 1..)?.split_whitespace();
+    let _state = fields.next()?;
+    let ppid = fields.next()?.parse().ok()?;
+    let _pgrp = fields.next()?;
+    let _session = fields.next()?;
+    let tty_nr = fields.next()?.parse().ok()?;
+    Some((ppid, tty_nr))
+}
+
+#[cfg(unix)]
+fn new_decode_dev(dev: u32) -> (u32, u32) {
+    let major = (dev & 0xfff00) >> 8;
+    let minor = (dev & 0xff) | ((dev >> 12) & 0xfff00);
+    (major, minor)
+}
+
+#[cfg(unix)]
+fn tty_path_for_dev(major: u32, minor: u32) -> Option<String> {
+    match major {
+        136 => Some(format!("/dev/pts/{minor}")),
+        137..=143 => Some(format!("/dev/pts/{}", (major - 136) * 256 + minor)),
+        4 if minor < 64 => Some(format!("/dev/tty{minor}")),
+        4 => Some(format!("/dev/ttyS{}", minor.saturating_sub(64))),
+        _ => None,
+    }
+}
+
+#[cfg(unix)]
+fn path_from_tty_nr(tty_nr: u32) -> Option<std::path::PathBuf> {
+    if tty_nr == 0 {
+        return None;
+    }
+    let (major, minor) = new_decode_dev(tty_nr);
+    let path = std::path::PathBuf::from(tty_path_for_dev(major, minor)?);
+    path.exists().then_some(path)
+}
+
+#[cfg(unix)]
+fn ancestor_fd_tty_path(pid: i32, fd: u8) -> Option<std::path::PathBuf> {
+    let link = std::fs::read_link(format!("/proc/{pid}/fd/{fd}")).ok()?;
+    let text = link.to_str()?;
+    looks_like_tty_path(text).then_some(link)
+}
+
+#[cfg(unix)]
+fn unix_ancestor_tty_id() -> Option<String> {
+    let mut pid = unsafe { libc::getppid() };
+    for _ in 0..10 {
+        if pid <= 1 {
+            break;
+        }
+        for fd in [0_u8, 1, 2] {
+            if let Some(path) = ancestor_fd_tty_path(pid, fd) {
+                if let Some(id) = canonical_tty_id(&path) {
+                    return Some(id);
+                }
+            }
+        }
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            break;
+        };
+        let Some((ppid, tty_nr)) = parse_proc_stat(&stat) else {
+            break;
+        };
+        if let Some(path) = path_from_tty_nr(tty_nr) {
+            if let Some(id) = canonical_tty_id(&path) {
+                return Some(id);
+            }
+        }
+        if ppid == pid {
+            break;
+        }
+        pid = ppid;
+    }
+    None
+}
+
+fn is_forwardable_command(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Agents
+            | Command::Connect { .. }
+            | Command::Disconnect { .. }
+            | Command::Up
+            | Command::Down
+    )
+}
+
+fn explicit_wsl_forward() -> bool {
+    std::env::var("AGENT_ACTIVITY_DOCK_FORWARD")
+        .ok()
+        .is_some_and(|value| value.eq_ignore_ascii_case("wsl"))
+}
+
+fn looks_like_windows_pipe(value: &OsString) -> bool {
+    let text = value.to_string_lossy();
+    text.starts_with(r"\\.\pipe\") || text.starts_with("//./pipe/")
+}
+
+fn local_daemon_present(endpoint: &Path) -> bool {
+    local_connect(endpoint).is_ok()
+}
+
+fn should_forward_to_wsl(command: &Command, endpoint: &Path) -> bool {
+    if !is_forwardable_command(command) {
+        return false;
+    }
+    if !cfg!(windows) {
+        return false;
+    }
+    explicit_wsl_forward() || !local_daemon_present(endpoint)
+}
+
+fn forward_to_wsl() -> i32 {
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let mut command = ProcessCommand::new("wsl.exe");
+    if let Ok(distro) = std::env::var("AGENT_ACTIVITY_DOCK_WSL_DISTRO") {
+        if !distro.is_empty() {
+            command.args(["-d", &distro]);
+        }
+    }
+    command.args([
+        "-e",
+        "sh",
+        "-c",
+        r#"exec "$HOME/.local/bin/dock" "$@""#,
+        "sh",
+    ]);
+    command.args(&args);
+    command.env_remove("AGENT_ACTIVITY_DOCK_FORWARD");
+    if std::env::var_os("AGENT_ACTIVITY_DOCK_SOCKET")
+        .as_ref()
+        .is_some_and(looks_like_windows_pipe)
+    {
+        command.env_remove("AGENT_ACTIVITY_DOCK_SOCKET");
+    }
+    match command.status() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(error) => {
+            eprintln!("dock: cannot forward to WSL via wsl.exe ({error})");
+            2
+        }
+    }
 }
 
 fn send(endpoint: &PathBuf, request: &IpcRequest) -> Result<WireResponse, String> {
@@ -689,6 +1062,183 @@ fn runtime_state_dir() -> PathBuf {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_forwardable_command, looks_like_windows_pipe, Command};
+    use agent_activity_dock_core::{DockEvent, EventKind};
+    use std::ffi::OsString;
+
+    #[test]
+    fn event_and_query_commands_can_forward() {
+        assert!(is_forwardable_command(&Command::Status));
+        assert!(!is_forwardable_command(&Command::Agents));
+        assert!(!is_forwardable_command(&Command::Up));
+        assert!(!is_forwardable_command(&Command::Down));
+    }
+
+    #[test]
+    fn non_windows_builds_do_not_forward() {
+        let previous = std::env::var_os("AGENT_ACTIVITY_DOCK_FORWARD");
+        std::env::set_var("AGENT_ACTIVITY_DOCK_FORWARD", "wsl");
+        let forwarded = super::should_forward_to_wsl(
+            &Command::Status,
+            std::path::Path::new("/tmp/unused.sock"),
+        );
+        match previous {
+            Some(value) => std::env::set_var("AGENT_ACTIVITY_DOCK_FORWARD", value),
+            None => std::env::remove_var("AGENT_ACTIVITY_DOCK_FORWARD"),
+        }
+        if !cfg!(windows) {
+            assert!(!forwarded);
+        }
+    }
+
+    #[test]
+    fn terminal_id_order_prefers_explicit_then_own_then_ancestor_then_wt() {
+        assert_eq!(
+            super::choose_terminal_id(
+                Some("pts-override"),
+                Some("/dev/pts/1"),
+                Some("/dev/pts/2"),
+                Some("wt-guid")
+            )
+            .as_deref(),
+            Some("pts-override")
+        );
+        assert_eq!(
+            super::choose_terminal_id(
+                None,
+                Some("/dev/pts/1"),
+                Some("/dev/pts/2"),
+                Some("wt-guid")
+            )
+            .as_deref(),
+            Some("/dev/pts/1")
+        );
+        assert_eq!(
+            super::choose_terminal_id(None, None, Some("/dev/pts/5"), Some("wt-guid")).as_deref(),
+            Some("/dev/pts/5")
+        );
+        assert_eq!(
+            super::choose_terminal_id(None, None, None, Some("wt-guid")).as_deref(),
+            Some("wt-guid")
+        );
+    }
+
+    #[test]
+    fn terminal_id_env_override_wins() {
+        let previous_override = std::env::var_os("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
+        let previous_wt = std::env::var_os("WT_SESSION");
+        std::env::set_var("AGENT_ACTIVITY_DOCK_TERMINAL_ID", "pts-override");
+        std::env::set_var("WT_SESSION", "wt-should-lose");
+        let resolved = super::resolve_terminal_id();
+        restore_env("AGENT_ACTIVITY_DOCK_TERMINAL_ID", previous_override);
+        restore_env("WT_SESSION", previous_wt);
+        assert_eq!(resolved.as_deref(), Some("pts-override"));
+    }
+
+    #[test]
+    fn terminal_id_own_tty_beats_wt_session() {
+        let previous_override = std::env::var_os("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
+        let previous_wt = std::env::var_os("WT_SESSION");
+        std::env::remove_var("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
+        std::env::set_var("WT_SESSION", "wt-should-lose");
+        let own = super::own_tty_id();
+        let resolved = super::resolve_terminal_id();
+        restore_env("AGENT_ACTIVITY_DOCK_TERMINAL_ID", previous_override);
+        restore_env("WT_SESSION", previous_wt);
+        if let Some(tty) = own {
+            assert_eq!(resolved.as_deref(), Some(tty.as_str()));
+            assert_ne!(resolved.as_deref(), Some("wt-should-lose"));
+        }
+    }
+
+    #[test]
+    fn terminal_id_falls_back_to_tty_without_env_ids() {
+        let previous_override = std::env::var_os("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
+        let previous_wt = std::env::var_os("WT_SESSION");
+        std::env::remove_var("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
+        std::env::remove_var("WT_SESSION");
+        let resolved = super::resolve_terminal_id();
+        let expected = super::own_tty_id().or_else(super::ancestor_tty_id);
+        restore_env("AGENT_ACTIVITY_DOCK_TERMINAL_ID", previous_override);
+        restore_env("WT_SESSION", previous_wt);
+        assert_eq!(resolved, expected);
+    }
+
+    fn restore_env(key: &str, previous: Option<OsString>) {
+        match previous {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn windows_pipe_paths_are_detected() {
+        assert!(looks_like_windows_pipe(&OsString::from(
+            r"\\.\pipe\agent-activity-dock"
+        )));
+        assert!(looks_like_windows_pipe(&OsString::from(
+            "//./pipe/agent-activity-dock"
+        )));
+        assert!(!looks_like_windows_pipe(&OsString::from(
+            "/tmp/agent-activity-dock.sock"
+        )));
+    }
+
+    #[test]
+    fn title_env_skips_setting() {
+        let previous = std::env::var_os("AGENT_ACTIVITY_DOCK_NO_TITLE");
+        std::env::set_var("AGENT_ACTIVITY_DOCK_NO_TITLE", "1");
+        let skipped = super::title_setting_suppressed();
+        match previous {
+            Some(value) => std::env::set_var("AGENT_ACTIVITY_DOCK_NO_TITLE", value),
+            None => std::env::remove_var("AGENT_ACTIVITY_DOCK_NO_TITLE"),
+        }
+        assert!(skipped);
+    }
+
+    #[test]
+    fn title_only_for_main_session_lifecycle() {
+        let previous = std::env::var_os("AGENT_ACTIVITY_DOCK_NO_TITLE");
+        std::env::remove_var("AGENT_ACTIVITY_DOCK_NO_TITLE");
+        let started = DockEvent::new("e1", EventKind::Started, "grok", "s1");
+        let parent = DockEvent::new("e2", EventKind::Working, "grok", "s2")
+            .with_parent_session_id("parent-1");
+        let completed = DockEvent::new("e3", EventKind::Completed, "grok", "s3");
+        let cancelled = DockEvent::new("e4", EventKind::Cancelled, "grok", "s4");
+        let waiting = DockEvent::new("e5", EventKind::WaitingInput, "grok", "s5");
+        let allow_started = super::should_set_terminal_title(&started);
+        let allow_parent = super::should_set_terminal_title(&parent);
+        let allow_completed = super::should_set_terminal_title(&completed);
+        let allow_cancelled = super::should_set_terminal_title(&cancelled);
+        let allow_waiting = super::should_set_terminal_title(&waiting);
+        match previous {
+            Some(value) => std::env::set_var("AGENT_ACTIVITY_DOCK_NO_TITLE", value),
+            None => std::env::remove_var("AGENT_ACTIVITY_DOCK_NO_TITLE"),
+        }
+        assert!(allow_started);
+        assert!(!allow_parent);
+        assert!(allow_completed);
+        assert!(allow_waiting);
+        assert!(!allow_cancelled);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn proc_stat_tty_nr_decodes_like_unix98_pts() {
+        let line = "35022 (grok) S 1000 35022 35022 34821 35022 0 0";
+        assert_eq!(super::parse_proc_stat(line), Some((1000, 34821)));
+        assert_eq!(super::new_decode_dev(34821), (136, 5));
+        assert_eq!(
+            super::tty_path_for_dev(136, 5).as_deref(),
+            Some("/dev/pts/5")
+        );
+        let spaced = "12 (my (weird) name) R 99 12 12 0 12";
+        assert_eq!(super::parse_proc_stat(spaced), Some((99, 0)));
+    }
 }
 
 fn print_summary(response: &WireResponse) {
