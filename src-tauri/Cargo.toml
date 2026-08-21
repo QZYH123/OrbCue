@@ -15,6 +15,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+agent-activity-dock-core = { path = "../crates/dock-core" }
 agent-activity-dock-ipc = { path = "../crates/dock-ipc" }
 agent-activity-dock-connect = { path = "../crates/dock-connect" }
 agent-activity-dock-service = { path = "../crates/dock-service" }

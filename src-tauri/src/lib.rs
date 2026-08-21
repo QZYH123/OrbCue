@@ -1,3 +1,4 @@
+mod focus;
 #[cfg(windows)]
 mod wsl_session;
 
@@ -8,6 +9,7 @@ use agent_activity_dock_ipc::SnapshotView;
 use agent_activity_dock_service::SnapshotMessage;
 #[cfg(not(windows))]
 use agent_activity_dock_service::{attach_or_listen, DockSession};
+use focus::FocusResult;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -21,6 +23,7 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WebviewWindow,
 };
+use tauri_plugin_opener::OpenerExt;
 
 struct AppService(Mutex<Option<Arc<dyn PresenterSession>>>);
 static LAST_BALL_SAVE_MS: AtomicU64 = AtomicU64::new(0);
@@ -237,6 +240,29 @@ fn reset(
 }
 
 #[tauri::command]
+fn focus_source(
+    source: String,
+    session_id: String,
+    app: AppHandle,
+    state: State<'_, AppService>,
+) -> FocusResult {
+    let snapshot = match current_session(&state).and_then(|session| session.snapshot()) {
+        Ok(snapshot) => snapshot,
+        Err(reason) => {
+            return FocusResult {
+                focused: false,
+                reason: Some(reason),
+            }
+        }
+    };
+    focus::focus_session(&snapshot.sessions, &source, &session_id, |url| {
+        app.opener()
+            .open_url(url, None::<&str>)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
 fn open_panel(app: AppHandle) {
     show_panel(&app);
 }
@@ -352,7 +378,8 @@ pub fn run() {
             agent_inventory,
             connect_agent,
             disconnect_agent,
-            open_panel
+            open_panel,
+            focus_source
         ])
         .build(tauri::generate_context!())
         .expect("error while building Agent Activity Dock")

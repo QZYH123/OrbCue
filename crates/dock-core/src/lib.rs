@@ -4,6 +4,10 @@
 //! snapshots. Rendering, transport and Agent-specific adapters stay outside
 //! this boundary.
 
+mod jump;
+
+pub use jump::{focus_decision, select_unique_window_title, FocusDecision, FocusRequest};
+
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use time::{Duration, OffsetDateTime};
@@ -106,6 +110,8 @@ pub struct DockEvent {
     #[serde(default)]
     pub workspace_root: Option<String>,
     #[serde(default)]
+    pub window_title: Option<String>,
+    #[serde(default)]
     pub requires_user_action: Option<bool>,
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
@@ -127,6 +133,7 @@ impl DockEvent {
             deep_link: None,
             cwd: None,
             workspace_root: None,
+            window_title: None,
             requires_user_action: None,
             metadata: BTreeMap::new(),
         }
@@ -164,6 +171,8 @@ pub struct SessionSnapshot {
     pub deep_link: Option<String>,
     #[serde(default)]
     pub project_path: Option<String>,
+    #[serde(default)]
+    pub window_title: Option<String>,
     pub requires_user_action: bool,
     pub acknowledged: bool,
     pub occurred_at: String,
@@ -240,6 +249,7 @@ struct SessionRecord {
     summary: Option<String>,
     deep_link: Option<String>,
     project_path: Option<String>,
+    window_title: Option<String>,
     requires_user_action: bool,
     acknowledged: bool,
     occurred_at: String,
@@ -284,6 +294,7 @@ impl DockState {
                     summary: None,
                     deep_link: None,
                     project_path: None,
+                    window_title: None,
                     requires_user_action: item.requires_user_action,
                     acknowledged: item.acknowledged,
                     occurred_at: item.occurred_at,
@@ -683,6 +694,7 @@ impl SessionRecord {
             summary: event.summary.clone(),
             deep_link: event.deep_link.clone(),
             project_path: resolve_project_path(event),
+            window_title: nonempty_path(event.window_title.as_deref()),
             requires_user_action: event.requires_user_action.unwrap_or(false),
             acknowledged: reason.is_none(),
             occurred_at: event.occurred_at.clone(),
@@ -699,6 +711,7 @@ impl SessionRecord {
             summary: self.summary.clone(),
             deep_link: self.deep_link.clone(),
             project_path: self.project_path.clone(),
+            window_title: self.window_title.clone(),
             requires_user_action: self.requires_user_action,
             acknowledged: self.acknowledged,
             occurred_at: self.occurred_at.clone(),
@@ -711,6 +724,9 @@ fn update_record(record: &mut SessionRecord, event: &DockEvent) {
     record.deep_link = event.deep_link.clone().or_else(|| record.deep_link.clone());
     if let Some(path) = resolve_project_path(event) {
         record.project_path = Some(path);
+    }
+    if let Some(title) = nonempty_path(event.window_title.as_deref()) {
+        record.window_title = Some(title);
     }
     if let Some(required) = event.requires_user_action {
         record.requires_user_action = required;
@@ -755,6 +771,10 @@ fn validate_event(event: &DockEvent) -> Option<String> {
             .is_some_and(|value| value.len() > MAX_METADATA_VALUE_LEN)
         || event
             .workspace_root
+            .as_ref()
+            .is_some_and(|value| value.len() > MAX_METADATA_VALUE_LEN)
+        || event
+            .window_title
             .as_ref()
             .is_some_and(|value| value.len() > MAX_METADATA_VALUE_LEN)
         || event.metadata.len() > MAX_METADATA_ITEMS

@@ -5,9 +5,8 @@
   import { invoke } from '@tauri-apps/api/core';
   import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
   import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-shortcut';
-  import { openUrl } from '@tauri-apps/plugin-opener';
   import { onMount } from 'svelte';
-  import type { AgentInventory, AuditEntry, DiscoveredAgent, SessionSnapshot, Snapshot, SnapshotMessage } from './types';
+  import type { AgentInventory, AuditEntry, DiscoveredAgent, FocusResult, SessionSnapshot, Snapshot, SnapshotMessage } from './types';
   import { emptySnapshot } from './types';
   import { groupSessionsByProject, shortenProjectPath } from './projectPath';
 
@@ -33,6 +32,7 @@
   let dragArmed = false;
   let dragStart = { x: 0, y: 0 };
   let snapTimer: number | undefined;
+  let focusErrors: Record<string, string> = {};
 
   $: isBall = label === 'ball';
   $: visibleSessions = snapshot.sessions.filter((session) => {
@@ -307,12 +307,26 @@
     }
   }
 
-  async function openDeepLink(session: SessionSnapshot) {
-    if (!session.deep_link) return;
+  function focusErrorKey(source: string, sessionId: string) {
+    return `${source}\0${sessionId}`;
+  }
+
+  async function jumpBack(session: SessionSnapshot) {
+    const key = focusErrorKey(session.source, session.session_id);
     try {
-      await openUrl(session.deep_link);
+      const result = await invoke<FocusResult>('focus_source', {
+        source: session.source,
+        sessionId: session.session_id,
+      });
+      if (result.focused) {
+        const next = { ...focusErrors };
+        delete next[key];
+        focusErrors = next;
+        return;
+      }
+      focusErrors = { ...focusErrors, [key]: result.reason ?? '无法跳回' };
     } catch (error) {
-      console.warn('Could not open session link', error);
+      focusErrors = { ...focusErrors, [key]: String(error) };
     }
   }
 
@@ -437,10 +451,11 @@
                     {#if session.project_path}<div class="session-path" title={session.project_path}>{shortenProjectPath(session.project_path)}</div>{/if}
                     {#if session.summary}<p>{session.summary}</p>{/if}
                     <div class="session-actions">
-                      {#if session.deep_link}<button onclick={() => openDeepLink(session)}>打开来源</button>{/if}
+                      <button onclick={() => jumpBack(session)}>回去</button>
                       {#if !session.acknowledged}<button onclick={() => acknowledge(session.source, session.session_id)}>标记已查看</button>{/if}
                       <button onclick={() => resetSession(session.source, session.session_id)}>清除</button>
                     </div>
+                    {#if focusErrors[focusErrorKey(session.source, session.session_id)]}<p class="session-focus-error">{focusErrors[focusErrorKey(session.source, session.session_id)]}</p>{/if}
                   </div>
                   {#if session.mark}<span class="unread-mark mark-{markClass(session.mark)}">{session.mark}</span>{/if}
                 </article>

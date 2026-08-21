@@ -98,6 +98,8 @@ struct EventArgs {
     #[arg(long)]
     workspace_root: Option<String>,
     #[arg(long)]
+    window_title: Option<String>,
+    #[arg(long)]
     requires_user_action: bool,
 }
 
@@ -377,6 +379,9 @@ fn event_request(args: &EventArgs, kind: EventKind) -> Result<IpcRequest, String
     }
     if let Some(workspace_root) = &args.workspace_root {
         event.workspace_root = Some(workspace_root.clone());
+    }
+    if let Some(window_title) = &args.window_title {
+        event.window_title = Some(window_title.clone());
     }
     if args.requires_user_action {
         event = event.requiring_user_action(true);

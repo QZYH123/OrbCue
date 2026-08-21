@@ -13,6 +13,7 @@ name = "agent-activity-dock"
 version = "0.2.0"
 dependencies = [
  "agent-activity-dock-connect",
+ "agent-activity-dock-core",
  "agent-activity-dock-ipc",
  "agent-activity-dock-service",
  "serde",

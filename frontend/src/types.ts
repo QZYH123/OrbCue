@@ -15,6 +15,7 @@ export interface SessionSnapshot {
   summary: string | null;
   deep_link: string | null;
   project_path: string | null;
+  window_title: string | null;
   requires_user_action: boolean;
   acknowledged: boolean;
   occurred_at: string;
@@ -37,6 +38,11 @@ export interface Snapshot {
   border_state: 'working' | 'idle';
   sessions: SessionSnapshot[];
   audit: AuditEntry[];
+}
+
+export interface FocusResult {
+  focused: boolean;
+  reason: string | null;
 }
 
 export interface Attention {
