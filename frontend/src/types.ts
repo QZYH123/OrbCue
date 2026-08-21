@@ -61,6 +61,8 @@ export interface SnapshotMessage {
 export interface DiscoveredAgent {
   name: string;
   path: string;
+  origin?: 'wsl' | 'windows';
+  connectable?: boolean;
 }
 
 export type ConnectionMethod = 'Wrapper' | 'ClaudeHook' | 'GrokHook';

@@ -10,6 +10,7 @@
   import type { AgentInventory, AuditEntry, ConnectionPreview, DiscoveredAgent, FocusResult, SessionSnapshot, Snapshot, SnapshotMessage } from './types';
   import { emptySnapshot } from './types';
   import { highlightFromNotificationExtra, sessionHighlightKey } from './highlight';
+  import { agentConnectable, showDetectingPlaceholder } from './inventory';
   import { groupSessionsByProject, shortenProjectPath } from './projectPath';
 
   let label = 'ball';
@@ -18,7 +19,8 @@
   let filter: 'all' | 'attention' | 'working' = 'all';
   let page: 'activity' | 'audit' | 'connections' | 'settings' = 'activity';
   let inventory: AgentInventory = { discovered: [], connected: [] };
-  let inventoryLoading = false;
+  let inventoryRefreshing = false;
+  let onboardingChecked = false;
   let connectionError = '';
   let pendingAgent: DiscoveredAgent | null = null;
   let connectionPreview: ConnectionPreview | null = null;
@@ -52,7 +54,12 @@
     ...inventory.discovered,
     ...inventory.connected
       .filter((record) => !inventory.discovered.some((agent) => agent.name === record.name))
-      .map((record) => ({ name: record.name, path: record.original })),
+      .map((record) => ({
+        name: record.name,
+        path: record.original,
+        origin: 'wsl' as const,
+        connectable: true,
+      })),
   ];
 
   onMount(() => {
@@ -86,10 +93,6 @@
       } catch (error) {
         console.warn('Desktop preferences are unavailable', error);
       }
-      if (label !== 'ball') {
-        await loadAgents();
-        if (!onboardingComplete && inventory.discovered.length > 0) page = 'connections';
-      }
       const stopListening = await listen<SnapshotMessage>('dock:snapshot', (event) => {
         if (!active) return;
         snapshot = event.payload.snapshot;
@@ -98,6 +101,12 @@
           window.setTimeout(() => (pulse = false), 280);
           playChime(event.payload.attention.severity);
         }
+      });
+      const stopInventory = await listen<AgentInventory>('dock:inventory', (event) => {
+        if (!active) return;
+        inventory = event.payload;
+        inventoryRefreshing = false;
+        maybeOpenOnboarding();
       });
       const stopHighlight = await listen<{ source: string; session_id: string }>('dock:highlight', (event) => {
         if (!active || label === 'ball') return;
@@ -119,14 +128,19 @@
           console.warn('Could not listen for notification clicks', error);
         }
       }
+      if (label !== 'ball') {
+        void loadAgentsCached();
+      }
       if (active) {
         unsubscribe = () => {
           stopListening();
+          stopInventory();
           stopHighlight();
           void stopAction.unregister();
         };
       } else {
         stopListening();
+        stopInventory();
         stopHighlight();
         void stopAction.unregister();
       }
@@ -224,20 +238,40 @@
     }
   }
 
-  async function selectPage(next: typeof page) {
-    page = next;
-    if (next === 'connections') await loadAgents();
+  function maybeOpenOnboarding() {
+    if (onboardingChecked || onboardingComplete || label === 'ball') return;
+    if (inventory.discovered.length > 0) {
+      page = 'connections';
+      onboardingChecked = true;
+    }
   }
 
-  async function loadAgents() {
-    inventoryLoading = true;
+  function selectPage(next: typeof page) {
+    page = next;
+    if (next === 'connections') void loadAgentsCached();
+  }
+
+  async function loadAgentsCached() {
+    inventoryRefreshing = true;
     connectionError = '';
     try {
       inventory = await invoke<AgentInventory>('agent_inventory');
+      maybeOpenOnboarding();
+    } catch (error) {
+      connectionError = String(error);
+      inventoryRefreshing = false;
+    }
+  }
+
+  async function refreshAgents() {
+    inventoryRefreshing = true;
+    connectionError = '';
+    try {
+      inventory = await invoke<AgentInventory>('refresh_agents');
     } catch (error) {
       connectionError = String(error);
     } finally {
-      inventoryLoading = false;
+      inventoryRefreshing = false;
     }
   }
 
@@ -276,7 +310,7 @@
     try {
       await invoke('connect_agent', { name: pendingAgent.name, original: pendingAgent.path });
       closeConnectDialog();
-      await loadAgents();
+      await refreshAgents();
       if (inventory.connected.length > 0) {
         onboardingComplete = true;
         localStorage.setItem('onboarding-complete', 'true');
@@ -300,7 +334,7 @@
     connectionError = '';
     try {
       await invoke('disconnect_agent', { name });
-      await loadAgents();
+      await refreshAgents();
     } catch (error) {
       connectionError = String(error);
     }
@@ -566,7 +600,11 @@
           <button class="text-button" onclick={skipOnboarding}>稍后设置</button>
         </div>
       {/if}
-      {#if inventoryLoading}
+      <div class="connections-toolbar">
+        <button class="text-button" onclick={() => void refreshAgents()} disabled={inventoryRefreshing}>刷新</button>
+        {#if inventoryRefreshing}<span class="refresh-hint" aria-live="polite">正在检测</span>{/if}
+      </div>
+      {#if showDetectingPlaceholder(inventory, inventoryRefreshing)}
         <div class="empty compact"><span>…</span><p>正在检测本机 Agent</p></div>
       {:else if connectionAgents.length === 0}
         <div class="empty compact"><span>○</span><p>PATH 中没有检测到支持的 Agent</p><small>目前支持 Claude、Grok Build、Codex 和 DSH</small></div>
@@ -577,14 +615,16 @@
             <article class="connection-card">
               <div class="agent-icon">{agent.name.slice(0, 1).toUpperCase()}</div>
               <div class="connection-content">
-                <div class="session-topline"><strong>{agent.name}</strong><span class:connected={record}>{record ? '已连接' : '可连接'}</span></div>
+                <div class="session-topline"><strong>{agent.name}</strong><span class:connected={record}>{record ? '已连接' : agentConnectable(agent) ? '可连接' : 'Windows PATH'}</span></div>
                 <div class="session-id" title={agent.path}>{agent.path}</div>
                 {#if record}<p>{record.limitation}</p>{/if}
               </div>
               {#if record}
                 <button class="secondary-button" onclick={() => disconnectAgent(agent.name)}>断开</button>
-              {:else}
+              {:else if agentConnectable(agent)}
                 <button class="primary-button" onclick={() => connectAgent(agent)}>连接</button>
+              {:else}
+                <span class="origin-tag">Windows PATH</span>
               {/if}
             </article>
           {/each}

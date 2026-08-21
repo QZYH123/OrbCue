@@ -182,10 +182,6 @@ fn run_connection_command(command: &Command, json_output: bool) -> i32 {
             let discovered = manager.discover();
             let connected = manager.records();
             if json_output {
-                let discovered = discovered
-                    .iter()
-                    .map(|agent| serde_json::json!({"name":agent.name,"path":agent.path}))
-                    .collect::<Vec<_>>();
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
@@ -203,7 +199,15 @@ fn run_connection_command(command: &Command, json_output: bool) -> i32 {
                     } else {
                         "available"
                     };
-                    println!("{} — {} ({status})", agent.name, agent.path.display());
+                    if agent.origin == agent_activity_dock_connect::AgentOrigin::Windows {
+                        println!(
+                            "{} — {} ({status}, Windows PATH)",
+                            agent.name,
+                            agent.path.display()
+                        );
+                    } else {
+                        println!("{} — {} ({status})", agent.name, agent.path.display());
+                    }
                 }
             }
             0

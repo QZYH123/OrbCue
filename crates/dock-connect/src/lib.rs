@@ -3,9 +3,17 @@
 //! This crate only discovers commands already present on PATH and writes
 //! user-level wrappers/hooks. It never replaces an Agent executable.
 
+mod discover;
+
+pub use discover::{
+    agent_origin, choose_discovered, parse_login_path_output, probe_login_path,
+    InventorySnapshotCache, ProbeOutput, LOGIN_PATH_END, LOGIN_PATH_START,
+};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -37,10 +45,26 @@ pub struct ConnectionRecord {
     pub installed_at: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentOrigin {
+    #[default]
+    Wsl,
+    Windows,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiscoveredAgent {
     pub name: String,
     pub path: PathBuf,
+    #[serde(default)]
+    pub origin: AgentOrigin,
+    #[serde(default = "default_connectable")]
+    pub connectable: bool,
+}
+
+fn default_connectable() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -137,24 +161,11 @@ impl ConnectionManager {
     }
 
     pub fn discover(&self) -> Vec<DiscoveredAgent> {
-        let mut agents: Vec<DiscoveredAgent> = ["claude", "codex", "dsh", "grok"]
-            .into_iter()
-            .filter_map(|name| {
-                find_on_path(name, Some(&self.data_dir)).map(|path| DiscoveredAgent {
-                    name: name.to_owned(),
-                    path,
-                })
-            })
-            .collect();
-        if !agents.iter().any(|agent| agent.name == "grok") {
-            if let Some(path) = grok_binary_in_home(&self.grok_home) {
-                agents.push(DiscoveredAgent {
-                    name: "grok".to_owned(),
-                    path,
-                });
-            }
-        }
-        agents
+        self.discover_from_path(&discover::discovery_path())
+    }
+
+    pub fn discover_from_path(&self, path: &OsStr) -> Vec<DiscoveredAgent> {
+        discover::discover_agents(path, Some(&self.data_dir), &self.grok_home)
     }
 
     pub fn records(&self) -> Vec<ConnectionRecord> {
@@ -621,23 +632,7 @@ impl ConnectionManager {
     }
 }
 
-fn find_on_path(name: &str, excluded_dir: Option<&Path>) -> Option<PathBuf> {
-    let path = env::var_os("PATH")?;
-    env::split_paths(&path)
-        .flat_map(|dir| {
-            candidate_names(name)
-                .into_iter()
-                .map(move |candidate| dir.join(candidate))
-        })
-        .filter(|candidate| {
-            excluded_dir
-                .map(|excluded| candidate.parent() != Some(excluded))
-                .unwrap_or(true)
-        })
-        .find(|candidate| candidate.is_file())
-}
-
-fn candidate_names(name: &str) -> Vec<String> {
+pub(crate) fn candidate_names(name: &str) -> Vec<String> {
     #[cfg(windows)]
     {
         let mut names = vec![name.to_owned()];
@@ -848,7 +843,7 @@ fn connection_method_for(name: &str) -> ConnectionMethod {
     }
 }
 
-fn grok_binary_in_home(grok_home: &Path) -> Option<PathBuf> {
+pub(crate) fn grok_binary_in_home(grok_home: &Path) -> Option<PathBuf> {
     candidate_names("grok")
         .into_iter()
         .map(|name| grok_home.join("bin").join(name))

@@ -156,6 +156,9 @@ h1 { margin: 0; font-size: 24px; letter-spacing: -.04em; }
 .section-intro { margin: 18px 2px 14px; color: #8497b1; font-size: 11px; line-height: 1.55; }
 .onboarding-banner { margin: 0 0 14px; padding: 13px 14px; border: 1px solid #3d5b7d; border-radius: 12px; color: #c5dcf4; background: rgba(32,59,91,.5); font-size: 11px; }
 .onboarding-banner p { margin: 5px 0 9px; color: #8fa8c3; line-height: 1.45; }
+.connections-toolbar { display: flex; align-items: center; gap: 10px; margin: 0 2px 12px; }
+.refresh-hint { color: #8497b1; font-size: 11px; }
+.origin-tag { color: #8ea0b6; font-size: 10px; }
 .connection-list { display: grid; gap: 9px; }
 .connection-card { display: flex; align-items: center; gap: 11px; padding: 13px 12px; border: 1px solid #333e45; border-radius: 13px; background: rgba(27,34,39,.86); }
 .agent-icon { width: 32px; height: 32px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 10px; color: #9fd1ff; background: #193653; font-size: 13px; font-weight: 800; }

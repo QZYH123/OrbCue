@@ -32,8 +32,10 @@ struct AppService(Mutex<Option<Arc<dyn PresenterSession>>>);
 static LAST_BALL_SAVE_MS: AtomicU64 = AtomicU64::new(0);
 static NOTIFICATIONS_ENABLED: AtomicBool = AtomicBool::new(true);
 static NOTIFICATION_FAIL_LOGGED: AtomicBool = AtomicBool::new(false);
+static INVENTORY_CACHE: Mutex<Option<AgentInventory>> = Mutex::new(None);
+static INVENTORY_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct AgentInventory {
     discovered: Vec<DiscoveredAgent>,
     connected: Vec<ConnectionRecord>,
@@ -178,21 +180,62 @@ fn empty_snapshot() -> SnapshotView {
     }
 }
 
-#[tauri::command]
-fn agent_inventory(app: AppHandle) -> AgentInventory {
+fn cached_inventory() -> AgentInventory {
+    INVENTORY_CACHE
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .unwrap_or_default()
+}
+
+fn publish_inventory(app: &AppHandle, inventory: AgentInventory) {
+    if let Ok(mut cache) = INVENTORY_CACHE.lock() {
+        *cache = Some(inventory.clone());
+    }
+    let _ = app.emit("dock:inventory", &inventory);
+}
+
+fn load_fresh_inventory(app: &AppHandle) -> AgentInventory {
     #[cfg(windows)]
     {
         let _ = app;
-        return wsl_session::agent_inventory();
+        wsl_session::agent_inventory()
     }
     #[cfg(not(windows))]
     {
-        let manager = connection_manager(&app);
+        let manager = connection_manager(app);
         AgentInventory {
             discovered: manager.discover(),
             connected: manager.records(),
         }
     }
+}
+
+fn spawn_inventory_refresh(app: AppHandle) {
+    if INVENTORY_REFRESH_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("dock-inventory-refresh".to_owned())
+        .spawn(move || {
+            let inventory = load_fresh_inventory(&app);
+            publish_inventory(&app, inventory);
+            INVENTORY_REFRESH_IN_FLIGHT.store(false, Ordering::SeqCst);
+        });
+}
+
+#[tauri::command]
+fn agent_inventory(app: AppHandle) -> AgentInventory {
+    let cached = cached_inventory();
+    spawn_inventory_refresh(app);
+    cached
+}
+
+#[tauri::command]
+fn refresh_agents(app: AppHandle) -> AgentInventory {
+    let inventory = load_fresh_inventory(&app);
+    publish_inventory(&app, inventory.clone());
+    inventory
 }
 
 #[tauri::command]
@@ -418,6 +461,7 @@ pub fn run() {
                         }
                     }
                 })?;
+            spawn_inventory_refresh(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -425,6 +469,7 @@ pub fn run() {
             acknowledge,
             reset,
             agent_inventory,
+            refresh_agents,
             preview_connect,
             connect_agent,
             disconnect_agent,

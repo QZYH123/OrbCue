@@ -1,6 +1,8 @@
 #![cfg(unix)]
 
-use agent_activity_dock_connect::{ConnectionManager, ConnectionMethod, PreviewAction};
+use agent_activity_dock_connect::{
+    AgentOrigin, ConnectionManager, ConnectionMethod, PreviewAction,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -432,16 +434,53 @@ fn discovery_skips_the_managed_wrapper_and_finds_the_real_agent() {
     manager.connect("codex", &original).unwrap();
 
     let managed_bin = data.join("agent-activity-dock");
-    let old_path = std::env::var_os("PATH");
     let path = std::env::join_paths([managed_bin, real_bin.clone()]).unwrap();
-    std::env::set_var("PATH", path);
-    let discovered = manager.discover();
-    match old_path {
-        Some(path) => std::env::set_var("PATH", path),
-        None => std::env::remove_var("PATH"),
-    }
+    let discovered = manager.discover_from_path(&path);
 
     assert_eq!(discovered[0].name, "codex");
     assert_eq!(discovered[0].path, original);
+    assert_eq!(discovered[0].origin, AgentOrigin::Wsl);
+    assert!(discovered[0].connectable);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn discover_from_path_finds_local_bin_and_prefers_wsl_over_windows() {
+    let root = temp_root();
+    let local_bin = root.join("home").join(".local").join("bin");
+    let windows_bin = root
+        .join("mnt")
+        .join("c")
+        .join("Users")
+        .join("u")
+        .join("AppData")
+        .join("Roaming")
+        .join("npm");
+    fs::create_dir_all(&local_bin).unwrap();
+    fs::create_dir_all(&windows_bin).unwrap();
+    let wsl_claude = local_bin.join("claude");
+    let windows_claude = windows_bin.join("claude");
+    executable(&wsl_claude, "#!/bin/sh\nexit 0\n");
+    executable(&windows_claude, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        root.join("home"),
+        root.join("config"),
+        root.join("data"),
+        root.join("dock"),
+    );
+
+    let windows_first = std::env::join_paths([&windows_bin, &local_bin]).unwrap();
+    let discovered = manager.discover_from_path(&windows_first);
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(discovered[0].path, wsl_claude);
+    assert_eq!(discovered[0].origin, AgentOrigin::Wsl);
+    assert!(discovered[0].connectable);
+
+    fs::remove_file(&wsl_claude).unwrap();
+    let windows_only = manager.discover_from_path(&windows_first);
+    assert_eq!(windows_only.len(), 1);
+    assert_eq!(windows_only[0].path, windows_claude);
+    assert_eq!(windows_only[0].origin, AgentOrigin::Windows);
+    assert!(!windows_only[0].connectable);
     fs::remove_dir_all(root).unwrap();
 }
