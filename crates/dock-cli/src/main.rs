@@ -1,5 +1,5 @@
 use agent_activity_dock_adapters::{claude_hook, codex_notification, dsh_projection, grok_hook};
-use agent_activity_dock_connect::ConnectionManager;
+use agent_activity_dock_connect::{ConnectionManager, ConnectionPreview, PreviewAction};
 use agent_activity_dock_core::{DockEvent, EventKind, Severity, EVENT_VERSION};
 use agent_activity_dock_ipc::{
     default_endpoint, default_state_path, local_connect, local_set_recv_timeout,
@@ -225,22 +225,17 @@ fn run_connection_command(command: &Command, json_output: bool) -> i32 {
                 return 1;
             };
             if *dry_run {
-                if json_output {
-                    println!(
+                match manager.preview(name, &path) {
+                    Ok(preview) if json_output => println!(
                         "{}",
-                        serde_json::json!({
-                            "name": name,
-                            "original": path,
-                            "method": connect_method_name(name),
-                            "dry_run": true,
-                        })
-                    );
-                } else {
-                    println!(
-                        "Would connect {name} from {} using a revocable user-level {}.",
-                        path.display(),
-                        connect_method_label(name)
-                    );
+                        serde_json::to_string_pretty(&preview)
+                            .expect("connection preview serializes")
+                    ),
+                    Ok(preview) => print_connect_preview(&preview),
+                    Err(error) => {
+                        eprintln!("dock connect: {error}");
+                        return 1;
+                    }
                 }
                 return 0;
             }
@@ -418,11 +413,33 @@ fn send(endpoint: &PathBuf, request: &IpcRequest) -> Result<WireResponse, String
     serde_json::from_str(&line).map_err(|error| error.to_string())
 }
 
-fn connect_method_name(name: &str) -> &'static str {
-    match name {
-        "claude" => "ClaudeHook",
-        "grok" => "GrokHook",
-        _ => "Wrapper",
+fn print_connect_preview(preview: &ConnectionPreview) {
+    println!(
+        "Would connect {} from {} using a revocable user-level {}.",
+        preview.name,
+        preview.original.display(),
+        connect_method_label(&preview.name)
+    );
+    println!("Files:");
+    for file in &preview.files {
+        let action = match file.action {
+            PreviewAction::Create => "create",
+            PreviewAction::Modify => "modify",
+        };
+        println!("  {action}  {}", file.path.display());
+        for entry in &file.entries {
+            println!("    - {entry}");
+        }
+    }
+    println!("Will not:");
+    for line in &preview.will_not {
+        println!("  - {line}");
+    }
+    if !preview.notes.is_empty() {
+        println!("Notes:");
+        for note in &preview.notes {
+            println!("  - {note}");
+        }
     }
 }
 

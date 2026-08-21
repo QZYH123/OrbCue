@@ -171,6 +171,11 @@ h1 { margin: 0; font-size: 24px; letter-spacing: -.04em; }
 .confirm-dialog p { margin: 8px 0; color: #9fb1c8; font-size: 11px; line-height: 1.45; }
 .confirm-dialog code { display: block; overflow: hidden; padding: 8px 9px; border-radius: 7px; color: #b9d8fa; background: #0b1525; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .confirm-dialog .dialog-note { color: #83a58f; }
+.preview-block { max-height: 220px; overflow: auto; margin-top: 10px; }
+.preview-file { margin: 8px 0; }
+.preview-file strong { display: block; overflow: hidden; color: #b9d8fa; font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.preview-entries, .preview-will-not { margin: 4px 0 0; padding-left: 16px; color: #9fb1c8; font-size: 10px; line-height: 1.45; }
+.preview-will-not { margin-top: 10px; color: #83a58f; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .settings-list { display: grid; gap: 8px; }
 .setting-row { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px; border: 1px solid #333e45; border-radius: 13px; color: inherit; background: rgba(27,34,39,.86); text-align: left; cursor: pointer; }

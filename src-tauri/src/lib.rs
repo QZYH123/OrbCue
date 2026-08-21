@@ -4,7 +4,7 @@ mod wsl_session;
 
 #[cfg(not(windows))]
 use agent_activity_dock_connect::ConnectionManager;
-use agent_activity_dock_connect::{ConnectionRecord, DiscoveredAgent};
+use agent_activity_dock_connect::{ConnectionPreview, ConnectionRecord, DiscoveredAgent};
 use agent_activity_dock_ipc::SnapshotView;
 use agent_activity_dock_service::SnapshotMessage;
 #[cfg(not(windows))]
@@ -188,6 +188,21 @@ fn agent_inventory(app: AppHandle) -> AgentInventory {
             connected: manager.records(),
         }
     }
+}
+
+#[tauri::command]
+fn preview_connect(
+    app: AppHandle,
+    name: String,
+    original: PathBuf,
+) -> Result<ConnectionPreview, String> {
+    #[cfg(windows)]
+    {
+        let _ = app;
+        return wsl_session::preview_connect(&name, &original.to_string_lossy());
+    }
+    #[cfg(not(windows))]
+    connection_manager(&app).preview(&name, &original)
 }
 
 #[tauri::command]
@@ -376,6 +391,7 @@ pub fn run() {
             acknowledge,
             reset,
             agent_inventory,
+            preview_connect,
             connect_agent,
             disconnect_agent,
             open_panel,

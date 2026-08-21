@@ -16,7 +16,7 @@ use std::os::unix::fs::PermissionsExt;
 const PATH_START: &str = "# >>> agent-activity-dock PATH >>>";
 const PATH_END: &str = "# <<< agent-activity-dock PATH <<<";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ConnectionMethod {
     Wrapper,
     ClaudeHook,
@@ -41,6 +41,31 @@ pub struct ConnectionRecord {
 pub struct DiscoveredAgent {
     pub name: String,
     pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewAction {
+    Create,
+    Modify,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreviewFile {
+    pub path: PathBuf,
+    pub action: PreviewAction,
+    pub entries: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConnectionPreview {
+    pub name: String,
+    pub original: PathBuf,
+    pub method: ConnectionMethod,
+    pub dry_run: bool,
+    pub files: Vec<PreviewFile>,
+    pub will_not: Vec<String>,
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -134,6 +159,34 @@ impl ConnectionManager {
 
     pub fn records(&self) -> Vec<ConnectionRecord> {
         self.load().agents.into_values().collect()
+    }
+
+    pub fn preview(&self, name: &str, original: &Path) -> Result<ConnectionPreview, String> {
+        if !valid_agent_name(name) {
+            return Err(
+                "agent name must contain only letters, numbers, '.', '_' or '-'".to_owned(),
+            );
+        }
+        if !original.is_file() {
+            return Err(format!(
+                "original executable does not exist: {}",
+                original.display()
+            ));
+        }
+        let method = connection_method_for(name);
+        Ok(ConnectionPreview {
+            name: name.to_owned(),
+            original: original.to_owned(),
+            method,
+            dry_run: true,
+            files: self.preview_files(name, method),
+            will_not: vec![
+                format!("不替换 Agent 本体（{}）", original.display()),
+                "不修改、不删除用户其他 Hook".to_owned(),
+                "不读取 transcript / prompt / 命令 / 代码".to_owned(),
+            ],
+            notes: preview_notes(method),
+        })
     }
 
     pub fn connect(&self, name: &str, original: &Path) -> Result<ConnectionRecord, String> {
@@ -240,6 +293,97 @@ impl ConnectionManager {
             self.remove_empty_data_dir();
         }
         Ok(true)
+    }
+
+    fn preview_files(&self, name: &str, method: ConnectionMethod) -> Vec<PreviewFile> {
+        match method {
+            ConnectionMethod::Wrapper => self.preview_wrapper_files(name),
+            ConnectionMethod::ClaudeHook => self.preview_claude_files(),
+            ConnectionMethod::GrokHook => self.preview_grok_files(),
+        }
+    }
+
+    fn preview_wrapper_files(&self, name: &str) -> Vec<PreviewFile> {
+        let wrapper = wrapper_path(&self.data_dir, name);
+        let mut files = vec![
+            PreviewFile {
+                path: wrapper.clone(),
+                action: preview_action(&wrapper),
+                entries: vec!["started".into(), "completed".into(), "failed".into()],
+            },
+            self.preview_connections_file(),
+        ];
+        for profile in self.profile_targets() {
+            let existing = fs::read_to_string(&profile).unwrap_or_default();
+            if existing.contains(PATH_START) {
+                continue;
+            }
+            files.push(PreviewFile {
+                path: profile.clone(),
+                action: preview_action(&profile),
+                entries: vec![PATH_START.to_owned()],
+            });
+        }
+        files
+    }
+
+    fn preview_claude_files(&self) -> Vec<PreviewFile> {
+        let hook = hook_path(&self.config_dir, "claude");
+        let settings = claude_settings_path();
+        let events = claude_hook_events();
+        let mut files = vec![
+            PreviewFile {
+                path: hook.clone(),
+                action: preview_action(&hook),
+                entries: events.clone(),
+            },
+            PreviewFile {
+                path: settings.clone(),
+                action: preview_action(&settings),
+                entries: events,
+            },
+        ];
+        if settings.is_file() {
+            let backup = settings.with_file_name("settings.json.agent-activity-dock.bak");
+            let mut entries = Vec::new();
+            if backup.is_file() {
+                entries.push("仅在备份不存在时创建".to_owned());
+            }
+            files.push(PreviewFile {
+                path: backup,
+                action: PreviewAction::Create,
+                entries,
+            });
+        }
+        files.push(self.preview_connections_file());
+        files
+    }
+
+    fn preview_grok_files(&self) -> Vec<PreviewFile> {
+        let hook = hook_path(&self.config_dir, "grok");
+        let hooks = self.grok_hooks_file();
+        let events = grok_hook_events();
+        vec![
+            PreviewFile {
+                path: hook.clone(),
+                action: preview_action(&hook),
+                entries: events.clone(),
+            },
+            PreviewFile {
+                path: hooks.clone(),
+                action: preview_action(&hooks),
+                entries: events,
+            },
+            self.preview_connections_file(),
+        ]
+    }
+
+    fn preview_connections_file(&self) -> PreviewFile {
+        PreviewFile {
+            path: self.config_path.clone(),
+            action: preview_action(&self.config_path),
+            entries: vec!["connection record".to_owned()],
+        }
     }
 
     fn install_wrapper(&self, name: &str, original: &Path) -> Result<PathBuf, String> {
@@ -540,14 +684,8 @@ fn install_claude_settings_at(
     let hooks = hooks
         .as_object_mut()
         .ok_or_else(|| "Claude hooks must be an object".to_owned())?;
-    for event in [
-        "SessionStart",
-        "PreToolUse",
-        "PermissionRequest",
-        "SessionEnd",
-        "StopFailure",
-    ] {
-        let entries = hooks.entry(event).or_insert_with(|| json!([]));
+    for event in claude_hook_events() {
+        let entries = hooks.entry(event.clone()).or_insert_with(|| json!([]));
         let entries = entries
             .as_array_mut()
             .ok_or_else(|| format!("Claude hook {event} must be an array"))?;
@@ -659,6 +797,49 @@ fn wrapper_path(data_dir: &Path, name: &str) -> PathBuf {
     }
 }
 
+fn preview_action(path: &Path) -> PreviewAction {
+    if path.is_file() {
+        PreviewAction::Modify
+    } else {
+        PreviewAction::Create
+    }
+}
+
+fn preview_notes(method: ConnectionMethod) -> Vec<String> {
+    match method {
+        ConnectionMethod::ClaudeHook => vec!["首次修改前备份 settings.json".to_owned()],
+        ConnectionMethod::Wrapper | ConnectionMethod::GrokHook => Vec::new(),
+    }
+}
+
+fn claude_hook_events() -> Vec<String> {
+    [
+        "SessionStart",
+        "PreToolUse",
+        "PermissionRequest",
+        "SessionEnd",
+        "StopFailure",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+fn grok_hook_events() -> Vec<String> {
+    [
+        "SessionStart",
+        "UserPromptSubmit",
+        "Notification",
+        "Stop",
+        "StopFailure",
+        "StopCancelled",
+        "SessionEnd",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
 fn connection_method_for(name: &str) -> ConnectionMethod {
     match name {
         "claude" => ConnectionMethod::ClaudeHook,
@@ -740,17 +921,16 @@ fn install_grok_hooks(hooks_path: &Path, hook: &Path) -> Result<(), String> {
         }
     }
     let command = hook.to_string_lossy().into_owned();
+    let mut hooks = serde_json::Map::new();
+    for event in grok_hook_events() {
+        hooks.insert(
+            event,
+            json!([{"hooks":[{"type":"command","command": command.as_str(), "timeout": 5}]}]),
+        );
+    }
     let document = json!({
         "name": "agent-activity-dock",
-        "hooks": {
-            "SessionStart": [{"hooks":[{"type":"command","command": command.as_str(), "timeout": 5}]}],
-            "UserPromptSubmit": [{"hooks":[{"type":"command","command": command.as_str(), "timeout": 5}]}],
-            "Notification": [{"hooks":[{"type":"command","command": command.as_str(), "timeout": 5}]}],
-            "Stop": [{"hooks":[{"type":"command","command": command.as_str(), "timeout": 5}]}],
-            "StopFailure": [{"hooks":[{"type":"command","command": command.as_str(), "timeout": 5}]}],
-            "StopCancelled": [{"hooks":[{"type":"command","command": command.as_str(), "timeout": 5}]}],
-            "SessionEnd": [{"hooks":[{"type":"command","command": command.as_str(), "timeout": 5}]}]
-        }
+        "hooks": hooks
     });
     let bytes = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
     atomic_write(hooks_path, &bytes, 0o600)

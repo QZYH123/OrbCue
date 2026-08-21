@@ -1,5 +1,5 @@
 use crate::PresenterSession;
-use agent_activity_dock_connect::{ConnectionRecord, DiscoveredAgent};
+use agent_activity_dock_connect::{ConnectionPreview, ConnectionRecord, DiscoveredAgent};
 use agent_activity_dock_ipc::{encode_request, IpcRequest, SnapshotView, WireResponse};
 use agent_activity_dock_service::SnapshotMessage;
 use serde::Deserialize;
@@ -75,6 +75,17 @@ pub fn agent_inventory() -> crate::AgentInventory {
             }
         }
     }
+}
+
+pub fn preview_connect(name: &str, original: &str) -> Result<ConnectionPreview, String> {
+    wsl_dock_json(&[
+        "connect",
+        name,
+        "--original",
+        original,
+        "--dry-run",
+        "--json",
+    ])
 }
 
 pub fn connect_agent(name: &str, original: &str) -> Result<ConnectionRecord, String> {

@@ -6,7 +6,7 @@
   import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
   import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-shortcut';
   import { onMount } from 'svelte';
-  import type { AgentInventory, AuditEntry, DiscoveredAgent, FocusResult, SessionSnapshot, Snapshot, SnapshotMessage } from './types';
+  import type { AgentInventory, AuditEntry, ConnectionPreview, DiscoveredAgent, FocusResult, SessionSnapshot, Snapshot, SnapshotMessage } from './types';
   import { emptySnapshot } from './types';
   import { groupSessionsByProject, shortenProjectPath } from './projectPath';
 
@@ -19,6 +19,9 @@
   let inventoryLoading = false;
   let connectionError = '';
   let pendingAgent: DiscoveredAgent | null = null;
+  let connectionPreview: ConnectionPreview | null = null;
+  let previewLoading = false;
+  let previewError = '';
   let onboardingComplete = localStorage.getItem('onboarding-complete') === 'true';
   let completionSoundEnabled = localStorage.getItem('completion-sound-enabled') !== 'false';
   let attentionSoundEnabled = localStorage.getItem('attention-sound-enabled') !== 'false';
@@ -207,14 +210,34 @@
   async function connectAgent(agent: DiscoveredAgent) {
     pendingAgent = agent;
     connectionError = '';
+    connectionPreview = null;
+    previewError = '';
+    previewLoading = true;
+    try {
+      connectionPreview = await invoke<ConnectionPreview>('preview_connect', {
+        name: agent.name,
+        original: agent.path,
+      });
+    } catch (error) {
+      previewError = String(error);
+    } finally {
+      previewLoading = false;
+    }
+  }
+
+  function closeConnectDialog() {
+    pendingAgent = null;
+    connectionPreview = null;
+    previewError = '';
+    previewLoading = false;
   }
 
   async function confirmConnect() {
-    if (!pendingAgent) return;
+    if (!pendingAgent || !connectionPreview) return;
     connectionError = '';
     try {
       await invoke('connect_agent', { name: pendingAgent.name, original: pendingAgent.path });
-      pendingAgent = null;
+      closeConnectDialog();
       await loadAgents();
       if (inventory.connected.length > 0) {
         onboardingComplete = true;
@@ -232,7 +255,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    if (event.key === 'Escape' && pendingAgent) pendingAgent = null;
+    if (event.key === 'Escape' && pendingAgent) closeConnectDialog();
   }
 
   async function disconnectAgent(name: string) {
@@ -521,15 +544,38 @@
       {/if}
       {#if connectionError}<p class="error-message">{connectionError}</p>{/if}
       {#if pendingAgent}
-        <div class="modal-backdrop" role="presentation" onclick={(event) => event.target === event.currentTarget && (pendingAgent = null)}>
+        <div class="modal-backdrop" role="presentation" onclick={(event) => event.target === event.currentTarget && closeConnectDialog()}>
           <dialog open class="confirm-dialog" aria-labelledby="connect-title">
             <h2 id="connect-title">连接 {pendingAgent.name}</h2>
             <p>Dock 将使用现有可执行文件：</p>
             <code>{pendingAgent.path}</code>
-            <p class="dialog-note">不会读取 transcript、提示词、命令或代码。连接可以随时在此页面撤销。</p>
+            {#if previewLoading}
+              <p class="dialog-note">正在生成预览</p>
+            {:else if previewError}
+              <p class="error-message">{previewError}</p>
+            {:else if connectionPreview}
+              <div class="preview-block">
+                {#each connectionPreview.files as file (file.path)}
+                  <div class="preview-file">
+                    <strong title={file.path}>{file.action} {file.path}</strong>
+                    {#if file.entries.length > 0}
+                      <ul class="preview-entries">
+                        {#each file.entries as entry (entry)}<li>{entry}</li>{/each}
+                      </ul>
+                    {/if}
+                  </div>
+                {/each}
+                <ul class="preview-will-not">
+                  {#each connectionPreview.will_not as line (line)}<li>{line}</li>{/each}
+                </ul>
+                {#each connectionPreview.notes as note (note)}
+                  <p class="dialog-note">{note}</p>
+                {/each}
+              </div>
+            {/if}
             <div class="dialog-actions">
-              <button class="secondary-button" onclick={() => (pendingAgent = null)}>取消</button>
-              <button class="primary-button" onclick={confirmConnect}>确认连接</button>
+              <button class="secondary-button" onclick={closeConnectDialog}>取消</button>
+              <button class="primary-button" onclick={confirmConnect} disabled={previewLoading || !connectionPreview}>确认连接</button>
             </div>
           </dialog>
         </div>

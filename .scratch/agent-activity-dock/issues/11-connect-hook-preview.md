@@ -4,9 +4,9 @@
 
 **Blocked by:** 05 — 一次性连接已有 Agent（已完成）
 
-**Status:** ready
+**Status:** complete
 
-- [ ] `dock connect <name> --dry-run` 列出将写入的文件路径与条目（wrapper 路径、Hook 文件、事件名），预览零副作用。
-- [ ] 桌面确认框与 dry-run 同一数据源、同一内容；写明不替换 Agent 本体、不动用户其他 Hook；Claude 需说明首次修改前备份 `settings.json`。
-- [ ] 实际连接写入的文件集合与预览完全一致；`dock disconnect` 只清理预览中属于 Dock 的条目。
-- [ ] 行为测试：dry-run 无副作用；确认后的产物路径与预览匹配；非法或非 Dock 文件仍拒绝覆盖。
+- [x] `dock connect <name> --dry-run` 列出将写入的文件路径与条目（wrapper 路径、Hook 文件、事件名），预览零副作用。
+- [x] 桌面确认框与 dry-run 同一数据源、同一内容；写明不替换 Agent 本体、不动用户其他 Hook；Claude 需说明首次修改前备份 `settings.json`。
+- [x] 实际连接写入的文件集合与预览完全一致；`dock disconnect` 只清理预览中属于 Dock 的条目。
+- [x] 行为测试：dry-run 无副作用；确认后的产物路径与预览匹配；非法或非 Dock 文件仍拒绝覆盖。

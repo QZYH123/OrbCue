@@ -63,16 +63,34 @@ export interface DiscoveredAgent {
   path: string;
 }
 
+export type ConnectionMethod = 'Wrapper' | 'ClaudeHook' | 'GrokHook';
+
 export interface ConnectionRecord {
   name: string;
   original: string;
-  method: 'Wrapper' | 'ClaudeHook';
+  method: ConnectionMethod;
   wrapper: string | null;
   hook_script: string | null;
   settings_backup: string | null;
   capabilities: string[];
   limitation: string;
   installed_at: string;
+}
+
+export interface PreviewFile {
+  path: string;
+  action: 'create' | 'modify';
+  entries: string[];
+}
+
+export interface ConnectionPreview {
+  name: string;
+  original: string;
+  method: ConnectionMethod;
+  dry_run: boolean;
+  files: PreviewFile[];
+  will_not: string[];
+  notes: string[];
 }
 
 export interface AgentInventory {

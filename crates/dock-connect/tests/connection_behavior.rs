@@ -1,8 +1,10 @@
 #![cfg(unix)]
 
-use agent_activity_dock_connect::{ConnectionManager, ConnectionMethod};
+use agent_activity_dock_connect::{ConnectionManager, ConnectionMethod, PreviewAction};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -211,6 +213,202 @@ fn connection_names_cannot_escape_the_managed_data_directory() {
     let error = manager.connect("../../outside", &original).unwrap_err();
     assert!(error.contains("agent name"));
     assert!(!root.join("outside").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn file_contents(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    let mut files = BTreeMap::new();
+    fn walk(dir: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, files);
+            } else {
+                files.insert(path.clone(), fs::read(&path).unwrap());
+            }
+        }
+    }
+    walk(root, &mut files);
+    files
+}
+
+fn all_paths(root: &Path) -> BTreeSet<PathBuf> {
+    let mut paths = BTreeSet::new();
+    fn walk(dir: &Path, paths: &mut BTreeSet<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            paths.insert(path.clone());
+            if path.is_dir() {
+                walk(&path, paths);
+            }
+        }
+    }
+    walk(root, &mut paths);
+    paths
+}
+
+fn with_shell(shell: &str, body: impl FnOnce()) {
+    let previous = std::env::var_os("SHELL");
+    std::env::set_var("SHELL", shell);
+    body();
+    match previous {
+        Some(value) => std::env::set_var("SHELL", value),
+        None => std::env::remove_var("SHELL"),
+    }
+}
+
+#[test]
+fn preview_is_side_effect_free() {
+    let root = temp_root();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join(".bashrc"), "export EXISTING=1\n").unwrap();
+    let original = root.join("codex-real");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        home,
+        root.join("config"),
+        root.join("data"),
+        root.join("dock"),
+    );
+    let before_paths = all_paths(&root);
+    let before_files = file_contents(&root);
+    with_shell("/bin/bash", || {
+        let preview = manager.preview("codex", &original).unwrap();
+        assert!(preview.dry_run);
+        assert_eq!(preview.method, ConnectionMethod::Wrapper);
+        assert!(preview
+            .will_not
+            .iter()
+            .any(|line| line.contains("不替换 Agent 本体")));
+        assert!(preview
+            .will_not
+            .iter()
+            .any(|line| line.contains("不修改、不删除用户其他 Hook")));
+        assert!(preview
+            .will_not
+            .iter()
+            .any(|line| line.contains("transcript")));
+    });
+    assert_eq!(all_paths(&root), before_paths);
+    assert_eq!(file_contents(&root), before_files);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn connect_writes_exactly_the_previewed_paths() {
+    let root = temp_root();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join(".bashrc"), "export EXISTING=1\n").unwrap();
+    let original = root.join("codex-real");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        home,
+        root.join("config"),
+        root.join("data"),
+        root.join("dock"),
+    );
+    with_shell("/bin/bash", || {
+        let before = file_contents(&root);
+        let preview = manager.preview("codex", &original).unwrap();
+        manager.connect("codex", &original).unwrap();
+        let after = file_contents(&root);
+        let changed: BTreeSet<_> = after
+            .iter()
+            .filter(|(path, bytes)| before.get(*path) != Some(*bytes))
+            .map(|(path, _)| path.clone())
+            .collect();
+        let previewed: BTreeSet<_> = preview.files.iter().map(|file| file.path.clone()).collect();
+        assert_eq!(changed, previewed);
+        assert!(preview
+            .files
+            .iter()
+            .any(|file| file.entries.iter().any(|entry| entry == "started")));
+        assert!(preview.files.iter().any(|file| {
+            file.path.file_name().and_then(|name| name.to_str()) == Some(".bashrc")
+                && file.action == PreviewAction::Modify
+        }));
+    });
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn refusing_non_dock_overwrite_still_works() {
+    let root = temp_root();
+    let home = root.join("home");
+    let data = root.join("data");
+    fs::create_dir_all(&home).unwrap();
+    let wrapper = data.join("agent-activity-dock").join("codex");
+    fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+    fs::write(&wrapper, "user-owned wrapper\n").unwrap();
+    let original = root.join("codex-real");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(home, root.join("config"), data, root.join("dock"));
+    with_shell("/bin/bash", || {
+        let preview = manager.preview("codex", &original).unwrap();
+        assert!(preview.files.iter().any(|file| file.path == wrapper));
+        let error = manager.connect("codex", &original).unwrap_err();
+        assert!(error.contains("refusing to overwrite non-Dock file"));
+        assert_eq!(
+            fs::read_to_string(&wrapper).unwrap(),
+            "user-owned wrapper\n"
+        );
+    });
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn claude_preview_notes_backup_and_disconnect_keeps_other_hooks() {
+    let root = temp_root();
+    let home = root.join("home");
+    let claude_dir = root.join("claude-config");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&claude_dir).unwrap();
+    let settings = claude_dir.join("settings.json");
+    fs::write(
+        &settings,
+        br#"{"hooks":{"UserEvent":[{"hooks":[{"type":"command","command":"user-hook"}]}]}}"#,
+    )
+    .unwrap();
+    let original = root.join("claude-real");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        home,
+        root.join("config"),
+        root.join("data"),
+        root.join("dock"),
+    );
+    let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
+    std::env::set_var("CLAUDE_CONFIG_DIR", &claude_dir);
+    let preview = manager.preview("claude", &original).unwrap();
+    assert_eq!(preview.method, ConnectionMethod::ClaudeHook);
+    assert!(preview
+        .notes
+        .iter()
+        .any(|note| note.contains("settings.json") && note.contains("备份")));
+    assert!(preview.files.iter().any(|file| {
+        file.path == settings && file.entries.iter().any(|entry| entry == "SessionStart")
+    }));
+    manager.connect("claude", &original).unwrap();
+    let connected = fs::read_to_string(&settings).unwrap();
+    assert!(connected.contains("SessionStart"));
+    assert!(connected.contains("PreToolUse"));
+    assert!(connected.contains("user-hook"));
+    assert!(manager.disconnect("claude").unwrap());
+    let remaining = fs::read_to_string(&settings).unwrap();
+    assert!(remaining.contains("user-hook"));
+    assert!(!remaining.contains("claude-hook"));
+    match previous {
+        Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
+        None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+    }
     fs::remove_dir_all(root).unwrap();
 }
 
