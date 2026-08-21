@@ -1,6 +1,0 @@
-{
-  "event": "session.waiting_input",
-  "session_id": "dsh-session-1",
-  "source": "dsh",
-  "profile": "tui"
-}

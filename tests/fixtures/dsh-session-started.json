@@ -1,6 +1,0 @@
-{
-  "event": "session.started",
-  "session_id": "dsh-session-1",
-  "source": "dsh",
-  "profile": "headless"
-}

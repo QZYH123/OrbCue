@@ -1,6 +1,0 @@
-{
-  "hook_event_name": "PermissionRequest",
-  "session_id": "claude-session-123",
-  "tool_name": "Bash",
-  "cwd": "/home/user/project"
-}

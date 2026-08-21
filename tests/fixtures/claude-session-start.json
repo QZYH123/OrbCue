@@ -1,7 +1,0 @@
-{
-  "hook_event_name": "SessionStart",
-  "session_id": "claude-session-123",
-  "transcript_path": "/home/user/.claude/projects/.../transcript.jsonl",
-  "cwd": "/home/user/project",
-  "source": "startup"
-}
