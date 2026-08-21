@@ -138,6 +138,16 @@ fn make_event(source: &str, session_id: &str, kind: EventKind, payload: &Value) 
         .map(str::to_owned)
         .or_else(|| OffsetDateTime::now_utc().format(&Rfc3339).ok())
         .unwrap_or(event.occurred_at);
+    if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
+        event.cwd = Some(cwd.to_owned());
+    }
+    if let Some(workspace_root) = payload
+        .get("workspaceRoot")
+        .or_else(|| payload.get("workspace_root"))
+        .and_then(Value::as_str)
+    {
+        event.workspace_root = Some(workspace_root.to_owned());
+    }
     event
 }
 

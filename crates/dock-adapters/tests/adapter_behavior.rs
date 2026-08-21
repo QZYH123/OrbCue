@@ -79,6 +79,29 @@ fn grok_adapter_keeps_one_record_per_session() {
 }
 
 #[test]
+fn grok_adapter_copies_explicit_workspace_fields() {
+    let event = grok_hook(&serde_json::json!({
+        "hookEventName": "session_start",
+        "sessionId": "grok-session",
+        "cwd": "/tmp/cwd",
+        "workspaceRoot": "/tmp/workspace",
+        "transcript_path": "/private/should-not-be-opened"
+    }))
+    .unwrap();
+    assert_eq!(event.cwd.as_deref(), Some("/tmp/cwd"));
+    assert_eq!(event.workspace_root.as_deref(), Some("/tmp/workspace"));
+    assert_eq!(event.summary, None);
+
+    let snake = grok_hook(&serde_json::json!({
+        "hookEventName": "session_start",
+        "sessionId": "grok-session",
+        "workspace_root": "/tmp/snake"
+    }))
+    .unwrap();
+    assert_eq!(snake.workspace_root.as_deref(), Some("/tmp/snake"));
+}
+
+#[test]
 fn grok_session_can_work_again_after_a_turn_ends() {
     let mut state = DockState::new();
     let first = grok_hook(&serde_json::json!({

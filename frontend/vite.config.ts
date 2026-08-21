@@ -8,5 +8,9 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
   },
+  test: {
+    include: ['src/**/*.test.ts'],
+    environment: 'node',
+  },
 });
 

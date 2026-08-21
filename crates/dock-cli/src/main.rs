@@ -94,6 +94,10 @@ struct EventArgs {
     #[arg(long)]
     deep_link: Option<String>,
     #[arg(long)]
+    cwd: Option<String>,
+    #[arg(long)]
+    workspace_root: Option<String>,
+    #[arg(long)]
     requires_user_action: bool,
 }
 
@@ -367,6 +371,12 @@ fn event_request(args: &EventArgs, kind: EventKind) -> Result<IpcRequest, String
     }
     if let Some(deep_link) = &args.deep_link {
         event.deep_link = Some(deep_link.clone());
+    }
+    if let Some(cwd) = &args.cwd {
+        event.cwd = Some(cwd.clone());
+    }
+    if let Some(workspace_root) = &args.workspace_root {
+        event.workspace_root = Some(workspace_root.clone());
     }
     if args.requires_user_action {
         event = event.requiring_user_action(true);

@@ -120,12 +120,18 @@ fn waiting_for_permission_is_distinct_and_acknowledgeable() {
 #[test]
 fn restart_state_excludes_ephemeral_content_and_does_not_replay_attention() {
     let mut state = DockState::new();
-    state.apply(event("e1", EventKind::Started, "s1"));
+    let mut started = event("e1", EventKind::Started, "s1");
+    started.workspace_root = Some("/secret/project".to_owned());
+    started.cwd = Some("/secret/project".to_owned());
+    state.apply(started);
     state.apply(event("e2", EventKind::Failed, "s1").with_summary("private failure details"));
 
     let json = serde_json::to_string(&state.persisted()).unwrap();
     assert!(!json.contains("private failure details"));
     assert!(!json.contains("summary"));
+    assert!(!json.contains("transcript"));
+    assert!(!json.contains("project_path"));
+    assert!(!json.contains("/secret/project"));
 
     let restored = DockState::from_persisted(serde_json::from_str(&json).unwrap());
     assert_eq!(restored.snapshot().pending_count, 1);
@@ -133,6 +139,7 @@ fn restart_state_excludes_ephemeral_content_and_does_not_replay_attention() {
     assert_eq!(restored.snapshot().sessions[0].state, SessionState::Failed);
     assert_eq!(restored.snapshot().sessions[0].mark, "!");
     assert!(restored.snapshot().sessions[0].summary.is_none());
+    assert!(restored.snapshot().sessions[0].project_path.is_none());
 }
 
 #[test]
@@ -169,6 +176,125 @@ fn malformed_timestamp_and_oversized_metadata_are_rejected() {
         state.apply(malformed).rejection_reason.as_deref(),
         Some("invalid_timestamp")
     );
+    assert_eq!(
+        state.apply(oversized).rejection_reason.as_deref(),
+        Some("payload_too_large")
+    );
+    assert_eq!(state.snapshot().tracked_count, 0);
+}
+
+#[test]
+fn project_path_comes_from_workspace_root() {
+    let mut state = DockState::new();
+    let mut started = event("e1", EventKind::Started, "s1");
+    started.workspace_root = Some("/tmp/workspace".to_owned());
+    started.cwd = Some("/tmp/cwd-should-lose".to_owned());
+    let result = state.apply(started);
+    assert!(result.accepted);
+    assert_eq!(
+        result.snapshot.sessions[0].project_path.as_deref(),
+        Some("/tmp/workspace")
+    );
+}
+
+#[test]
+fn project_path_falls_back_to_cwd_when_workspace_root_is_absent() {
+    let mut state = DockState::new();
+    let mut started = event("e1", EventKind::Started, "s1");
+    started.cwd = Some("/tmp/cwd-only".to_owned());
+    let result = state.apply(started);
+    assert!(result.accepted);
+    assert_eq!(
+        result.snapshot.sessions[0].project_path.as_deref(),
+        Some("/tmp/cwd-only")
+    );
+}
+
+#[test]
+fn project_path_falls_back_to_metadata_workspace_root() {
+    let mut state = DockState::new();
+    let mut started = event("e1", EventKind::Started, "s1");
+    started
+        .metadata
+        .insert("workspaceRoot".to_owned(), "/tmp/from-meta".to_owned());
+    let result = state.apply(started);
+    assert!(result.accepted);
+    assert_eq!(
+        result.snapshot.sessions[0].project_path.as_deref(),
+        Some("/tmp/from-meta")
+    );
+}
+
+#[test]
+fn sessions_without_a_path_keep_project_path_none_and_still_apply() {
+    let mut state = DockState::new();
+    let result = state.apply(event("e1", EventKind::Started, "s1"));
+    assert!(result.accepted);
+    assert_eq!(result.snapshot.sessions[0].project_path, None);
+}
+
+#[test]
+fn different_project_paths_do_not_change_working_or_tracked_counts() {
+    let mut state = DockState::new();
+    let mut first = event("e1", EventKind::Started, "s1");
+    first.workspace_root = Some("/proj/alpha".to_owned());
+    let mut second = event("e2", EventKind::Started, "s2");
+    second.cwd = Some("/proj/beta".to_owned());
+    state.apply(first);
+    let result = state.apply(second);
+    assert_eq!(result.snapshot.working_count, 2);
+    assert_eq!(result.snapshot.tracked_count, 2);
+    assert_eq!(result.snapshot.pending_count, 0);
+    assert_eq!(result.snapshot.count_label(), "2/2");
+    assert_eq!(result.snapshot.pending_mark, "");
+
+    let completed = state.apply(event("e3", EventKind::Completed, "s1"));
+    assert_eq!(completed.snapshot.working_count, 1);
+    assert_eq!(completed.snapshot.tracked_count, 2);
+    assert_eq!(completed.snapshot.pending_count, 1);
+}
+
+#[test]
+fn later_events_keep_project_path_unless_a_new_value_arrives() {
+    let mut state = DockState::new();
+    let mut started = event("e1", EventKind::Started, "s1");
+    started.cwd = Some("/tmp/first".to_owned());
+    state.apply(started);
+
+    let kept = state.apply(event("e2", EventKind::Working, "s1"));
+    assert_eq!(
+        kept.snapshot.sessions[0].project_path.as_deref(),
+        Some("/tmp/first")
+    );
+
+    let mut moved = event("e3", EventKind::Idle, "s1");
+    moved.workspace_root = Some("/tmp/second".to_owned());
+    let moved = state.apply(moved);
+    assert_eq!(
+        moved.snapshot.sessions[0].project_path.as_deref(),
+        Some("/tmp/second")
+    );
+}
+
+#[test]
+fn empty_path_fields_are_treated_as_missing() {
+    let mut state = DockState::new();
+    let mut started = event("e1", EventKind::Started, "s1");
+    started.workspace_root = Some(String::new());
+    started.cwd = Some("/tmp/real".to_owned());
+    let result = state.apply(started);
+    assert!(result.accepted);
+    assert_eq!(
+        result.snapshot.sessions[0].project_path.as_deref(),
+        Some("/tmp/real")
+    );
+}
+
+#[test]
+fn oversized_cwd_is_rejected_as_payload_too_large() {
+    let mut oversized = event("e1", EventKind::Started, "s1");
+    oversized.cwd = Some("x".repeat(257));
+    let mut state = DockState::new();
     assert_eq!(
         state.apply(oversized).rejection_reason.as_deref(),
         Some("payload_too_large")

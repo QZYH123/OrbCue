@@ -26,6 +26,8 @@
   "severity": "info",
   "summary": "optional short in-memory label",
   "deep_link": "https://example.invalid/session/123",
+  "cwd": "/home/user/project",
+  "workspace_root": "/home/user/project",
   "requires_user_action": false,
   "metadata": {"workspace": "optional-bounded-value"}
 }
@@ -33,7 +35,9 @@
 
 必填字段是 `version`、`type`、`event_id`、`source`、`session_id` 和 RFC3339 `occurred_at`。`severity` 默认为 `info`，其余字段可省略。未知 JSON 字段会被忽略；Dock 不把原始 payload 写入状态文件。
 
-大小限制：`event_id` 128 字节、`source` 64 字节、`session_id` 256 字节、`summary` 512 字节、`deep_link` 2048 字节、metadata 最多 32 项且 key/value 各 256 字节。
+可选 `cwd` / `workspace_root`，以及 metadata 同义键 `workspaceRoot`、`workspace_root`、`cwd`；空字符串视为缺失。路径只使用这些明确字段，不会读取磁盘或进程工作目录。
+
+大小限制：`event_id` 128 字节、`source` 64 字节、`session_id` 256 字节、`summary` 512 字节、`deep_link` 2048 字节、`cwd` / `workspace_root` 各 256 字节、metadata 最多 32 项且 key/value 各 256 字节。
 
 事件时间超过当前时间 24 小时，或超前超过 5 分钟，会返回 `stale_event`。这避免服务离线恢复后突然播放很久以前的提醒。`DockEvent::new` 也会生成当前 RFC3339 时间；外部集成不应发送伪造的 epoch 时间。
 

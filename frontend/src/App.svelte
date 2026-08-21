@@ -9,6 +9,7 @@
   import { onMount } from 'svelte';
   import type { AgentInventory, AuditEntry, DiscoveredAgent, SessionSnapshot, Snapshot, SnapshotMessage } from './types';
   import { emptySnapshot } from './types';
+  import { groupSessionsByProject, shortenProjectPath } from './projectPath';
 
   let label = 'ball';
   let snapshot: Snapshot = emptySnapshot;
@@ -39,6 +40,7 @@
     if (filter === 'working') return session.state === 'working';
     return true;
   });
+  $: sessionGroups = groupSessionsByProject(visibleSessions);
   $: connectionAgents = [
     ...inventory.discovered,
     ...inventory.connected
@@ -423,21 +425,27 @@
         {#if visibleSessions.length === 0}
           <div class="empty"><span>✓</span><p>{filter === 'all' ? '还没有追踪中的任务' : '没有符合条件的任务'}</p><small>Agent 发出事件后会显示在这里</small></div>
         {:else}
-          {#each visibleSessions as session (session.source + ':' + session.session_id)}
-            <article class:unread={session.mark === '?' || session.mark === '!'} class="session-card">
-              <div class="state-mark {session.state}" aria-hidden="true"></div>
-              <div class="session-content">
-                <div class="session-topline"><strong>{session.source}</strong><span>{stateLabel(session)}</span></div>
-                <div class="session-id" title={session.session_id}>{session.session_id}</div>
-                {#if session.summary}<p>{session.summary}</p>{/if}
-                <div class="session-actions">
-                  {#if session.deep_link}<button onclick={() => openDeepLink(session)}>打开来源</button>{/if}
-                  {#if !session.acknowledged}<button onclick={() => acknowledge(session.source, session.session_id)}>标记已查看</button>{/if}
-                  <button onclick={() => resetSession(session.source, session.session_id)}>清除</button>
-                </div>
-              </div>
-              {#if session.mark}<span class="unread-mark mark-{markClass(session.mark)}">{session.mark}</span>{/if}
-            </article>
+          {#each sessionGroups as group (group.key)}
+            <section class="project-group">
+              <h2 class="project-heading">{group.label}</h2>
+              {#each group.sessions as session (session.source + ':' + session.session_id)}
+                <article class:unread={session.mark === '?' || session.mark === '!'} class="session-card">
+                  <div class="state-mark {session.state}" aria-hidden="true"></div>
+                  <div class="session-content">
+                    <div class="session-topline"><strong>{session.source}</strong><span>{stateLabel(session)}</span></div>
+                    <div class="session-id" title={session.session_id}>{session.session_id}</div>
+                    {#if session.project_path}<div class="session-path" title={session.project_path}>{shortenProjectPath(session.project_path)}</div>{/if}
+                    {#if session.summary}<p>{session.summary}</p>{/if}
+                    <div class="session-actions">
+                      {#if session.deep_link}<button onclick={() => openDeepLink(session)}>打开来源</button>{/if}
+                      {#if !session.acknowledged}<button onclick={() => acknowledge(session.source, session.session_id)}>标记已查看</button>{/if}
+                      <button onclick={() => resetSession(session.source, session.session_id)}>清除</button>
+                    </div>
+                  </div>
+                  {#if session.mark}<span class="unread-mark mark-{markClass(session.mark)}">{session.mark}</span>{/if}
+                </article>
+              {/each}
+            </section>
           {/each}
         {/if}
       </div>
