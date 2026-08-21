@@ -13,6 +13,7 @@
     "core:window:allow-set-skip-taskbar",
     "core:window:allow-set-always-on-top",
     "opener:default",
+    "notification:default",
     "autostart:allow-enable",
     "autostart:allow-disable",
     "autostart:allow-is-enabled",

@@ -1,19 +1,22 @@
 mod focus;
+mod toast;
 #[cfg(windows)]
 mod wsl_session;
 
 #[cfg(not(windows))]
 use agent_activity_dock_connect::ConnectionManager;
 use agent_activity_dock_connect::{ConnectionPreview, ConnectionRecord, DiscoveredAgent};
+use agent_activity_dock_core::{dispatch_attention_toast, highlight_target, ToastDispatch};
 use agent_activity_dock_ipc::SnapshotView;
 use agent_activity_dock_service::SnapshotMessage;
 #[cfg(not(windows))]
 use agent_activity_dock_service::{attach_or_listen, DockSession};
 use focus::FocusResult;
+use toast::PresenterToastSink;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 #[cfg(windows)]
@@ -27,6 +30,8 @@ use tauri_plugin_opener::OpenerExt;
 
 struct AppService(Mutex<Option<Arc<dyn PresenterSession>>>);
 static LAST_BALL_SAVE_MS: AtomicU64 = AtomicU64::new(0);
+static NOTIFICATIONS_ENABLED: AtomicBool = AtomicBool::new(true);
+static NOTIFICATION_FAIL_LOGGED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct AgentInventory {
@@ -278,6 +283,19 @@ fn focus_source(
 }
 
 #[tauri::command]
+fn set_notification_enabled(enabled: bool) {
+    NOTIFICATIONS_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+#[tauri::command]
+fn highlight_session(source: String, session_id: String, app: AppHandle) {
+    show_panel(&app);
+    if let Some(target) = highlight_target(Some(&source), Some(&session_id)) {
+        let _ = app.emit("dock:highlight", &target);
+    }
+}
+
+#[tauri::command]
 fn open_panel(app: AppHandle) {
     show_panel(&app);
 }
@@ -365,6 +383,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppService(Mutex::new(Some(Arc::clone(&session)))))
         .setup(move |app| {
@@ -379,8 +398,23 @@ pub fn run() {
                 .name("dock-ui-updates".to_owned())
                 .spawn(move || {
                     for update in updates {
-                        if handle.emit("dock:snapshot", update).is_err() {
+                        let attention = update.attention.clone();
+                        if handle.emit("dock:snapshot", &update).is_err() {
                             break;
+                        }
+                        let sink = PresenterToastSink {
+                            app: handle.clone(),
+                        };
+                        if let ToastDispatch::Failed { error, .. } = dispatch_attention_toast(
+                            &sink,
+                            attention.as_ref(),
+                            NOTIFICATIONS_ENABLED.load(Ordering::Relaxed),
+                        ) {
+                            if !NOTIFICATION_FAIL_LOGGED.swap(true, Ordering::Relaxed) {
+                                eprintln!(
+                                    "Agent Activity Dock: cannot show system notification: {error}"
+                                );
+                            }
                         }
                     }
                 })?;
@@ -395,7 +429,9 @@ pub fn run() {
             connect_agent,
             disconnect_agent,
             open_panel,
-            focus_source
+            focus_source,
+            set_notification_enabled,
+            highlight_session
         ])
         .build(tauri::generate_context!())
         .expect("error while building Agent Activity Dock")

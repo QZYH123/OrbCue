@@ -1,7 +1,7 @@
 # 小球注意力体验：跳回、通知、项目分组、连接预览
 
-**Status:** ready-for-agent
-**Labels:** ready-for-agent
+**Status:** complete
+**Labels:** completed
 
 ## Problem Statement
 

@@ -5,9 +5,11 @@
   import { invoke } from '@tauri-apps/api/core';
   import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
   import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-shortcut';
+  import { onAction } from '@tauri-apps/plugin-notification';
   import { onMount } from 'svelte';
   import type { AgentInventory, AuditEntry, ConnectionPreview, DiscoveredAgent, FocusResult, SessionSnapshot, Snapshot, SnapshotMessage } from './types';
   import { emptySnapshot } from './types';
+  import { highlightFromNotificationExtra, sessionHighlightKey } from './highlight';
   import { groupSessionsByProject, shortenProjectPath } from './projectPath';
 
   let label = 'ball';
@@ -26,6 +28,8 @@
   let completionSoundEnabled = localStorage.getItem('completion-sound-enabled') !== 'false';
   let attentionSoundEnabled = localStorage.getItem('attention-sound-enabled') !== 'false';
   let failureSoundEnabled = localStorage.getItem('failure-sound-enabled') !== 'false';
+  let notificationsEnabled = localStorage.getItem('notifications-enabled') !== 'false';
+  let highlightedKey = '';
   let autostartEnabled = false;
   let shortcutEnabled = localStorage.getItem('shortcut-enabled') !== 'false';
   const shortcut = 'CommandOrControl+Shift+Space';
@@ -66,6 +70,11 @@
         // shortcut from the persistent ball window only; the panel can still
         // toggle it explicitly from Settings.
         if (label === 'ball') {
+          try {
+            await invoke('set_notification_enabled', { enabled: notificationsEnabled });
+          } catch (error) {
+            console.warn('Could not sync notification preference', error);
+          }
           if (shortcutEnabled && !(await isRegistered(shortcut))) {
             await register(shortcut, onShortcut);
           } else if (!shortcutEnabled && (await isRegistered(shortcut))) {
@@ -90,8 +99,37 @@
           playChime(event.payload.attention.severity);
         }
       });
-      if (active) unsubscribe = stopListening;
-      else stopListening();
+      const stopHighlight = await listen<{ source: string; session_id: string }>('dock:highlight', (event) => {
+        if (!active || label === 'ball') return;
+        page = 'activity';
+        highlightedKey = sessionHighlightKey(event.payload.source, event.payload.session_id);
+      });
+      let stopAction: { unregister: () => Promise<void> } = { unregister: async () => {} };
+      if (label === 'ball') {
+        try {
+          stopAction = await onAction((notification) => {
+            const target = highlightFromNotificationExtra(notification.extra);
+            if (target) {
+              void invoke('highlight_session', { source: target.source, sessionId: target.session_id });
+              return;
+            }
+            void invoke('open_panel');
+          });
+        } catch (error) {
+          console.warn('Could not listen for notification clicks', error);
+        }
+      }
+      if (active) {
+        unsubscribe = () => {
+          stopListening();
+          stopHighlight();
+          void stopAction.unregister();
+        };
+      } else {
+        stopListening();
+        stopHighlight();
+        void stopAction.unregister();
+      }
       if (label === 'ball') {
         const stopMoved = await getCurrentWindow().onMoved(() => {
           if (!dragArmed) return;
@@ -293,6 +331,16 @@
     }
   }
 
+  async function toggleNotifications() {
+    notificationsEnabled = !notificationsEnabled;
+    localStorage.setItem('notifications-enabled', String(notificationsEnabled));
+    try {
+      await invoke('set_notification_enabled', { enabled: notificationsEnabled });
+    } catch (error) {
+      console.warn('Could not update notification preference', error);
+    }
+  }
+
   function toggleSound(channel: 'completion' | 'attention' | 'failure') {
     if (channel === 'completion') {
       completionSoundEnabled = !completionSoundEnabled;
@@ -466,7 +514,7 @@
             <section class="project-group">
               <h2 class="project-heading">{group.label}</h2>
               {#each group.sessions as session (session.source + ':' + session.session_id)}
-                <article class:unread={session.mark === '?' || session.mark === '!'} class="session-card">
+                <article class:unread={session.mark === '?' || session.mark === '!'} class:highlighted={highlightedKey === sessionHighlightKey(session.source, session.session_id)} class="session-card">
                   <div class="state-mark {session.state}" aria-hidden="true"></div>
                   <div class="session-content">
                     <div class="session-topline"><strong>{session.source}</strong><span>{stateLabel(session)}</span></div>
@@ -591,6 +639,9 @@
         </button>
         <button class="setting-row" aria-pressed={failureSoundEnabled} onclick={() => toggleSound('failure')}>
           <span><strong>失败提示音</strong><small>任务失败时播放较低音调</small></span><span class:enabled={failureSoundEnabled} class="switch"><i></i></span>
+        </button>
+        <button class="setting-row" aria-pressed={notificationsEnabled} onclick={() => void toggleNotifications()}>
+          <span><strong>系统通知</strong><small>等待输入、授权或失败时弹出一次系统通知</small></span><span class:enabled={notificationsEnabled} class="switch"><i></i></span>
         </button>
         <button class="setting-row" aria-pressed={autostartEnabled} onclick={toggleAutostart}>
           <span><strong>登录后自动启动</strong><small>让 Agent 事件随时有接收端</small></span><span class:enabled={autostartEnabled} class="switch"><i></i></span>

@@ -125,6 +125,7 @@ h1 { margin: 0; font-size: 24px; letter-spacing: -.04em; }
 .project-heading { margin: 2px 2px 0; color: #8496b0; font-size: 11px; font-weight: 650; }
 .session-card { position: relative; display: flex; gap: 11px; padding: 13px 12px; border: 1px solid #333e45; border-radius: 13px; background: rgba(27,34,39,.86); }
 .session-card.unread { border-color: #71572d; background: rgba(49,42,30,.62); }
+.session-card.highlighted { border-color: #6d8fb3; box-shadow: 0 0 0 1px #6d8fb3; }
 .state-mark { width: 9px; height: 9px; flex: 0 0 auto; margin-top: 5px; border-radius: 99px; background: #7a8da5; box-shadow: 0 0 0 4px rgba(122,141,165,.13); }
 .state-mark.idle { background: #7a8da5; box-shadow: 0 0 0 4px rgba(122,141,165,.13); }
 .state-mark.working { background: #64d88a; box-shadow: 0 0 0 4px rgba(100,216,138,.13); }

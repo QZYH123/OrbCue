@@ -24,5 +24,6 @@ serde_json.workspace = true
 tauri = { version = "2", features = ["tray-icon", "unstable"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"

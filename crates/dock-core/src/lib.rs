@@ -5,8 +5,13 @@
 //! this boundary.
 
 mod jump;
+mod notify;
 
 pub use jump::{focus_decision, select_unique_window_title, FocusDecision, FocusRequest};
+pub use notify::{
+    dispatch_attention_toast, highlight_key, highlight_target, toast_for_attention, HighlightTarget,
+    NotificationSink, ToastDispatch, ToastSpec,
+};
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet, VecDeque};
