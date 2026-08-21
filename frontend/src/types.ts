@@ -1,0 +1,85 @@
+export type SessionState =
+  | 'idle'
+  | 'working'
+  | 'needs_attention'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface SessionSnapshot {
+  source: string;
+  session_id: string;
+  state: SessionState;
+  mark: string;
+  attention_reason: string | null;
+  summary: string | null;
+  deep_link: string | null;
+  requires_user_action: boolean;
+  acknowledged: boolean;
+  occurred_at: string;
+}
+
+export interface AuditEntry {
+  source: string;
+  session_id: string;
+  state: SessionState;
+  attention_reason: string | null;
+  occurred_at: string;
+}
+
+export interface Snapshot {
+  working_count: number;
+  tracked_count: number;
+  pending_count: number;
+  pending_mark: string;
+  count_label: string;
+  border_state: 'working' | 'idle';
+  sessions: SessionSnapshot[];
+  audit: AuditEntry[];
+}
+
+export interface Attention {
+  source: string;
+  session_id: string;
+  reason: string;
+  severity: 'info' | 'attention' | 'error';
+}
+
+export interface SnapshotMessage {
+  type: 'subscribed' | 'snapshot';
+  snapshot: Snapshot;
+  attention: Attention | null;
+}
+
+export interface DiscoveredAgent {
+  name: string;
+  path: string;
+}
+
+export interface ConnectionRecord {
+  name: string;
+  original: string;
+  method: 'Wrapper' | 'ClaudeHook';
+  wrapper: string | null;
+  hook_script: string | null;
+  settings_backup: string | null;
+  capabilities: string[];
+  limitation: string;
+  installed_at: string;
+}
+
+export interface AgentInventory {
+  discovered: DiscoveredAgent[];
+  connected: ConnectionRecord[];
+}
+
+export const emptySnapshot: Snapshot = {
+  working_count: 0,
+  tracked_count: 0,
+  pending_count: 0,
+  pending_mark: '',
+  count_label: '0/0',
+  border_state: 'idle',
+  sessions: [],
+  audit: [],
+};

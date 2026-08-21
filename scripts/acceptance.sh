@@ -18,6 +18,13 @@ else
   echo "== pixel-level visual probe skipped (no display) =="
 fi
 
+if [[ -x electron/node_modules/.bin/electron ]]; then
+  echo "== Electron product presenter smoke =="
+  PYTHONPATH=src python3 scripts/electron_smoke.py
+else
+  echo "== Electron smoke skipped (run: cd electron && npm install) =="
+fi
+
 echo "== real PATH setup dry-run (read-only) =="
 PYTHONPATH=src python3 -m agent_activity_dock.cli setup --dry-run | tee docs/setup-dry-run-latest.txt
 

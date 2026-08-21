@@ -1,0 +1,13 @@
+[package]
+name = "agent-activity-dock-adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agent-activity-dock-core = { path = "../dock-core" }
+serde_json.workspace = true
+time.workspace = true
+
+[dev-dependencies]

@@ -1,4 +1,6 @@
-# 下一 Agent 会话实现计划（已废弃）
+# 下一 Agent 会话实现计划（历史文档）
+
+> Rust/Tauri 主线已经开始实施。本文只保留早期 MVP 的决策背景；当前交接顺序以 [`docs/agent-handoff.md`](./agent-handoff.md) 和 [`docs/verification.md`](./verification.md) 为准。
 
 > 本文件是早期版本，未按 `$ask-matt` 的 issue/ticket 流程编写。请以 [`docs/agent-handoff.md`](./agent-handoff.md)、父 issue 和 `.scratch/agent-activity-dock/issues/` 下的 tickets 为唯一执行依据。
 

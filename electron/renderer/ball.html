@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Agent Activity Dock</title>
+<style>
+  html, body { margin:0; width:44px; height:44px; background:transparent; overflow:hidden; }
+  #ball {
+    width:44px; height:44px; box-sizing:border-box;
+    border:3px solid #64748b; border-radius:12px;
+    background:#0f172a; color:#f8fafc;
+    display:flex; align-items:center; justify-content:center;
+    font:700 13px 'DejaVu Sans', sans-serif; user-select:none;
+    transition:border-color 80ms linear;
+  }
+  #ball.working { border-color:#22c55e; }
+  #ball.idle { border-color:#64748b; }
+  #ball.flash { border-color:#fbbf24; }
+  #badge {
+    display:none; position:absolute; top:2px; right:2px;
+    width:11px; height:11px; border-radius:50%;
+    background:#fbbf24; color:#111827; font-size:7px; font-weight:800;
+    align-items:center; justify-content:center;
+  }
+  #badge.visible { display:flex; }
+</style>
+</head>
+<body>
+  <div id="ball" class="idle">
+    <span id="count">0/0</span>
+    <div id="badge">!</div>
+  </div>
+<script>
+  const ball = document.getElementById('ball');
+  const count = document.getElementById('count');
+  const badge = document.getElementById('badge');
+  let flashTimer = null;
+  window.dock.onSnapshot((message) => {
+    const snapshot = message.snapshot || {};
+    count.textContent = snapshot.count_label || '0/0';
+    badge.classList.toggle('visible', (snapshot.pending_count || 0) > 0);
+    ball.classList.toggle('working', snapshot.border_state === 'working');
+    ball.classList.toggle('idle', snapshot.border_state === 'idle');
+    if (message.attention && message.attention.reason) {
+      playChime();
+      ball.classList.add('flash');
+      clearTimeout(flashTimer);
+      flashTimer = setTimeout(() => ball.classList.remove('flash'), 250);
+    }
+  });
+  document.body.addEventListener('click', () => window.dock.ballClicked());
+  function playChime() {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine'; osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.18, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.2);
+  }
+</script>
+</body>
+</html>

@@ -10,6 +10,8 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import os
+import re
+import subprocess
 from typing import Callable, Optional
 
 from .core import Snapshot
@@ -359,6 +361,24 @@ TASK_LIST_ROW_HEIGHT = 18
 TASK_LIST_HEADER_HEIGHT = 28
 TASK_LIST_PADDING = 8
 
+_XRANDR_MONITOR_RE = re.compile(
+    r"^\s*\d+:\s*\+?\*?\S+\s+"
+    r"(?P<w>\d+)/(?P<wmm>\d+)x(?P<h>\d+)/(?P<hmm>\d+)"
+    r"\+(?P<x>\d+)\+(?P<y>\d+)"
+)
+
+
+def parse_monitor_rect_from_xrandr_line(line: str):
+    match = _XRANDR_MONITOR_RE.search(line)
+    if not match:
+        return None
+    return (
+        int(match.group("x")),
+        int(match.group("y")),
+        int(match.group("w")),
+        int(match.group("h")),
+    )
+
 
 class X11BallPresenter:
     """Renders :class:`BallView` in a tiny always-on-top X11 window."""
@@ -385,6 +405,7 @@ class X11BallPresenter:
             )
         self.screen = _x11.XDefaultScreen(self.display)
         self.root = _x11.XDefaultRootWindow(self.display)
+        self._monitor_rect = self._detect_visible_monitor()
         self.colormap = _x11.XDefaultColormap(self.display, self.screen)
         self.gc = _x11.XCreateGC(self.display, self.root, 0, None)
         if not self.gc:
@@ -519,9 +540,9 @@ class X11BallPresenter:
         return window
 
     def _create_ball_window(self) -> Window:
-        screen_w = _x11.XDisplayWidth(self.display, self.screen)
-        x = max(0, screen_w - BALL_SIZE - 12)
-        y = 12
+        monitor = self._monitor_rect
+        x = max(0, monitor[0] + monitor[2] - BALL_SIZE - 12)
+        y = monitor[1] + 12
         return self._create_window(
             "Agent Activity Dock",
             BALL_SIZE,
@@ -534,12 +555,38 @@ class X11BallPresenter:
     def _create_list_window(self) -> Window:
         height = TASK_LIST_HEADER_HEIGHT + max(1, len(self.view.tasks)) * TASK_LIST_ROW_HEIGHT + TASK_LIST_PADDING
         height = min(height, 560)
-        screen_w = _x11.XDisplayWidth(self.display, self.screen)
-        x = max(0, screen_w - TASK_LIST_WIDTH - 16)
-        y = BALL_SIZE + 20
+        monitor = self._monitor_rect
+        x = max(0, monitor[0] + monitor[2] - TASK_LIST_WIDTH - 16)
+        y = monitor[1] + BALL_SIZE + 20
         return self._create_window(
             "Agent Activity Dock tasks", TASK_LIST_WIDTH, height, x, y, False
         )
+
+    def _detect_visible_monitor(self) -> tuple[int, int, int, int]:
+        """Return an actually-visible monitor rectangle as (x, y, w, h).
+
+        WSLg/XWayland can expose a root screen larger than the physical
+        monitor and place the output at a non-zero offset (for example
+        2560x1440+1600+512).  xrandr --listmonitors is the most reliable
+        lightweight source; fall back to the full X screen when unavailable.
+        """
+        screen_w = _x11.XDisplayWidth(self.display, self.screen)
+        screen_h = _x11.XDisplayHeight(self.display, self.screen)
+        try:
+            proc = subprocess.run(
+                ["xrandr", "--listmonitors"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2,
+            )
+            for line in proc.stdout.splitlines():
+                rect = parse_monitor_rect_from_xrandr_line(line)
+                if rect is not None:
+                    return rect
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return (0, 0, screen_w, screen_h)
 
     def _set_window_type_dock(self, window: Window) -> None:
         value = (Atom * 1)(self.atom_net_wm_window_type_dock)

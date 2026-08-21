@@ -4,10 +4,23 @@ import unittest
 from agent_activity_dock.core import DockCore
 from agent_activity_dock.events import Action, DockEvent
 from agent_activity_dock.presenter import BallView, WORKING_BORDER_COLOR, IDLE_BORDER_COLOR
+from agent_activity_dock.x11_presenter import parse_monitor_rect_from_xrandr_line
 
 
 def start(dock, task_id):
     dock.apply(DockEvent(task_id, "itest", f"start-{task_id}", Action.START))
+
+
+class VisibleMonitorParsingTests(unittest.TestCase):
+    def test_xrandr_monitor_line_uses_output_offset(self):
+        rect = parse_monitor_rect_from_xrandr_line(
+            " 0: +*XWAYLAND0 2560/597x1440/336+1600+512  XWAYLAND0"
+        )
+
+        self.assertEqual((1600, 512, 2560, 1440), rect)
+
+    def test_non_monitor_line_returns_none(self):
+        self.assertIsNone(parse_monitor_rect_from_xrandr_line("Monitors: 1"))
 
 
 class BallViewContractTests(unittest.TestCase):

@@ -57,6 +57,7 @@ ZPixmap = 2
 def env():
     value = os.environ.copy()
     value["PYTHONPATH"] = str(SRC) + os.pathsep + value.get("PYTHONPATH", "")
+    value["AADOCK_PRESENTER"] = "x11"  # keep pixel/xwininfo probes on X11 fallback
     return value
 
 

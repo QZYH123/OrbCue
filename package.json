@@ -1,0 +1,16 @@
+{
+  "name": "agent-activity-dock",
+  "version": "0.2.0",
+  "private": true,
+  "description": "A local attention layer for Agent sessions",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "check": "npm --prefix frontend run check",
+    "test": "npm --prefix frontend run test",
+    "tauri": "node scripts/run-tauri.mjs"
+  }
+}

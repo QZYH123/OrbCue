@@ -110,6 +110,37 @@ class RealDaemonTestCase(unittest.TestCase):
 
 
 class CliLifecycleTests(RealDaemonTestCase):
+    def test_subscription_pushes_snapshots_and_acknowledge_clears_pending(self):
+        import socket as socket_module
+
+        with socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM) as sub:
+            sub.connect(str(self.socket_path))
+            sub.settimeout(5)
+            sub.sendall(b'{"query":"subscribe"}\n')
+            file = sub.makefile("rb")
+            first = json.loads(file.readline())
+            self.assertEqual("subscribed", first["type"])
+            self.assertEqual("0/0", first["snapshot"]["count_label"])
+
+            start = self.parse(self.cli("start", "sub-task", "--source", "sub"))
+            self.assertTrue(start["accepted"])
+
+            pushed = json.loads(file.readline())
+            self.assertEqual("snapshot", pushed["type"])
+            self.assertEqual("1/1", pushed["snapshot"]["count_label"])
+            self.assertIsNone(pushed["attention"])
+
+            stop = self.parse(self.cli("stop", "sub-task"))
+            stopped = json.loads(file.readline())
+            self.assertEqual("stop", stopped["attention"]["reason"])
+            self.assertEqual(1, stopped["snapshot"]["pending_count"])
+
+            ack_response = json.loads(
+                self.raw_request(b'{"query":"acknowledge","task_id":"*"}\n')
+            )
+            self.assertTrue(ack_response["accepted"])
+            acked = json.loads(file.readline())
+            self.assertEqual(0, acked["snapshot"]["pending_count"])
     def test_many_concurrent_clients_aggregate_without_lost_events(self):
         task_ids = [f"concurrent-{index}" for index in range(30)]
 

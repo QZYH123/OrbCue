@@ -117,7 +117,7 @@ class BallApplication:
             self.sound.close()
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main_x11(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     socket_path = args.socket or default_socket_path()
 
@@ -145,6 +145,10 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGTERM, previous_term)
         signal.signal(signal.SIGINT, previous_int)
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    return _main_x11(argv)
 
 
 if __name__ == "__main__":

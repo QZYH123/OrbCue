@@ -1,0 +1,15 @@
+[package]
+name = "agent-activity-dock-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agent-activity-dock-core = { path = "../dock-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+interprocess.workspace = true
+
+[dev-dependencies]

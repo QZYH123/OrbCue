@@ -1,0 +1,570 @@
+#[cfg(windows)]
+mod wsl_session;
+
+#[cfg(not(windows))]
+use agent_activity_dock_connect::ConnectionManager;
+use agent_activity_dock_connect::{ConnectionRecord, DiscoveredAgent};
+use agent_activity_dock_ipc::SnapshotView;
+use agent_activity_dock_service::SnapshotMessage;
+#[cfg(not(windows))]
+use agent_activity_dock_service::{attach_or_listen, DockSession};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+#[cfg(windows)]
+use std::time::Duration;
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WebviewWindow,
+};
+
+struct AppService(Mutex<Option<Arc<dyn PresenterSession>>>);
+static LAST_BALL_SAVE_MS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct AgentInventory {
+    discovered: Vec<DiscoveredAgent>,
+    connected: Vec<ConnectionRecord>,
+}
+
+pub(crate) trait PresenterSession: Send + Sync {
+    fn snapshot(&self) -> Result<SnapshotView, String>;
+    fn acknowledge(&self, source: &str, session_id: &str) -> Result<SnapshotView, String>;
+    fn reset(&self, source: &str, session_id: &str) -> Result<SnapshotView, String>;
+    fn subscribe(&self) -> mpsc::Receiver<SnapshotMessage>;
+    fn request_shutdown(&self);
+    fn wait_for_shutdown(&self);
+}
+
+#[cfg(not(windows))]
+impl PresenterSession for DockSession {
+    fn snapshot(&self) -> Result<SnapshotView, String> {
+        DockSession::snapshot(self)
+    }
+
+    fn acknowledge(&self, source: &str, session_id: &str) -> Result<SnapshotView, String> {
+        DockSession::acknowledge(self, source, session_id)
+    }
+
+    fn reset(&self, source: &str, session_id: &str) -> Result<SnapshotView, String> {
+        DockSession::reset(self, source, session_id)
+    }
+
+    fn subscribe(&self) -> mpsc::Receiver<SnapshotMessage> {
+        DockSession::subscribe(self)
+    }
+
+    fn request_shutdown(&self) {
+        DockSession::request_shutdown(self);
+    }
+
+    fn wait_for_shutdown(&self) {
+        DockSession::wait_for_shutdown(self);
+    }
+}
+
+#[cfg(not(windows))]
+fn connection_manager(app: &AppHandle) -> ConnectionManager {
+    let dock_binary = dock_binary_path(app);
+    ConnectionManager::from_environment(dock_binary)
+}
+
+#[cfg(not(windows))]
+fn dock_binary_path(app: &AppHandle) -> PathBuf {
+    if let Some(path) = std::env::var_os("AGENT_ACTIVITY_DOCK_DOCK_BINARY")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        return path;
+    }
+
+    let mut candidates = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("binaries").join(sidecar_name()));
+        candidates.push(resource_dir.join("dock").join(sidecar_name()));
+        candidates.push(resource_dir.join("dock"));
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            candidates.push(parent.join(sidecar_name()));
+            candidates.push(parent.join("dock"));
+            candidates.push(parent.join("binaries").join(sidecar_name()));
+        }
+    }
+    candidates.push(PathBuf::from("dock"));
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| PathBuf::from("dock"))
+}
+
+#[cfg(not(windows))]
+fn sidecar_name() -> String {
+    let target = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "x86_64-unknown-linux-gnu"
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        "aarch64-unknown-linux-gnu"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "x86_64-apple-darwin"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "aarch64-apple-darwin"
+    } else {
+        "dock"
+    };
+    if target == "dock" {
+        target.to_owned()
+    } else {
+        format!("dock-{target}")
+    }
+}
+
+#[cfg(not(windows))]
+fn dockd_binary_path() -> Option<PathBuf> {
+    let file_name = if cfg!(windows) { "dockd.exe" } else { "dockd" };
+    let mut candidates = Vec::new();
+    if let Some(value) =
+        std::env::var_os("AGENT_ACTIVITY_DOCK_DOCKD").filter(|value| !value.is_empty())
+    {
+        candidates.push(PathBuf::from(value));
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            candidates.push(parent.join(file_name));
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(PathBuf::from(home).join(".local/bin").join(file_name));
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            candidates.push(dir.join(file_name));
+        }
+    }
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn current_session(state: &AppService) -> Result<Arc<dyn PresenterSession>, String> {
+    state
+        .0
+        .lock()
+        .map_err(|_| "service lock poisoned".to_owned())?
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "service stopped".to_owned())
+}
+
+fn empty_snapshot() -> SnapshotView {
+    SnapshotView {
+        working_count: 0,
+        tracked_count: 0,
+        pending_count: 0,
+        pending_mark: String::new(),
+        count_label: "0/0".to_owned(),
+        border_state: "idle".to_owned(),
+        sessions: Vec::new(),
+        audit: Vec::new(),
+    }
+}
+
+#[tauri::command]
+fn agent_inventory(app: AppHandle) -> AgentInventory {
+    #[cfg(windows)]
+    {
+        let _ = app;
+        return wsl_session::agent_inventory();
+    }
+    #[cfg(not(windows))]
+    {
+        let manager = connection_manager(&app);
+        AgentInventory {
+            discovered: manager.discover(),
+            connected: manager.records(),
+        }
+    }
+}
+
+#[tauri::command]
+fn connect_agent(
+    app: AppHandle,
+    name: String,
+    original: PathBuf,
+) -> Result<ConnectionRecord, String> {
+    #[cfg(windows)]
+    {
+        let _ = app;
+        return wsl_session::connect_agent(&name, &original.to_string_lossy());
+    }
+    #[cfg(not(windows))]
+    connection_manager(&app).connect(&name, &original)
+}
+
+#[tauri::command]
+fn disconnect_agent(app: AppHandle, name: String) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        let _ = app;
+        return wsl_session::disconnect_agent(&name);
+    }
+    #[cfg(not(windows))]
+    connection_manager(&app).disconnect(&name)
+}
+
+#[tauri::command]
+fn snapshot(state: State<'_, AppService>) -> Result<SnapshotView, String> {
+    current_session(&state)?.snapshot()
+}
+
+#[tauri::command]
+fn acknowledge(
+    source: String,
+    session_id: String,
+    state: State<'_, AppService>,
+) -> Result<SnapshotView, String> {
+    current_session(&state)?.acknowledge(&source, &session_id)
+}
+
+#[tauri::command]
+fn reset(
+    source: String,
+    session_id: String,
+    state: State<'_, AppService>,
+) -> Result<SnapshotView, String> {
+    current_session(&state)?.reset(&source, &session_id)
+}
+
+#[tauri::command]
+fn open_panel(app: AppHandle) {
+    show_panel(&app);
+}
+
+fn show_panel(app: &AppHandle) {
+    position_panel_near_ball(app);
+    if let Some(panel) = app.get_webview_window("panel") {
+        let _ = panel.show();
+        let _ = panel.set_focus();
+    }
+}
+
+fn hide_panel(app: &AppHandle) {
+    if let Some(panel) = app.get_webview_window("panel") {
+        let _ = panel.hide();
+    }
+}
+
+#[cfg(windows)]
+fn start_session() -> (
+    Arc<dyn PresenterSession>,
+    mpsc::Receiver<SnapshotMessage>,
+    SnapshotMessage,
+) {
+    let session: Arc<dyn PresenterSession> = Arc::new(wsl_session::WslSession::connect());
+    let updates = session.subscribe();
+    let initial = match updates.recv_timeout(Duration::from_secs(8)) {
+        Ok(message) => {
+            eprintln!("Agent Activity Dock attached via WSL dock bridge");
+            message
+        }
+        Err(_) => {
+            eprintln!(
+                "Agent Activity Dock: cannot reach WSL dock via wsl.exe. Install WSL and run `bash scripts/install-cli.sh`, or set AGENT_ACTIVITY_DOCK_BRIDGE_COMMAND"
+            );
+            SnapshotMessage::subscribed(empty_snapshot())
+        }
+    };
+    (session, updates, initial)
+}
+
+#[cfg(not(windows))]
+fn start_session() -> (
+    Arc<dyn PresenterSession>,
+    mpsc::Receiver<SnapshotMessage>,
+    SnapshotMessage,
+) {
+    let endpoint = agent_activity_dock_ipc::default_endpoint();
+    let session = attach_or_listen(
+        PathBuf::from(&endpoint),
+        agent_activity_dock_ipc::default_state_path(),
+        dockd_binary_path(),
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Agent Activity Dock service failed to start: {error}");
+        std::process::exit(1);
+    });
+    eprintln!(
+        "Agent Activity Dock {} on {}",
+        if session.owns_daemon() {
+            "listening"
+        } else {
+            "attached"
+        },
+        session.endpoint().display()
+    );
+    let updates = session.subscribe();
+    let initial = match session.snapshot() {
+        Ok(snapshot) => SnapshotMessage::subscribed(snapshot),
+        Err(_) => SnapshotMessage::subscribed(empty_snapshot()),
+    };
+    (
+        Arc::new(session) as Arc<dyn PresenterSession>,
+        updates,
+        initial,
+    )
+}
+
+pub fn run() {
+    let (session, updates, initial) = start_session();
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_panel(app);
+        }))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_autostart::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
+        .manage(AppService(Mutex::new(Some(Arc::clone(&session)))))
+        .setup(move |app| {
+            let app_handle = app.handle().clone();
+            configure_windows(&app_handle);
+            position_ball(&app_handle);
+            install_tray(app);
+
+            let handle = app.handle().clone();
+            handle.emit("dock:snapshot", &initial)?;
+            std::thread::Builder::new()
+                .name("dock-ui-updates".to_owned())
+                .spawn(move || {
+                    for update in updates {
+                        if handle.emit("dock:snapshot", update).is_err() {
+                            break;
+                        }
+                    }
+                })?;
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            snapshot,
+            acknowledge,
+            reset,
+            agent_inventory,
+            connect_agent,
+            disconnect_agent,
+            open_panel
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building Agent Activity Dock")
+        .run(move |app, event| match event {
+            tauri::RunEvent::Exit => {
+                if let Some(ball) = app.get_webview_window("ball") {
+                    if let Ok(position) = ball.outer_position() {
+                        save_ball_position(position);
+                    }
+                }
+                if let Some(state) = app.try_state::<AppService>() {
+                    if let Ok(mut service) = state.0.lock() {
+                        if let Some(session) = service.take() {
+                            session.request_shutdown();
+                            session.wait_for_shutdown();
+                        }
+                    }
+                }
+            }
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Moved(position),
+                ..
+            } if label == "ball" => {
+                throttle_save_ball_position(position);
+            }
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::CloseRequested { api, .. },
+                ..
+            } if label == "ball" => {
+                api.prevent_close();
+                hide_panel(app);
+            }
+            _ => {}
+        });
+}
+
+fn install_tray(app: &mut tauri::App) {
+    let show = match MenuItem::with_id(app, "show", "打开 Dock", true, None::<&str>) {
+        Ok(item) => item,
+        Err(error) => {
+            eprintln!("Agent Activity Dock tray is unavailable: {error}");
+            return;
+        }
+    };
+    let quit = match MenuItem::with_id(app, "quit", "退出", true, None::<&str>) {
+        Ok(item) => item,
+        Err(error) => {
+            eprintln!("Agent Activity Dock tray is unavailable: {error}");
+            return;
+        }
+    };
+    let menu = match Menu::with_items(app, &[&show, &quit]) {
+        Ok(menu) => menu,
+        Err(error) => {
+            eprintln!("Agent Activity Dock tray is unavailable: {error}");
+            return;
+        }
+    };
+    let mut builder = TrayIconBuilder::new()
+        .menu(&menu)
+        .tooltip("Agent Activity Dock")
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => show_panel(app),
+            "quit" => app.exit(0),
+            _ => {}
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    if let Err(error) = builder.build(app) {
+        eprintln!("Agent Activity Dock tray is unavailable: {error}");
+    }
+}
+
+fn configure_windows(app: &AppHandle) {
+    for label in ["ball", "panel"] {
+        let Some(window) = app.get_webview_window(label) else {
+            continue;
+        };
+        let _ = window.set_always_on_top(true);
+        if label == "ball" {
+            let size = tauri::LogicalSize::new(112.0, 112.0);
+            let _ = window.set_size(tauri::Size::Logical(size));
+        }
+    }
+}
+
+fn position_ball(app: &AppHandle) {
+    let Some(ball) = app.get_webview_window("ball") else {
+        return;
+    };
+    let Some(monitor) = monitor_for(&ball) else {
+        return;
+    };
+    let Ok(size) = ball.outer_size() else {
+        return;
+    };
+    let position = load_saved_ball_position()
+        .map(|saved| clamp_to_monitor(&monitor, size, saved.x, saved.y))
+        .unwrap_or_else(|| {
+            let margin = (24.0 * monitor.scale_factor()).round() as i32;
+            let origin = monitor.position();
+            let area = monitor.size();
+            clamp_to_monitor(
+                &monitor,
+                size,
+                origin.x + area.width as i32 - size.width as i32 - margin,
+                origin.y + margin,
+            )
+        });
+    let _ = ball.set_position(Position::Physical(position));
+}
+
+fn position_panel_near_ball(app: &AppHandle) {
+    let Some(ball) = app.get_webview_window("ball") else {
+        return;
+    };
+    let Some(panel) = app.get_webview_window("panel") else {
+        return;
+    };
+    let Some(monitor) = monitor_for(&ball) else {
+        return;
+    };
+    let Ok(ball_pos) = ball.outer_position() else {
+        return;
+    };
+    let Ok(ball_size) = ball.outer_size() else {
+        return;
+    };
+    let Ok(panel_size) = panel.outer_size() else {
+        return;
+    };
+    let gap = (12.0 * monitor.scale_factor()).round() as i32;
+    let origin = monitor.position();
+    let prefer_left = (ball_pos.x - origin.x) > (monitor.size().width as i32 / 2);
+    let x = if prefer_left {
+        ball_pos.x - panel_size.width as i32 - gap
+    } else {
+        ball_pos.x + ball_size.width as i32 + gap
+    };
+    let position = clamp_to_monitor(&monitor, panel_size, x, ball_pos.y);
+    let _ = panel.set_position(Position::Physical(position));
+}
+
+fn monitor_for(window: &WebviewWindow) -> Option<tauri::Monitor> {
+    window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .or_else(|| {
+            window
+                .available_monitors()
+                .ok()
+                .and_then(|monitors| monitors.into_iter().next())
+        })
+}
+
+fn clamp_to_monitor(
+    monitor: &tauri::Monitor,
+    size: tauri::PhysicalSize<u32>,
+    x: i32,
+    y: i32,
+) -> PhysicalPosition<i32> {
+    let origin = monitor.position();
+    let area = monitor.size();
+    let margin = (16.0 * monitor.scale_factor()).round() as i32;
+    let min_x = origin.x + margin;
+    let min_y = origin.y + margin;
+    let max_x = origin.x + area.width as i32 - size.width as i32 - margin;
+    let max_y = origin.y + area.height as i32 - size.height as i32 - margin;
+    PhysicalPosition::new(
+        x.clamp(min_x, max_x.max(min_x)),
+        y.clamp(min_y, max_y.max(min_y)),
+    )
+}
+
+fn ball_position_path() -> PathBuf {
+    agent_activity_dock_ipc::default_state_path().with_file_name("ball-position.json")
+}
+
+fn load_saved_ball_position() -> Option<PhysicalPosition<i32>> {
+    let bytes = fs::read(ball_position_path()).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    Some(PhysicalPosition::new(
+        value.get("x")?.as_i64()? as i32,
+        value.get("y")?.as_i64()? as i32,
+    ))
+}
+
+fn save_ball_position(position: PhysicalPosition<i32>) {
+    let path = ball_position_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(
+        path,
+        serde_json::json!({ "x": position.x, "y": position.y }).to_string(),
+    );
+}
+
+fn throttle_save_ball_position(position: PhysicalPosition<i32>) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let previous = LAST_BALL_SAVE_MS.load(Ordering::Relaxed);
+    if now.saturating_sub(previous) < 250 {
+        return;
+    }
+    LAST_BALL_SAVE_MS.store(now, Ordering::Relaxed);
+    save_ball_position(position);
+}

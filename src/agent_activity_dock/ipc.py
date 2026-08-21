@@ -75,6 +75,7 @@ class IpcServer:
         self._state_listener: Optional[
             Callable[[Snapshot, Optional[Attention]], None]
         ] = None
+        self._subscribers: list[socket.socket] = []
 
     def set_state_listener(
         self,
@@ -135,8 +136,12 @@ class IpcServer:
                 if self._running:
                     raise
                 return
-            with conn:
-                self._handle_connection(conn)
+            keep_open = self._handle_connection(conn)
+            if not keep_open:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
 
     def serve_forever(self) -> None:
         if self._socket is None:
@@ -148,6 +153,12 @@ class IpcServer:
 
     def close(self) -> None:
         self._running = False
+        for subscriber in list(self._subscribers):
+            try:
+                subscriber.close()
+            except OSError:
+                pass
+        self._subscribers.clear()
         if self._socket is not None:
             try:
                 self._socket.close()
@@ -160,22 +171,21 @@ class IpcServer:
                 pass
             self._owns_socket = False
 
-    def _handle_connection(self, conn: socket.socket) -> None:
+    def _handle_connection(self, conn: socket.socket) -> bool:
         try:
             request = self._read_request(conn)
         except RequestTooLarge:
-            response = self._rejection("message_too_large")
+            self._send_json(conn, self._rejection("message_too_large"))
+            return False
         except Exception:
             # A broken local client must never take down the daemon.
-            response = self._rejection("connection_error")
-        else:
-            response = self.dispatch(request)
-        try:
-            conn.sendall(
-                json.dumps(response, sort_keys=True).encode("utf-8") + b"\n"
-            )
-        except OSError:
-            pass
+            self._send_json(conn, self._rejection("connection_error"))
+            return False
+
+        if self._is_subscribe_request(request):
+            return self._add_subscriber(conn)
+        self._send_json(conn, self.dispatch(request))
+        return False
 
     def _read_request(self, conn: socket.socket) -> bytes:
         # Read at most max_request_bytes plus the trailing newline.  When a
@@ -232,6 +242,20 @@ class IpcServer:
                 "snapshot": snapshot_to_dict(self.core.snapshot),
             }
 
+        if isinstance(payload, dict) and payload.get("query") == "acknowledge":
+            task_id = payload.get("task_id", "*")
+            if not isinstance(task_id, str) or not task_id:
+                return self._rejection("invalid_event")
+            snapshot = self.core.acknowledge(task_id)
+            self._notify_state_change(snapshot, None)
+            return {
+                "ok": True,
+                "accepted": True,
+                "rejection_reason": None,
+                "attention": None,
+                "snapshot": snapshot_to_dict(snapshot),
+            }
+
         try:
             event = dock_event_from_dict(payload)
         except ValueError:
@@ -257,14 +281,63 @@ class IpcServer:
     def _notify_state_change(
         self, snapshot: Snapshot, attention: Optional[Attention]
     ) -> None:
-        if self._state_listener is None:
-            return
+        if self._state_listener is not None:
+            try:
+                self._state_listener(snapshot, attention)
+            except Exception:
+                # A broken presenter or sound sink must never change the state
+                # commit or the response returned to the Agent.
+                pass
+        self._broadcast_snapshot(snapshot, attention)
+
+    def _is_subscribe_request(self, request: bytes) -> bool:
         try:
-            self._state_listener(snapshot, attention)
+            payload = json.loads(request.decode("utf-8"))
         except Exception:
-            # A broken presenter or sound sink must never change the state
-            # commit or the response returned to the Agent.
-            pass
+            return False
+        return isinstance(payload, dict) and payload.get("query") == "subscribe"
+
+    def _add_subscriber(self, conn: socket.socket) -> bool:
+        conn.setblocking(False)
+        self._subscribers.append(conn)
+        message = {
+            "type": "subscribed",
+            "snapshot": snapshot_to_dict(self.core.snapshot),
+        }
+        if self._send_json(conn, message):
+            return True
+        self._subscribers.remove(conn)
+        return False
+
+    def _broadcast_snapshot(
+        self, snapshot: Snapshot, attention: Optional[Attention]
+    ) -> None:
+        message = {
+            "type": "snapshot",
+            "snapshot": snapshot_to_dict(snapshot),
+            "attention": (
+                {"task_id": attention.task_id, "reason": attention.reason}
+                if attention is not None
+                else None
+            ),
+        }
+        for subscriber in list(self._subscribers):
+            if not self._send_json(subscriber, message):
+                try:
+                    subscriber.close()
+                except OSError:
+                    pass
+                self._subscribers.remove(subscriber)
+
+    @staticmethod
+    def _send_json(conn: socket.socket, payload: dict) -> bool:
+        try:
+            conn.sendall(
+                json.dumps(payload, sort_keys=True).encode("utf-8") + b"\n"
+            )
+            return True
+        except OSError:
+            return False
 
     def _rejection(self, reason: str) -> dict:
         return {

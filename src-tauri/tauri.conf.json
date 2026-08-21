@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Agent Activity Dock",
+  "version": "0.2.0",
+  "identifier": "dev.agentactivitydock",
+  "build": {
+    "beforeDevCommand": "node ../scripts/tauri-dev.mjs",
+    "beforeBuildCommand": "node ../scripts/tauri-build.mjs",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../frontend/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "ball",
+        "title": "Agent Activity Dock",
+        "width": 112,
+        "height": 112,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": true,
+        "focus": false,
+        "shadow": false,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required"
+      },
+      {
+        "label": "panel",
+        "title": "Agent Activity Dock",
+        "width": 420,
+        "height": 580,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": false,
+        "shadow": false,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": false,
+    "externalBin": ["binaries/dock"],
+    "icon": ["icons/icon.png", "icons/icon.ico"]
+  }
+}
