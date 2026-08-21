@@ -351,7 +351,12 @@ fn show_panel(app: &AppHandle) {
     }
 }
 
-fn hide_panel(app: &AppHandle) {
+#[tauri::command]
+fn hide_panel(app: AppHandle) {
+    hide_panel_window(&app);
+}
+
+fn hide_panel_window(app: &AppHandle) {
     if let Some(panel) = app.get_webview_window("panel") {
         let _ = panel.hide();
     }
@@ -474,6 +479,7 @@ pub fn run() {
             connect_agent,
             disconnect_agent,
             open_panel,
+            hide_panel,
             focus_source,
             set_notification_enabled,
             highlight_session
@@ -509,7 +515,7 @@ pub fn run() {
                 ..
             } if label == "ball" => {
                 api.prevent_close();
-                hide_panel(app);
+                hide_panel_window(app);
             }
             _ => {}
         });
@@ -612,12 +618,13 @@ fn position_panel_near_ball(app: &AppHandle) {
         return;
     };
     let gap = (12.0 * monitor.scale_factor()).round() as i32;
-    let origin = monitor.position();
-    let prefer_left = (ball_pos.x - origin.x) > (monitor.size().width as i32 / 2);
-    let x = if prefer_left {
-        ball_pos.x - panel_size.width as i32 - gap
-    } else {
+    let (origin, work) = monitor_work_area(&monitor);
+    let ball_center_x = ball_pos.x + ball_size.width as i32 / 2;
+    let work_center_x = origin.x + work.width as i32 / 2;
+    let x = if ball_center_x < work_center_x {
         ball_pos.x + ball_size.width as i32 + gap
+    } else {
+        ball_pos.x - panel_size.width as i32 - gap
     };
     let position = clamp_to_monitor(&monitor, panel_size, x, ball_pos.y);
     let _ = panel.set_position(Position::Physical(position));
@@ -637,19 +644,22 @@ fn monitor_for(window: &WebviewWindow) -> Option<tauri::Monitor> {
         })
 }
 
+fn monitor_work_area(monitor: &tauri::Monitor) -> (PhysicalPosition<i32>, tauri::PhysicalSize<u32>) {
+    let work = monitor.work_area();
+    (work.position, work.size)
+}
+
 fn clamp_to_monitor(
     monitor: &tauri::Monitor,
     size: tauri::PhysicalSize<u32>,
     x: i32,
     y: i32,
 ) -> PhysicalPosition<i32> {
-    let origin = monitor.position();
-    let area = monitor.size();
-    let margin = (16.0 * monitor.scale_factor()).round() as i32;
-    let min_x = origin.x + margin;
-    let min_y = origin.y + margin;
-    let max_x = origin.x + area.width as i32 - size.width as i32 - margin;
-    let max_y = origin.y + area.height as i32 - size.height as i32 - margin;
+    let (origin, area) = monitor_work_area(monitor);
+    let min_x = origin.x;
+    let min_y = origin.y;
+    let max_x = origin.x + area.width as i32 - size.width as i32;
+    let max_y = origin.y + area.height as i32 - size.height as i32;
     PhysicalPosition::new(
         x.clamp(min_x, max_x.max(min_x)),
         y.clamp(min_y, max_y.max(min_y)),

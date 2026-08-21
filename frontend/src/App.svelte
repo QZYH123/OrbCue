@@ -11,6 +11,7 @@
   import { emptySnapshot } from './types';
   import { highlightFromNotificationExtra, sessionHighlightKey } from './highlight';
   import { agentConnectable, showDetectingPlaceholder } from './inventory';
+  import { clampToWorkArea, shouldHidePanelOnBallDrag } from './placement';
   import { groupSessionsByProject, shortenProjectPath } from './projectPath';
 
   let label = 'ball';
@@ -150,7 +151,7 @@
           window.clearTimeout(snapTimer);
           snapTimer = window.setTimeout(() => {
             dragArmed = false;
-            void snapBallToEdge();
+            void clampBallToWorkArea();
           }, 280);
         });
         if (active) {
@@ -196,6 +197,18 @@
     dragging = true;
     suppressClick = true;
     dragArmed = true;
+    if (shouldHidePanelOnBallDrag(true)) {
+      try {
+        await invoke('hide_panel');
+      } catch {
+        try {
+          const panel = await WebviewWindow.getByLabel('panel');
+          await panel?.hide();
+        } catch (error) {
+          console.warn('Could not hide Dock panel while dragging', error);
+        }
+      }
+    }
     try {
       await getCurrentWindow().startDragging();
     } catch (error) {
@@ -215,7 +228,7 @@
     void openPanel();
   }
 
-  async function snapBallToEdge() {
+  async function clampBallToWorkArea() {
     try {
       const win = getCurrentWindow();
       const monitor = (await currentMonitor()) ?? (await primaryMonitor());
@@ -223,18 +236,14 @@
       const pos = await win.outerPosition();
       const size = await win.outerSize();
       const area = monitor.workArea ?? { position: monitor.position, size: monitor.size };
-      const margin = Math.round(16 * monitor.scaleFactor);
-      const minX = area.position.x + margin;
-      const minY = area.position.y + margin;
-      const maxX = area.position.x + area.size.width - size.width - margin;
-      const maxY = area.position.y + area.size.height - size.height - margin;
-      const midX = pos.x + size.width / 2;
-      const center = area.position.x + area.size.width / 2;
-      const x = Math.round(midX < center ? minX : Math.max(minX, maxX));
-      const y = Math.round(Math.min(Math.max(pos.y, minY), Math.max(minY, maxY)));
-      await win.setPosition(new PhysicalPosition(x, y));
+      const clamped = clampToWorkArea(
+        { x: pos.x, y: pos.y, width: size.width, height: size.height },
+        { x: area.position.x, y: area.position.y, width: area.size.width, height: area.size.height },
+      );
+      if (clamped.x === pos.x && clamped.y === pos.y) return;
+      await win.setPosition(new PhysicalPosition(clamped.x, clamped.y));
     } catch (error) {
-      console.warn('Could not snap Dock ball', error);
+      console.warn('Could not keep Dock ball on screen', error);
     }
   }
 
