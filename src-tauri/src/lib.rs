@@ -480,6 +480,17 @@ fn open_panel(app: AppHandle) {
     show_panel(&app);
 }
 
+#[tauri::command]
+fn toggle_panel(app: AppHandle) {
+    if let Some(panel) = app.get_webview_window("panel") {
+        if panel.is_visible().unwrap_or(false) {
+            hide_panel_window(&app);
+            return;
+        }
+    }
+    show_panel(&app);
+}
+
 fn show_panel(app: &AppHandle) {
     position_panel_near_ball(app);
     if let Some(panel) = app.get_webview_window("panel") {
@@ -634,6 +645,7 @@ pub fn run() {
             connect_agent,
             disconnect_agent,
             open_panel,
+            toggle_panel,
             hide_panel,
             focus_source,
             set_notification_enabled,
@@ -742,7 +754,7 @@ fn configure_windows(app: &AppHandle) {
         };
         let _ = window.set_always_on_top(true);
         if label == "ball" {
-            let size = tauri::LogicalSize::new(64.0, 64.0);
+            let size = tauri::LogicalSize::new(56.0, 56.0);
             let _ = window.set_size(tauri::Size::Logical(size));
         }
     }

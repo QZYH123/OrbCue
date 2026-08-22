@@ -15,8 +15,8 @@
       {
         "label": "ball",
         "title": "Agent Activity Dock",
-        "width": 64,
-        "height": 64,
+        "width": 56,
+        "height": 56,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
@@ -30,8 +30,8 @@
       {
         "label": "panel",
         "title": "Agent Activity Dock",
-        "width": 360,
-        "height": 500,
+        "width": 300,
+        "height": 400,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,

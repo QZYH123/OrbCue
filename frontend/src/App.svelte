@@ -13,14 +13,17 @@
   import { inventoryHasRows, showDetectingPlaceholder, sideLabel } from './inventory';
   import { clampToWorkArea, shouldHidePanelOnBallDrag } from './placement';
   import { isDockTerminalId, jumpFeedback } from './jumpBack';
-  import { groupSessionsByProject, shortenProjectPath } from './projectPath';
+  import { applyPreviewDocument, demoInventory, demoSnapshot, previewLabel, tauriAvailable } from './preview';
+  import { displayAgent, filterSessionSections, presentSessionSections } from './sessionIdentity';
 
-  let label = 'ball';
-  let snapshot: Snapshot = emptySnapshot;
+  const previewMode = !tauriAvailable();
+  let label: string = previewMode ? previewLabel() : 'ball';
+  let snapshot: Snapshot = previewMode ? demoSnapshot : emptySnapshot;
   let pulse = false;
   let filter: 'all' | 'attention' | 'working' = 'all';
+  let collapsedGroups: Record<string, boolean> = {};
   let page: 'activity' | 'audit' | 'connections' | 'settings' = 'activity';
-  let inventory: AgentInventory = { discovered: [], connected: [] };
+  let inventory: AgentInventory = previewMode ? demoInventory : { discovered: [], connected: [] };
   let inventoryRefreshing = false;
   let onboardingChecked = false;
   let connectionError = '';
@@ -47,13 +50,24 @@
   let focusNotes: Record<string, string> = {};
   const focusNoteTimers: Record<string, number> = {};
 
+  if (previewMode) applyPreviewDocument(label === 'panel' ? 'panel' : 'ball');
+
   $: isBall = label === 'ball';
   $: visibleSessions = snapshot.sessions.filter((session) => {
     if (filter === 'attention') return session.state !== 'working';
     if (filter === 'working') return session.state === 'working';
     return true;
   });
-  $: sessionGroups = groupSessionsByProject(visibleSessions);
+  $: sessionGroups = filterSessionSections(presentSessionSections(snapshot.sessions), visibleSessions);
+  $: ringRatio = snapshot.tracked_count <= 0 ? 0 : snapshot.working_count / snapshot.tracked_count;
+  $: ballKind =
+    snapshot.pending_mark === '!'
+      ? 'fail'
+      : snapshot.pending_mark === '?'
+        ? 'wait'
+        : snapshot.working_count > 0
+          ? 'working'
+          : 'idle';
   $: connectionAgents = [
     ...inventory.discovered,
     ...inventory.connected
@@ -71,6 +85,13 @@
   ];
 
   onMount(() => {
+    if (previewMode) {
+      const pageQ = new URLSearchParams(window.location.search).get('page');
+      if (pageQ === 'audit' || pageQ === 'connections' || pageQ === 'settings' || pageQ === 'activity') {
+        page = pageQ;
+      }
+      return;
+    }
     label = getCurrentWindow().label;
     let active = true;
     void (async () => {
@@ -204,6 +225,29 @@
     }
   }
 
+  async function togglePanel() {
+    if (previewMode) {
+      label = label === 'ball' ? 'panel' : 'ball';
+      applyPreviewDocument(label === 'panel' ? 'panel' : 'ball');
+      return;
+    }
+    try {
+      await invoke('toggle_panel');
+    } catch (error) {
+      try {
+        const panel = await WebviewWindow.getByLabel('panel');
+        if (panel && (await panel.isVisible())) {
+          await invoke('hide_panel');
+          return;
+        }
+      } catch {
+        // Fall through to open.
+      }
+      await openPanel();
+      console.warn('Could not toggle Dock panel', error);
+    }
+  }
+
   async function onBallPointerDown(event: PointerEvent) {
     dragging = false;
     suppressClick = false;
@@ -246,7 +290,7 @@
       suppressClick = false;
       return;
     }
-    void openPanel();
+    void togglePanel();
   }
 
   async function clampBallToWorkArea() {
@@ -276,12 +320,17 @@
     }
   }
 
+  function toggleGroup(key: string) {
+    collapsedGroups = { ...collapsedGroups, [key]: !collapsedGroups[key] };
+  }
+
   function selectPage(next: typeof page) {
     page = next;
-    if (next === 'connections') void loadAgentsCached();
+    if (next === 'connections' && !previewMode) void loadAgentsCached();
   }
 
   async function loadAgentsCached() {
+    if (previewMode) return;
     inventoryRefreshing = true;
     connectionError = '';
     try {
@@ -295,6 +344,7 @@
   }
 
   async function refreshAgents() {
+    if (previewMode) return;
     inventoryRefreshing = true;
     connectionError = '';
     try {
@@ -425,11 +475,16 @@
   }
 
   async function closePanel() {
+    if (previewMode) {
+      label = 'ball';
+      applyPreviewDocument('ball');
+      return;
+    }
     await getCurrentWindow().hide();
   }
 
   function onShortcut(event: { state: 'Released' | 'Pressed' }) {
-    if (event.state === 'Pressed') void openPanel();
+    if (event.state === 'Pressed') void togglePanel();
   }
 
   async function acknowledge(source: string, sessionId: string) {
@@ -562,87 +617,116 @@
 {#if isBall}
   <main
     class="ball-shell"
-    class:attention={snapshot.pending_mark === '?' || snapshot.pending_mark === '!'}
+    class:attention={ballKind === 'wait' || ballKind === 'fail'}
     class:pulse
-    class:working={snapshot.working_count > 0}
+    class:working={ballKind === 'working'}
     aria-label="Agent Activity Dock"
   >
     <button
-      class="ball"
-      class:working={snapshot.working_count > 0}
-      class:wide={snapshot.count_label.length > 4}
-      title={`${snapshot.count_label}，${snapshot.pending_mark || (snapshot.working_count ? '工作中' : '空闲')}`}
+      class="ball {ballKind}"
+      style="--ratio: {ringRatio}"
+      aria-label={`${snapshot.count_label}，${snapshot.pending_mark || (snapshot.working_count ? '工作中' : '空闲')}。点击展开或收起面板`}
+      title={`${snapshot.count_label}，${snapshot.pending_mark || (snapshot.working_count ? '工作中' : '空闲')}。点击展开或收起面板`}
       onpointerdown={onBallPointerDown}
       onpointermove={onBallPointerMove}
       onclick={onBallClick}
     >
-      <span class="ball-face" aria-hidden="true"></span>
-      <span class="count">{snapshot.count_label}</span>
+      <span class="ball-core" aria-hidden="true"></span>
+      <span class="ball-ring" aria-hidden="true"></span>
+      <span class="ball-sheen" aria-hidden="true"></span>
+      <span class="count">
+        <span class="count-work">{snapshot.working_count}</span>
+        <span class="count-total">{snapshot.tracked_count}</span>
+      </span>
     </button>
-    <!-- Rendered outside the button: overflow clipping on the circle would cut it off. -->
     {#if snapshot.pending_mark}<span class="badge mark-{markClass(snapshot.pending_mark)}" aria-label={snapshot.pending_mark}>{snapshot.pending_mark}</span>{/if}
   </main>
 {:else}
-  <main class="panel" aria-label="Agent Activity Dock 任务列表">
-    <header class="panel-header">
-      <div>
-        <p class="eyebrow">AGENT ACTIVITY DOCK</p>
-        <h1>{page === 'activity' ? '任务状态' : page === 'audit' ? '审计记录' : page === 'connections' ? 'Agent 连接' : '偏好设置'}</h1>
+  <main class="panel tone-{ballKind}" aria-label="Agent Activity Dock 任务列表">
+    <header class="hero">
+      <div class="hero-count" aria-live="polite">
+        <span class="hero-work">{snapshot.working_count}</span>
+        <span class="hero-rest">
+          <span class="hero-track">/{snapshot.tracked_count}</span>
+          <span class="hero-meta">{ballKind === 'fail' ? '有失败' : ballKind === 'wait' ? '需要你' : ballKind === 'working' ? '工作中' : '空闲'}</span>
+        </span>
       </div>
       <button class="icon-button" onclick={closePanel} aria-label="关闭">×</button>
     </header>
-    <nav class="primary-tabs" aria-label="Dock 页面">
-      <button aria-pressed={page === 'activity'} class:active={page === 'activity'} onclick={() => selectPage('activity')}>动态</button>
-      <button aria-pressed={page === 'audit'} class:active={page === 'audit'} onclick={() => selectPage('audit')}>审计</button>
-      <button aria-pressed={page === 'connections'} class:active={page === 'connections'} onclick={() => selectPage('connections')}>连接</button>
-      <button aria-pressed={page === 'settings'} class:active={page === 'settings'} onclick={() => selectPage('settings')}>设置</button>
-    </nav>
     {#if page === 'activity'}
-      <section class="summary" aria-live="polite">
-        <div class="summary-count">{snapshot.count_label}</div>
-        <div><strong>{snapshot.working_count ? '正在工作' : '当前空闲'}</strong><small>{snapshot.pending_count ? `${snapshot.pending_count} 项未在工作` : '全部在工作或没有打开中的会话'}</small></div>
-      </section>
       <nav class="filters" aria-label="筛选任务">
         <button aria-pressed={filter === 'all'} class:active={filter === 'all'} onclick={() => (filter = 'all')}>全部 <span>{snapshot.tracked_count}</span></button>
         <button aria-pressed={filter === 'working'} class:active={filter === 'working'} onclick={() => (filter = 'working')}>工作中 <span>{snapshot.working_count}</span></button>
         <button aria-pressed={filter === 'attention'} class:active={filter === 'attention'} onclick={() => (filter = 'attention')}>未工作 <span>{snapshot.pending_count}</span></button>
       </nav>
+      <div class="panel-body">
       <div class="sessions">
         {#if visibleSessions.length === 0}
           <div class="empty"><span>✓</span><p>{filter === 'all' ? '还没有追踪中的任务' : '没有符合条件的任务'}</p><small>Agent 发出事件后会显示在这里</small></div>
         {:else}
           {#each sessionGroups as group (group.key)}
             <section class="project-group">
-              <h2 class="project-heading">{group.label}</h2>
-              {#each group.sessions as session (session.source + ':' + session.session_id)}
-                <article class:unread={session.mark === '?' || session.mark === '!'} class:highlighted={highlightedKey === sessionHighlightKey(session.source, session.session_id)} class="session-card">
-                  <div class="state-mark {session.state}" aria-hidden="true"></div>
+              <button
+                class="project-heading"
+                class:collapsed={collapsedGroups[group.key]}
+                title={group.key || undefined}
+                aria-expanded={!collapsedGroups[group.key]}
+                onclick={() => toggleGroup(group.key)}
+              >
+                <span>{group.label}</span>
+                <span class="chevron" aria-hidden="true"></span>
+              </button>
+              {#if !collapsedGroups[group.key]}
+              {#each group.rows as row (row.session.source + ':' + row.session.session_id)}
+                {@const session = row.session}
+                <article
+                  class:unread={session.mark === '?' || session.mark === '!'}
+                  class:highlighted={highlightedKey === sessionHighlightKey(session.source, session.session_id)}
+                  class="session-card {session.state}"
+                  title={session.session_id}
+                >
+                  <div class="ticket-rail {session.state}" aria-hidden="true"></div>
                   <div class="session-content">
-                    <div class="session-topline"><span class="session-heading"><strong>{session.source}</strong>{#if isDockTerminalId(session.terminal_id)}<span class="jump-badge" title="dock run 标签，可精确跳回">精确</span>{/if}</span><span>{stateLabel(session)}</span></div>
-                    <div class="session-id" title={session.session_id}>{session.session_id}</div>
-                    {#if session.project_path}<div class="session-path" title={session.project_path}>{shortenProjectPath(session.project_path)}</div>{/if}
-                    {#if session.summary}<p>{session.summary}</p>{/if}
+                    <div class="session-topline">
+                      <span class="session-heading">
+                        <strong>{row.title}</strong>
+                        <span class="session-index">{row.index}</span>
+                      </span>
+                      <span class="state-chip {session.state}">{stateLabel(session)}</span>
+                    </div>
                     <div class="session-actions">
-                      <button onclick={() => jumpBack(session)}>回去</button>
-                      {#if !session.acknowledged}<button onclick={() => acknowledge(session.source, session.session_id)}>标记已查看</button>{/if}
+                      {#if !session.acknowledged}<button onclick={() => acknowledge(session.source, session.session_id)}>已读</button>{/if}
                       <button onclick={() => resetSession(session.source, session.session_id)}>清除</button>
                     </div>
                     {#if focusNotes[focusErrorKey(session.source, session.session_id)]}<p class="session-focus-note">{focusNotes[focusErrorKey(session.source, session.session_id)]}</p>{/if}
                     {#if focusErrors[focusErrorKey(session.source, session.session_id)]}<p class="session-focus-error">{focusErrors[focusErrorKey(session.source, session.session_id)]}</p>{/if}
                   </div>
-                  {#if session.mark}<span class="unread-mark mark-{markClass(session.mark)}">{session.mark}</span>{/if}
+                  <button
+                    class="jump-btn"
+                    class:precise={isDockTerminalId(session.terminal_id)}
+                    onclick={() => jumpBack(session)}
+                    aria-label="回去"
+                    title={isDockTerminalId(session.terminal_id) ? '精确跳回' : '回去'}
+                  >
+                    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+                      <path d="M5.5 4.5 2 8l3.5 3.5M2.5 8H9a4 4 0 0 0 4-4V3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </button>
                 </article>
               {/each}
+              {/if}
             </section>
           {/each}
         {/if}
       </div>
+      </div>
       <footer>
-        <button class="text-button" onclick={() => acknowledge('*', '*')} disabled={snapshot.pending_count === 0}>全部标记已查看</button>
-        <button class="text-button danger" onclick={() => resetSession('*', '*')} disabled={snapshot.tracked_count === 0}>清除全部状态</button>
+        <button class="text-button" onclick={() => acknowledge('*', '*')} disabled={snapshot.pending_count === 0}>全部已读</button>
+        <button class="text-button danger" onclick={() => resetSession('*', '*')} disabled={snapshot.tracked_count === 0}>清除全部</button>
       </footer>
     {:else if page === 'audit'}
-      <p class="section-intro">仅显示状态变更的来源、会话、状态和时间。</p>
+      <p class="section-intro">只记状态变更：谁、哪次会话、变成了什么、何时。</p>
+      <div class="panel-body">
       <div class="audit-list">
         {#if snapshot.audit.length === 0}
           <div class="empty compact"><span>✓</span><p>还没有审计记录</p><small>任务状态发生变化后会显示在这里</small></div>
@@ -651,13 +735,13 @@
             <article class="audit-card">
               <div class="state-mark {entry.state}" aria-hidden="true"></div>
               <div class="audit-content">
-                <div class="session-topline"><strong>{entry.source}</strong><time datetime={entry.occurred_at}>{formatAuditTime(entry.occurred_at)}</time></div>
-                <div class="session-id" title={entry.session_id}>{entry.session_id}</div>
+                <div class="session-topline"><strong>{displayAgent(entry.source)}</strong><time datetime={entry.occurred_at}>{formatAuditTime(entry.occurred_at)}</time></div>
                 <div class="audit-meta"><span>{auditStateLabel(entry)}</span>{#if entry.attention_reason}<span>{entry.attention_reason === 'permission' ? '授权请求' : '需要输入'}</span>{/if}</div>
               </div>
             </article>
           {/each}
         {/if}
+      </div>
       </div>
     {:else if page === 'connections'}
       <p class="section-intro">只连接本机已有的 Agent。Dock 不会下载、替换或读取它们的工作内容。</p>
@@ -677,33 +761,37 @@
       {:else if connectionAgents.length === 0}
         <div class="empty compact"><span>○</span><p>PATH 中没有检测到支持的 Agent</p><small>目前支持 Claude、Grok Build、Codex 和 DSH</small></div>
       {:else}
+        <div class="panel-body">
         <div class="connection-list">
           {#each connectionAgents as agent (agent.side + ':' + agent.name)}
             {@const record = connected(agent.name, agent.side)}
             <article class="connection-card">
-              <div class="agent-icon">{agent.name.slice(0, 1).toUpperCase()}</div>
               <div class="connection-content">
-                <div class="session-topline">
-                  <span class="agent-name"><strong>{agent.name}</strong><span class="side-badge side-{agent.side}">{sideLabel(agent.side)}</span></span>
-                  <span class:connected={record}>{record ? '已连接' : '可连接'}</span>
+                <div class="connection-title">
+                  <strong>{displayAgent(agent.name)}</strong>
+                  <span class="side-badge side-{agent.side}">{sideLabel(agent.side)}</span>
                 </div>
-                <div class="session-id" title={agent.path}>{agent.path}</div>
-                {#if record}<p>{record.limitation}</p>{/if}
+                <div class="connection-path" title={agent.path}>{agent.path}</div>
+                {#if record}<p class="connection-note">{record.limitation}</p>{/if}
               </div>
-              {#if record}
-                <button class="secondary-button" onclick={() => disconnectAgent(agent.name, agent.side)}>断开</button>
-              {:else}
-                <button class="primary-button" onclick={() => connectAgent(agent)}>连接</button>
-              {/if}
+              <div class="connection-aside">
+                <span class:connected={!!record} class="connection-state">{record ? '已连接' : '可连接'}</span>
+                {#if record}
+                  <button class="secondary-button" onclick={() => disconnectAgent(agent.name, agent.side)}>断开</button>
+                {:else}
+                  <button class="primary-button" onclick={() => connectAgent(agent)}>连接</button>
+                {/if}
+              </div>
             </article>
           {/each}
+        </div>
         </div>
       {/if}
       {#if connectionError}<p class="error-message">{connectionError}</p>{/if}
       {#if pendingAgent}
         <div class="modal-backdrop" role="presentation" onclick={(event) => event.target === event.currentTarget && closeConnectDialog()}>
           <dialog open class="confirm-dialog" aria-labelledby="connect-title">
-            <h2 id="connect-title">连接 {pendingAgent.name}<span class="side-badge side-{pendingAgent.side}">{sideLabel(pendingAgent.side)}</span></h2>
+            <h2 id="connect-title">连接 {displayAgent(pendingAgent.name)}<span class="side-badge side-{pendingAgent.side}">{sideLabel(pendingAgent.side)}</span></h2>
             <p>Dock 将在 {sideLabel(pendingAgent.side)} 侧使用现有可执行文件：</p>
             <code>{pendingAgent.path}</code>
             {#if previewLoading}
@@ -739,6 +827,7 @@
       {/if}
     {:else}
       <p class="section-intro">默认保持安静，只在任务真正需要你回来时提醒一次。</p>
+      <div class="panel-body">
       <div class="settings-list">
         <button class="setting-row" aria-pressed={completionSoundEnabled} onclick={() => toggleSound('completion')}>
           <span><strong>完成提示音</strong><small>任务正常完成时播放短音</small></span><span class:enabled={completionSoundEnabled} class="switch"><i></i></span>
@@ -756,10 +845,17 @@
           <span><strong>登录后自动启动</strong><small>让 Agent 事件随时有接收端</small></span><span class:enabled={autostartEnabled} class="switch"><i></i></span>
         </button>
         <button class="setting-row" aria-pressed={shortcutEnabled} onclick={toggleShortcut}>
-          <span><strong>全局快捷键</strong><small>{shortcut} 打开任务面板</small></span><span class:enabled={shortcutEnabled} class="switch"><i></i></span>
+          <span><strong>全局快捷键</strong><small>{shortcut} 打开或收起任务面板</small></span><span class:enabled={shortcutEnabled} class="switch"><i></i></span>
         </button>
+      </div>
       </div>
       <div class="privacy-note"><strong>本地与隐私优先</strong><p>Dock 默认不联网，不读取 transcript、prompt、命令或代码；持久化状态也不包含摘要。</p></div>
     {/if}
+    <nav class="dock-nav" aria-label="Dock 页面">
+      <button aria-pressed={page === 'activity'} class:active={page === 'activity'} onclick={() => selectPage('activity')}>动态</button>
+      <button aria-pressed={page === 'audit'} class:active={page === 'audit'} onclick={() => selectPage('audit')}>审计</button>
+      <button aria-pressed={page === 'connections'} class:active={page === 'connections'} onclick={() => selectPage('connections')}>连接</button>
+      <button aria-pressed={page === 'settings'} class:active={page === 'settings'} onclick={() => selectPage('settings')}>设置</button>
+    </nav>
   </main>
 {/if}
