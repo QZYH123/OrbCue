@@ -1,15 +1,13 @@
 //! Presenter-side jump-back execution.
 //!
-//! Primary path: remember the foreground terminal HWND when a snapshot says
-//! to capture (new session or transition into working). Used only for the
-//! user's explicit「回去」click — never to infer Dock session state.
-//! Title matching among terminal windows is the fallback.
+//! Ladder: deep_link → dock: marker (precise tab) → captured HWND (window-level)
+//! → honest failure. Used only for the user's explicit「回去」click.
 
 #[cfg(windows)]
-use agent_activity_dock_core::select_window_by_hints;
+use agent_activity_dock_core::{captured_hwnd_usable, select_unique_window_title};
 use agent_activity_dock_core::{
-    captured_keys_to_drop, focus_decision, sessions_to_capture, CaptureSession, FocusDecision,
-    FocusRequest, SessionKey, SessionSnapshot,
+    captured_keys_to_drop, dock_terminal_marker, focus_decision, sessions_to_capture,
+    CaptureSession, FocusDecision, FocusRequest, SessionKey, SessionSnapshot, JUMP_WINDOW_MISSING,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -18,7 +16,27 @@ use std::sync::Mutex;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FocusResult {
     pub focused: bool,
+    #[serde(default)]
+    pub precise: bool,
     pub reason: Option<String>,
+}
+
+impl FocusResult {
+    fn success(precise: bool) -> Self {
+        Self {
+            focused: true,
+            precise,
+            reason: None,
+        }
+    }
+
+    fn failure(reason: impl Into<String>) -> Self {
+        Self {
+            focused: false,
+            precise: false,
+            reason: Some(reason.into()),
+        }
+    }
 }
 
 static CAPTURED_HWNDS: Mutex<Option<HashMap<(String, String), isize>>> = Mutex::new(None);
@@ -99,7 +117,7 @@ pub fn apply_snapshot_captures(previous: &[SessionSnapshot], current: &[SessionS
     }
 }
 
-fn take_stale_or_hwnd(source: &str, session_id: &str) -> Option<isize> {
+fn take_hwnd(source: &str, session_id: &str) -> Option<isize> {
     let guard = CAPTURED_HWNDS.lock().ok()?;
     guard
         .as_ref()?
@@ -126,95 +144,80 @@ pub fn focus_session(
         .find(|session| session.source == source && session.session_id == session_id)
     else {
         forget_hwnd(source, session_id);
-        return FocusResult {
-            focused: false,
-            reason: Some("会话已不存在".to_owned()),
-        };
+        return FocusResult::failure("会话已不存在");
     };
-    #[cfg(windows)]
-    if let Some(hwnd) = take_stale_or_hwnd(source, session_id) {
-        if win32::is_window(hwnd) {
-            if win32::bring_to_foreground(hwnd) {
-                return FocusResult {
-                    focused: true,
-                    reason: None,
-                };
-            }
-            return FocusResult {
-                focused: false,
-                reason: Some("无法把窗口提到前台".to_owned()),
-            };
-        }
-        forget_hwnd(source, session_id);
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = take_stale_or_hwnd(source, session_id);
-    }
     match focus_decision(&FocusRequest {
         deep_link: session.deep_link.clone(),
-        window_title: session.window_title.clone(),
-        project_path: session.project_path.clone(),
-        source: Some(session.source.clone()),
+        terminal_id: session.terminal_id.clone(),
     }) {
         FocusDecision::OpenDeepLink(url) => match open_deep_link(&url) {
-            Ok(()) => FocusResult {
-                focused: true,
-                reason: None,
-            },
-            Err(reason) => FocusResult {
-                focused: false,
-                reason: Some(reason),
-            },
+            Ok(()) => FocusResult::success(true),
+            Err(reason) => FocusResult::failure(reason),
         },
-        FocusDecision::MatchWindow { hints } => focus_window_by_hints(&hints),
-        FocusDecision::Unavailable { reason } => FocusResult {
-            focused: false,
-            reason: Some(reason),
-        },
+        FocusDecision::FocusDockMarker { marker } => focus_dock_marker(&marker),
+        FocusDecision::UseCapturedWindow => focus_captured_window(source, session_id),
     }
 }
 
-fn focus_window_by_hints(hints: &[String]) -> FocusResult {
+fn focus_captured_window(source: &str, session_id: &str) -> FocusResult {
+    #[cfg(windows)]
+    {
+        if let Some(hwnd) = take_hwnd(source, session_id) {
+            let alive = win32::is_window(hwnd);
+            let terminal = win32::is_terminal_hwnd(hwnd);
+            if captured_hwnd_usable(alive, terminal) {
+                if win32::bring_to_foreground(hwnd) {
+                    return FocusResult::success(false);
+                }
+                return FocusResult::failure("无法把窗口提到前台");
+            }
+            forget_hwnd(source, session_id);
+            log_capture(&format!(
+                "jump-capture dropped source={source} session={session_id} alive={alive} terminal={terminal}"
+            ));
+        }
+    }
     #[cfg(not(windows))]
     {
-        let _ = hints;
-        FocusResult {
-            focused: false,
-            reason: Some("当前平台不能聚焦源终端".to_owned()),
-        }
+        let _ = (source, session_id);
+        forget_hwnd(source, session_id);
+    }
+    FocusResult::failure(JUMP_WINDOW_MISSING)
+}
+
+fn focus_dock_marker(marker: &str) -> FocusResult {
+    if dock_terminal_marker(marker).is_none() {
+        return FocusResult::failure(JUMP_WINDOW_MISSING);
     }
     #[cfg(windows)]
     {
-        let windows = win32::visible_terminal_windows();
-        let titles: Vec<String> = windows.iter().map(|window| window.title.clone()).collect();
-        match select_window_by_hints(&titles, hints) {
-            Ok(title) => match windows.iter().find(|window| window.title == title) {
-                Some(window) if win32::bring_to_foreground(window.hwnd) => FocusResult {
-                    focused: true,
-                    reason: None,
-                },
-                Some(_) => FocusResult {
-                    focused: false,
-                    reason: Some("无法把窗口提到前台".to_owned()),
-                },
-                None => FocusResult {
-                    focused: false,
-                    reason: Some(format!(
-                        "没有找到匹配的终端窗口（线索：{}）",
-                        hints
-                            .iter()
-                            .map(|hint| format!("「{hint}」"))
-                            .collect::<Vec<_>>()
-                            .join("、")
-                    )),
-                },
-            },
-            Err(reason) => FocusResult {
-                focused: false,
-                reason: Some(reason),
-            },
+        if focus_window_title_containing(marker) {
+            return FocusResult::success(true);
         }
+        match win32::focus_tab_named(marker) {
+            Ok(()) => FocusResult::success(true),
+            Err(reason) => {
+                log_capture(&format!("jump-marker {marker} missed: {reason}"));
+                FocusResult::failure(JUMP_WINDOW_MISSING)
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        FocusResult::failure("当前平台不能聚焦源终端")
+    }
+}
+
+#[cfg(windows)]
+fn focus_window_title_containing(marker: &str) -> bool {
+    let windows = win32::visible_terminal_windows();
+    let titles: Vec<String> = windows.iter().map(|window| window.title.clone()).collect();
+    match select_unique_window_title(&titles, marker) {
+        Ok(title) => windows
+            .iter()
+            .find(|window| window.title == title)
+            .is_some_and(|window| win32::bring_to_foreground(window.hwnd)),
+        Err(_) => false,
     }
 }
 
@@ -302,26 +305,23 @@ mod win32 {
         if unsafe { IsWindowVisible(hwnd) } == 0 {
             return 1;
         }
-        let len = unsafe { GetWindowTextLengthW(hwnd) };
-        if len <= 0 {
-            return 1;
-        }
-        let mut buf = vec![0u16; (len as usize) + 1];
-        let written = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
-        let title = utf16_to_string(&buf, written);
-        if title.is_empty() {
-            return 1;
-        }
-        // Jump-back only: restrict to terminal hosts. Not used for state.
         if !is_terminal_hwnd(hwnd) {
             return 1;
         }
+        let len = unsafe { GetWindowTextLengthW(hwnd) };
+        let title = if len <= 0 {
+            String::new()
+        } else {
+            let mut buf = vec![0u16; (len as usize) + 1];
+            let written = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+            utf16_to_string(&buf, written)
+        };
         windows.push(VisibleWindow { hwnd, title });
         1
     }
 
-    fn is_terminal_hwnd(hwnd: isize) -> bool {
-        is_terminal_window_candidate(&class_name(hwnd), &process_image(hwnd))
+    pub fn is_terminal_hwnd(hwnd: isize) -> bool {
+        hwnd != 0 && is_terminal_window_candidate(&class_name(hwnd), &process_image(hwnd))
     }
 
     pub fn foreground_terminal_hwnd() -> Option<isize> {
@@ -334,7 +334,7 @@ mod win32 {
     }
 
     pub fn is_window(hwnd: isize) -> bool {
-        unsafe { IsWindow(hwnd) != 0 }
+        hwnd != 0 && unsafe { IsWindow(hwnd) != 0 }
     }
 
     pub fn visible_terminal_windows() -> Vec<VisibleWindow> {
@@ -351,6 +351,174 @@ mod win32 {
                 ShowWindow(hwnd, SW_RESTORE);
             }
             SetForegroundWindow(hwnd) != 0
+        }
+    }
+
+    pub fn focus_tab_named(marker: &str) -> Result<(), String> {
+        uia::select_tab_containing(marker, &visible_terminal_windows())
+    }
+
+    mod uia {
+        use super::{bring_to_foreground, VisibleWindow};
+        use std::sync::Once;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::System::Com::{
+            CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+        };
+        use windows::Win32::System::Variant::VARIANT;
+        use windows::Win32::UI::Accessibility::{
+            CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationElementArray,
+            IUIAutomationSelectionItemPattern, TreeScope_Descendants, UIA_ControlTypePropertyId,
+            UIA_SelectionItemPatternId, UIA_TabItemControlTypeId, UIA_WindowControlTypeId,
+        };
+
+        static COM: Once = Once::new();
+
+        pub fn select_tab_containing(
+            marker: &str,
+            windows: &[VisibleWindow],
+        ) -> Result<(), String> {
+            COM.call_once(|| unsafe {
+                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            });
+            let automation: IUIAutomation = unsafe {
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+                    .map_err(|error| error.to_string())?
+            };
+            let needle = marker.to_lowercase();
+            let root = unsafe {
+                automation
+                    .GetRootElement()
+                    .map_err(|error| error.to_string())?
+            };
+            if focus_named_control(
+                &automation,
+                &root,
+                UIA_WindowControlTypeId.0,
+                &needle,
+                false,
+            )? {
+                return Ok(());
+            }
+            if focus_named_control(
+                &automation,
+                &root,
+                UIA_TabItemControlTypeId.0,
+                &needle,
+                true,
+            )? {
+                return Ok(());
+            }
+            for window in windows {
+                let Some(element) = (unsafe {
+                    automation
+                        .ElementFromHandle(HWND(window.hwnd as *mut core::ffi::c_void))
+                        .ok()
+                }) else {
+                    continue;
+                };
+                if name_contains(&element, &needle) && bring_to_foreground(window.hwnd) {
+                    return Ok(());
+                }
+                if focus_named_control(
+                    &automation,
+                    &element,
+                    UIA_TabItemControlTypeId.0,
+                    &needle,
+                    true,
+                )? {
+                    let _ = bring_to_foreground(window.hwnd);
+                    return Ok(());
+                }
+            }
+            Err("no matching tab".to_owned())
+        }
+
+        fn focus_named_control(
+            automation: &IUIAutomation,
+            root: &IUIAutomationElement,
+            control_type: i32,
+            needle: &str,
+            select_tab: bool,
+        ) -> Result<bool, String> {
+            let condition = unsafe {
+                automation
+                    .CreatePropertyCondition(
+                        UIA_ControlTypePropertyId,
+                        &VARIANT::from(control_type),
+                    )
+                    .map_err(|error| error.to_string())?
+            };
+            let found = unsafe {
+                root.FindAll(TreeScope_Descendants, &condition)
+                    .map_err(|error| error.to_string())?
+            };
+            for element in automation_elements(&found)? {
+                if !name_contains(&element, needle) {
+                    continue;
+                }
+                if select_tab {
+                    if let Ok(pattern) = unsafe {
+                        element.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                            UIA_SelectionItemPatternId,
+                        )
+                    } {
+                        let _ = unsafe { pattern.Select() };
+                    }
+                }
+                if let Some(hwnd) = containing_window(automation, &element) {
+                    if bring_to_foreground(hwnd) {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        }
+
+        fn automation_elements(
+            array: &IUIAutomationElementArray,
+        ) -> Result<Vec<IUIAutomationElement>, String> {
+            let count = unsafe { array.Length().map_err(|error| error.to_string())? };
+            let mut elements = Vec::new();
+            for index in 0..count {
+                elements
+                    .push(unsafe { array.GetElement(index).map_err(|error| error.to_string())? });
+            }
+            Ok(elements)
+        }
+
+        fn name_contains(element: &IUIAutomationElement, needle: &str) -> bool {
+            unsafe { element.CurrentName().ok() }
+                .map(|value| value.to_string().to_lowercase().contains(needle))
+                .unwrap_or(false)
+        }
+
+        fn containing_window(
+            automation: &IUIAutomation,
+            element: &IUIAutomationElement,
+        ) -> Option<isize> {
+            if let Some(hwnd) = native_window(element) {
+                return Some(hwnd);
+            }
+            let walker = unsafe { automation.RawViewWalker().ok()? };
+            let mut current = element.clone();
+            for _ in 0..24 {
+                let parent = unsafe { walker.GetParentElement(&current).ok()? };
+                if let Some(hwnd) = native_window(&parent) {
+                    return Some(hwnd);
+                }
+                current = parent;
+            }
+            None
+        }
+
+        fn native_window(element: &IUIAutomationElement) -> Option<isize> {
+            let handle = unsafe { element.CurrentNativeWindowHandle().ok()? };
+            if handle.0.is_null() {
+                None
+            } else {
+                Some(handle.0 as isize)
+            }
         }
     }
 }

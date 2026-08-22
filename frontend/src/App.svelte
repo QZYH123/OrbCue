@@ -12,6 +12,7 @@
   import { highlightFromNotificationExtra, sessionHighlightKey } from './highlight';
   import { inventoryHasRows, showDetectingPlaceholder, sideLabel } from './inventory';
   import { clampToWorkArea, shouldHidePanelOnBallDrag } from './placement';
+  import { isDockTerminalId, jumpFeedback } from './jumpBack';
   import { groupSessionsByProject, shortenProjectPath } from './projectPath';
 
   let label = 'ball';
@@ -43,6 +44,8 @@
   let dragStart = { x: 0, y: 0 };
   let snapTimer: number | undefined;
   let focusErrors: Record<string, string> = {};
+  let focusNotes: Record<string, string> = {};
+  const focusNoteTimers: Record<string, number> = {};
 
   $: isBall = label === 'ball';
   $: visibleSessions = snapshot.sessions.filter((session) => {
@@ -71,11 +74,7 @@
     label = getCurrentWindow().label;
     let active = true;
     void (async () => {
-      try {
-        snapshot = await invoke<Snapshot>('snapshot');
-      } catch (error) {
-        console.warn('Dock snapshot unavailable during startup', error);
-      }
+      await refreshSnapshot();
       try {
         autostartEnabled = await isAutostartEnabled();
         // Both windows mount this component. Register the process-wide
@@ -119,6 +118,7 @@
         highlightedKey = sessionHighlightKey(event.payload.source, event.payload.session_id);
       });
       let stopAction: { unregister: () => Promise<void> } = { unregister: async () => {} };
+      let stopFocus = () => {};
       if (label === 'ball') {
         try {
           stopAction = await onAction((notification) => {
@@ -135,18 +135,27 @@
       }
       if (label !== 'ball') {
         void loadAgentsCached();
+        try {
+          stopFocus = await getCurrentWindow().onFocusChanged((event) => {
+            if (event.payload) void refreshSnapshot();
+          });
+        } catch (error) {
+          console.warn('Could not listen for panel focus', error);
+        }
       }
       if (active) {
         unsubscribe = () => {
           stopListening();
           stopInventory();
           stopHighlight();
+          stopFocus();
           void stopAction.unregister();
         };
       } else {
         stopListening();
         stopInventory();
         stopHighlight();
+        stopFocus();
         void stopAction.unregister();
       }
       if (label === 'ball') {
@@ -175,6 +184,14 @@
       unsubscribe?.();
     };
   });
+
+  async function refreshSnapshot() {
+    try {
+      snapshot = await invoke<Snapshot>('snapshot');
+    } catch (error) {
+      console.warn('Dock snapshot unavailable', error);
+    }
+  }
 
   async function openPanel() {
     try {
@@ -435,6 +452,29 @@
     return `${source}\0${sessionId}`;
   }
 
+  function clearFocusNote(key: string) {
+    if (focusNoteTimers[key]) {
+      window.clearTimeout(focusNoteTimers[key]);
+      delete focusNoteTimers[key];
+    }
+    if (focusNotes[key]) {
+      const next = { ...focusNotes };
+      delete next[key];
+      focusNotes = next;
+    }
+  }
+
+  function setFocusNote(key: string, text: string) {
+    if (focusNoteTimers[key]) window.clearTimeout(focusNoteTimers[key]);
+    focusNotes = { ...focusNotes, [key]: text };
+    focusNoteTimers[key] = window.setTimeout(() => {
+      const next = { ...focusNotes };
+      delete next[key];
+      focusNotes = next;
+      delete focusNoteTimers[key];
+    }, 2500);
+  }
+
   async function jumpBack(session: SessionSnapshot) {
     const key = focusErrorKey(session.source, session.session_id);
     try {
@@ -442,14 +482,22 @@
         source: session.source,
         sessionId: session.session_id,
       });
-      if (result.focused) {
-        const next = { ...focusErrors };
-        delete next[key];
-        focusErrors = next;
+      const feedback = jumpFeedback(result);
+      if (feedback.kind === 'error') {
+        clearFocusNote(key);
+        focusErrors = { ...focusErrors, [key]: feedback.text };
         return;
       }
-      focusErrors = { ...focusErrors, [key]: result.reason ?? '无法跳回' };
+      const next = { ...focusErrors };
+      delete next[key];
+      focusErrors = next;
+      if (feedback.kind === 'note') {
+        setFocusNote(key, feedback.text);
+      } else {
+        clearFocusNote(key);
+      }
     } catch (error) {
+      clearFocusNote(key);
       focusErrors = { ...focusErrors, [key]: String(error) };
     }
   }
@@ -570,7 +618,7 @@
                 <article class:unread={session.mark === '?' || session.mark === '!'} class:highlighted={highlightedKey === sessionHighlightKey(session.source, session.session_id)} class="session-card">
                   <div class="state-mark {session.state}" aria-hidden="true"></div>
                   <div class="session-content">
-                    <div class="session-topline"><strong>{session.source}</strong><span>{stateLabel(session)}</span></div>
+                    <div class="session-topline"><span class="session-heading"><strong>{session.source}</strong>{#if isDockTerminalId(session.terminal_id)}<span class="jump-badge" title="dock run 标签，可精确跳回">精确</span>{/if}</span><span>{stateLabel(session)}</span></div>
                     <div class="session-id" title={session.session_id}>{session.session_id}</div>
                     {#if session.project_path}<div class="session-path" title={session.project_path}>{shortenProjectPath(session.project_path)}</div>{/if}
                     {#if session.summary}<p>{session.summary}</p>{/if}
@@ -579,6 +627,7 @@
                       {#if !session.acknowledged}<button onclick={() => acknowledge(session.source, session.session_id)}>标记已查看</button>{/if}
                       <button onclick={() => resetSession(session.source, session.session_id)}>清除</button>
                     </div>
+                    {#if focusNotes[focusErrorKey(session.source, session.session_id)]}<p class="session-focus-note">{focusNotes[focusErrorKey(session.source, session.session_id)]}</p>{/if}
                     {#if focusErrors[focusErrorKey(session.source, session.session_id)]}<p class="session-focus-error">{focusErrors[focusErrorKey(session.source, session.session_id)]}</p>{/if}
                   </div>
                   {#if session.mark}<span class="unread-mark mark-{markClass(session.mark)}">{session.mark}</span>{/if}

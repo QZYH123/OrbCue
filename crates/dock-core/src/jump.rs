@@ -1,42 +1,60 @@
 //! Presenter jump-back decisions. These are not lifecycle rules.
 
+pub const DOCK_TERMINAL_PREFIX: &str = "dock:";
+pub const DOCK_MARKER_HEX_LEN: usize = 6;
+pub const JUMP_WINDOW_MISSING: &str = "找不到该会话的窗口。用 dock run 启动可获得精确跳回";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FocusRequest {
     pub deep_link: Option<String>,
-    pub window_title: Option<String>,
-    pub project_path: Option<String>,
-    pub source: Option<String>,
+    pub terminal_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FocusDecision {
     OpenDeepLink(String),
-    MatchWindow { hints: Vec<String> },
-    Unavailable { reason: String },
+    FocusDockMarker { marker: String },
+    UseCapturedWindow,
+}
+
+impl FocusDecision {
+    pub fn is_precise(&self) -> bool {
+        !matches!(self, Self::UseCapturedWindow)
+    }
 }
 
 pub fn focus_decision(request: &FocusRequest) -> FocusDecision {
     if let Some(url) = nonempty(request.deep_link.as_deref()) {
         return FocusDecision::OpenDeepLink(url.to_owned());
     }
-    let mut hints = Vec::new();
-    if let Some(title) = nonempty(request.window_title.as_deref()) {
-        hints.push(title.to_owned());
-    } else if let Some(path) = nonempty(request.project_path.as_deref()) {
-        hints.push(project_path_hint(path));
+    if let Some(marker) = request
+        .terminal_id
+        .as_deref()
+        .and_then(dock_terminal_marker)
+    {
+        return FocusDecision::FocusDockMarker {
+            marker: marker.to_owned(),
+        };
     }
-    if let Some(source) = nonempty(request.source.as_deref()) {
-        if !hints.iter().any(|hint| hint.eq_ignore_ascii_case(source)) {
-            hints.push(source.to_owned());
-        }
-    }
-    if hints.is_empty() {
-        FocusDecision::Unavailable {
-            reason: "没有可用于跳回的定位信息".to_owned(),
-        }
-    } else {
-        FocusDecision::MatchWindow { hints }
-    }
+    FocusDecision::UseCapturedWindow
+}
+
+/// `dock:` + 6 hex digits. Used as both `terminal_id` and the WT tab title marker.
+pub fn dock_terminal_marker(terminal_id: &str) -> Option<&str> {
+    let trimmed = terminal_id.trim();
+    let rest = trimmed.strip_prefix(DOCK_TERMINAL_PREFIX)?;
+    (rest.len() == DOCK_MARKER_HEX_LEN && rest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then_some(trimmed)
+}
+
+pub fn format_dock_marker(suffix: u32) -> String {
+    format!("{DOCK_TERMINAL_PREFIX}{:06x}", suffix & 0x00FF_FFFF)
+}
+
+/// Captured HWND is only usable when the window still exists *and* is still a
+/// terminal host. Either failure drops the record and degrades.
+pub fn captured_hwnd_usable(window_alive: bool, is_terminal: bool) -> bool {
+    window_alive && is_terminal
 }
 
 pub fn select_unique_window_title<'a, T: AsRef<str>>(
@@ -147,33 +165,23 @@ pub fn session_terminal_title(source: &str, project_path: Option<&str>) -> Strin
     }
 }
 
+pub fn dock_tab_title(agent: &str, project_path: Option<&str>, marker: &str) -> String {
+    format!("{marker} · {}", session_terminal_title(agent, project_path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        focus_decision, is_terminal_window_candidate, project_path_hint,
-        select_unique_window_title, select_window_by_hints, session_terminal_title, FocusDecision,
-        FocusRequest,
+        captured_hwnd_usable, dock_tab_title, dock_terminal_marker, focus_decision,
+        format_dock_marker, is_terminal_window_candidate, project_path_hint,
+        select_unique_window_title, session_terminal_title, FocusDecision, FocusRequest,
+        JUMP_WINDOW_MISSING,
     };
 
-    fn request(
-        deep_link: Option<&str>,
-        window_title: Option<&str>,
-        project_path: Option<&str>,
-    ) -> FocusRequest {
-        request_with_source(deep_link, window_title, project_path, None)
-    }
-
-    fn request_with_source(
-        deep_link: Option<&str>,
-        window_title: Option<&str>,
-        project_path: Option<&str>,
-        source: Option<&str>,
-    ) -> FocusRequest {
+    fn request(deep_link: Option<&str>, terminal_id: Option<&str>) -> FocusRequest {
         FocusRequest {
             deep_link: deep_link.map(str::to_owned),
-            window_title: window_title.map(str::to_owned),
-            project_path: project_path.map(str::to_owned),
-            source: source.map(str::to_owned),
+            terminal_id: terminal_id.map(str::to_owned),
         }
     }
 
@@ -182,68 +190,66 @@ mod tests {
         assert_eq!(
             focus_decision(&request(
                 Some("https://example.invalid/session"),
-                Some("Windows Terminal"),
-                Some("/tmp/project"),
+                Some("dock:ab12cd"),
             )),
             FocusDecision::OpenDeepLink("https://example.invalid/session".to_owned())
         );
-    }
-
-    #[test]
-    fn window_title_is_used_when_deep_link_is_absent() {
-        assert_eq!(
-            focus_decision(&request(None, Some("Windows Terminal - dock"), None)),
-            FocusDecision::MatchWindow {
-                hints: vec!["Windows Terminal - dock".to_owned()],
-            }
+        assert!(
+            focus_decision(&request(Some("https://example.invalid/session"), None)).is_precise()
         );
     }
 
     #[test]
-    fn empty_location_fields_are_treated_as_missing() {
+    fn dock_marker_is_the_precise_channel() {
         assert_eq!(
-            focus_decision(&request(Some(""), Some(""), Some(""))),
-            FocusDecision::Unavailable {
-                reason: "没有可用于跳回的定位信息".to_owned(),
+            focus_decision(&request(None, Some("dock:ab12cd"))),
+            FocusDecision::FocusDockMarker {
+                marker: "dock:ab12cd".to_owned(),
             }
         );
+        assert!(focus_decision(&request(None, Some("dock:AB12CD"))).is_precise());
+        assert_eq!(dock_terminal_marker("dock:ab12cd"), Some("dock:ab12cd"));
+        assert_eq!(dock_terminal_marker(" dock:00ffaa "), Some("dock:00ffaa"));
+        assert_eq!(dock_terminal_marker("dock:abc"), None);
+        assert_eq!(dock_terminal_marker("pts/3"), None);
+        assert_eq!(format_dock_marker(0x00ab_12cd), "dock:ab12cd");
     }
 
     #[test]
-    fn project_path_last_segment_is_the_window_hint() {
+    fn project_path_and_source_are_not_used_as_hints() {
         assert_eq!(
-            focus_decision(&request(None, None, Some("/home/qingz/projects/dock"))),
-            FocusDecision::MatchWindow {
-                hints: vec!["dock".to_owned()],
-            }
+            focus_decision(&request(None, None)),
+            FocusDecision::UseCapturedWindow
+        );
+        assert!(!focus_decision(&request(None, None)).is_precise());
+        assert_eq!(
+            focus_decision(&request(Some(""), Some(""))),
+            FocusDecision::UseCapturedWindow
         );
         assert_eq!(
-            focus_decision(&request(None, None, Some("C:\\Users\\qingz\\work\\repo\\"))),
-            FocusDecision::MatchWindow {
-                hints: vec!["repo".to_owned()],
-            }
+            focus_decision(&request(None, Some("pts/5"))),
+            FocusDecision::UseCapturedWindow
         );
+        assert!(JUMP_WINDOW_MISSING.contains("dock run"));
     }
 
     #[test]
-    fn missing_location_is_unavailable() {
-        assert_eq!(
-            focus_decision(&request(None, None, None)),
-            FocusDecision::Unavailable {
-                reason: "没有可用于跳回的定位信息".to_owned(),
-            }
-        );
+    fn captured_hwnd_dead_or_non_terminal_is_not_usable() {
+        assert!(!captured_hwnd_usable(false, true));
+        assert!(!captured_hwnd_usable(true, false));
+        assert!(!captured_hwnd_usable(false, false));
+        assert!(captured_hwnd_usable(true, true));
     }
 
     #[test]
     fn unique_title_match_returns_that_title() {
         let titles = [
             "Visual Studio Code",
-            "Windows Terminal - agent-activity-dock",
+            "grok · agent-activity-dock — dock:ab12cd",
         ];
         assert_eq!(
-            select_unique_window_title(&titles, "activity-dock").unwrap(),
-            "Windows Terminal - agent-activity-dock"
+            select_unique_window_title(&titles, "dock:ab12cd").unwrap(),
+            "grok · agent-activity-dock — dock:ab12cd"
         );
     }
 
@@ -275,55 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn project_hint_wins_when_it_is_unique() {
-        let titles = ["Grok Bot", "Windows Terminal - agent-activity-dock"];
-        let hints = vec!["agent-activity-dock".to_owned(), "grok".to_owned()];
-        assert_eq!(
-            select_window_by_hints(&titles, &hints).unwrap(),
-            "Windows Terminal - agent-activity-dock"
-        );
-    }
-
-    #[test]
-    fn source_fallback_hits_unique_agent_window() {
-        let titles = ["Visual Studio Code", "Grok Bot"];
-        let hints = vec!["agent-activity-dock".to_owned(), "grok".to_owned()];
-        assert_eq!(select_window_by_hints(&titles, &hints).unwrap(), "Grok Bot");
-        assert_eq!(
-            focus_decision(&request_with_source(
-                None,
-                None,
-                Some("/tmp/agent-activity-dock"),
-                Some("grok"),
-            )),
-            FocusDecision::MatchWindow {
-                hints: vec!["agent-activity-dock".to_owned(), "grok".to_owned()],
-            }
-        );
-    }
-
-    #[test]
-    fn cascade_zero_matches_lists_tried_clues() {
-        let titles = ["Visual Studio Code", "Firefox"];
-        let hints = vec!["agent-activity-dock".to_owned(), "grok".to_owned()];
-        assert_eq!(
-            select_window_by_hints(&titles, &hints).unwrap_err(),
-            "没有找到匹配的终端窗口（线索：「agent-activity-dock」、「grok」）"
-        );
-    }
-
-    #[test]
-    fn cascade_multiple_matches_lists_tried_clues() {
-        let titles = ["Grok Bot", "grok · other"];
-        let hints = vec!["missing-project".to_owned(), "grok".to_owned()];
-        assert_eq!(
-            select_window_by_hints(&titles, &hints).unwrap_err(),
-            "终端窗口匹配不唯一（线索：「missing-project」、「grok」）"
-        );
-    }
-
-    #[test]
-    fn terminal_filter_drops_browser_then_source_hits_grok_bot() {
+    fn terminal_filter_drops_browser() {
         let windows = [
             (
                 "Grok — Chat",
@@ -343,28 +301,6 @@ mod tests {
             .map(|(title, _, _)| *title)
             .collect();
         assert_eq!(titles, ["Grok Bot"]);
-        assert_eq!(
-            select_window_by_hints(&titles, &["grok".to_owned()]).unwrap(),
-            "Grok Bot"
-        );
-    }
-
-    #[test]
-    fn terminal_filter_all_non_terminals_is_zero_match() {
-        let windows = [
-            ("Grok — Chat", "Chrome_WidgetWin_1", "msedge.exe"),
-            ("QQ", "TXGuiFoundation", "QQ.exe"),
-        ];
-        let titles: Vec<&str> = windows
-            .iter()
-            .filter(|(_, class, image)| is_terminal_window_candidate(class, image))
-            .map(|(title, _, _)| *title)
-            .collect();
-        assert!(titles.is_empty());
-        assert_eq!(
-            select_window_by_hints(&titles, &["grok".to_owned()]).unwrap_err(),
-            "没有找到匹配的终端窗口（线索：「grok」）"
-        );
         assert!(!is_terminal_window_candidate(
             "Chrome_WidgetWin_1",
             "msedge.exe"
@@ -385,6 +321,10 @@ mod tests {
             "grok · agent-activity-dock"
         );
         assert_eq!(
+            dock_tab_title("grok", Some(path), "dock:ab12cd"),
+            "dock:ab12cd · grok · agent-activity-dock"
+        );
+        assert_eq!(
             session_terminal_title("claude", Some(r"C:\Users\qingz\work\repo\")),
             format!(
                 "claude · {}",
@@ -393,14 +333,9 @@ mod tests {
         );
         assert_eq!(session_terminal_title("grok", None), "grok");
         assert_eq!(session_terminal_title("grok", Some("")), "grok");
-    }
-
-    #[test]
-    fn apply_result_has_no_focus_field() {
-        // Jump-back is presenter-only. DockState::apply returns ApplyResult
-        // { accepted, snapshot, attention, rejection_reason } and never
-        // triggers focus_source. Working / idle events stay silent.
-        let fields = ["accepted", "snapshot", "attention", "rejection_reason"];
-        assert!(!fields.contains(&"focus"));
+        assert_eq!(
+            dock_tab_title("claude", None, "dock:00ffaa"),
+            "dock:00ffaa · claude"
+        );
     }
 }

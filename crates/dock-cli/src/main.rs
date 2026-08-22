@@ -1,3 +1,5 @@
+mod terminal;
+
 use agent_activity_dock_adapters::{claude_hook, codex_notification, dsh_projection, grok_hook};
 use agent_activity_dock_connect::{ConnectionManager, ConnectionPreview, PreviewAction};
 use agent_activity_dock_core::{
@@ -75,6 +77,13 @@ enum Command {
     Down,
     /// Forward stdin/stdout NDJSON to the current-user Dock socket.
     Bridge,
+    /// Start an Agent in a dedicated Windows Terminal tab.
+    Run {
+        /// Agent command, such as grok, claude, or codex.
+        agent: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -143,6 +152,13 @@ fn main() {
     }
     if matches!(&cli.command, Command::Bridge) {
         let status = run_bridge(&endpoint);
+        if status != 0 {
+            std::process::exit(status);
+        }
+        return;
+    }
+    if let Command::Run { agent, args } = &cli.command {
+        let status = terminal::run_command(agent, args, cli.json);
         if status != 0 {
             std::process::exit(status);
         }
@@ -353,7 +369,8 @@ fn request_for(command: &Command) -> Result<IpcRequest, String> {
         | Command::Disconnect { .. }
         | Command::Up
         | Command::Down
-        | Command::Bridge => return Err("command is handled before event parsing".to_owned()),
+        | Command::Bridge
+        | Command::Run { .. } => return Err("command is handled before event parsing".to_owned()),
     };
     Ok(request)
 }
@@ -433,10 +450,17 @@ fn choose_terminal_id(
 }
 
 fn wt_session_id() -> Option<String> {
-    std::env::var("WT_SESSION")
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
+    #[cfg(windows)]
+    {
+        std::env::var("WT_SESSION")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 fn own_tty_id() -> Option<String> {
@@ -1069,10 +1093,21 @@ mod tests {
     use super::{is_forwardable_command, looks_like_windows_pipe, Command};
     use agent_activity_dock_core::{DockEvent, EventKind};
     use std::ffi::OsString;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_env() -> MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner())
+    }
 
     #[test]
     fn event_and_query_commands_can_forward() {
         assert!(is_forwardable_command(&Command::Status));
+        assert!(is_forwardable_command(&Command::Run {
+            agent: "grok".to_owned(),
+            args: Vec::new(),
+        }));
         assert!(!is_forwardable_command(&Command::Agents));
         assert!(!is_forwardable_command(&Command::Up));
         assert!(!is_forwardable_command(&Command::Down));
@@ -1080,16 +1115,14 @@ mod tests {
 
     #[test]
     fn non_windows_builds_do_not_forward() {
+        let _guard = lock_env();
         let previous = std::env::var_os("AGENT_ACTIVITY_DOCK_FORWARD");
         std::env::set_var("AGENT_ACTIVITY_DOCK_FORWARD", "wsl");
         let forwarded = super::should_forward_to_wsl(
             &Command::Status,
             std::path::Path::new("/tmp/unused.sock"),
         );
-        match previous {
-            Some(value) => std::env::set_var("AGENT_ACTIVITY_DOCK_FORWARD", value),
-            None => std::env::remove_var("AGENT_ACTIVITY_DOCK_FORWARD"),
-        }
+        restore_env("AGENT_ACTIVITY_DOCK_FORWARD", previous);
         if !cfg!(windows) {
             assert!(!forwarded);
         }
@@ -1129,6 +1162,7 @@ mod tests {
 
     #[test]
     fn terminal_id_env_override_wins() {
+        let _guard = lock_env();
         let previous_override = std::env::var_os("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
         let previous_wt = std::env::var_os("WT_SESSION");
         std::env::set_var("AGENT_ACTIVITY_DOCK_TERMINAL_ID", "pts-override");
@@ -1141,6 +1175,7 @@ mod tests {
 
     #[test]
     fn terminal_id_own_tty_beats_wt_session() {
+        let _guard = lock_env();
         let previous_override = std::env::var_os("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
         let previous_wt = std::env::var_os("WT_SESSION");
         std::env::remove_var("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
@@ -1157,6 +1192,7 @@ mod tests {
 
     #[test]
     fn terminal_id_falls_back_to_tty_without_env_ids() {
+        let _guard = lock_env();
         let previous_override = std::env::var_os("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
         let previous_wt = std::env::var_os("WT_SESSION");
         std::env::remove_var("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
@@ -1166,6 +1202,21 @@ mod tests {
         restore_env("AGENT_ACTIVITY_DOCK_TERMINAL_ID", previous_override);
         restore_env("WT_SESSION", previous_wt);
         assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn unix_ignores_wt_session_as_terminal_id() {
+        let _guard = lock_env();
+        let previous_override = std::env::var_os("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
+        let previous_wt = std::env::var_os("WT_SESSION");
+        std::env::remove_var("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
+        std::env::set_var("WT_SESSION", "wt-should-lose");
+        let resolved = super::resolve_terminal_id();
+        restore_env("AGENT_ACTIVITY_DOCK_TERMINAL_ID", previous_override);
+        restore_env("WT_SESSION", previous_wt);
+        if !cfg!(windows) {
+            assert_ne!(resolved.as_deref(), Some("wt-should-lose"));
+        }
     }
 
     fn restore_env(key: &str, previous: Option<OsString>) {
@@ -1190,18 +1241,17 @@ mod tests {
 
     #[test]
     fn title_env_skips_setting() {
+        let _guard = lock_env();
         let previous = std::env::var_os("AGENT_ACTIVITY_DOCK_NO_TITLE");
         std::env::set_var("AGENT_ACTIVITY_DOCK_NO_TITLE", "1");
         let skipped = super::title_setting_suppressed();
-        match previous {
-            Some(value) => std::env::set_var("AGENT_ACTIVITY_DOCK_NO_TITLE", value),
-            None => std::env::remove_var("AGENT_ACTIVITY_DOCK_NO_TITLE"),
-        }
+        restore_env("AGENT_ACTIVITY_DOCK_NO_TITLE", previous);
         assert!(skipped);
     }
 
     #[test]
     fn title_only_for_main_session_lifecycle() {
+        let _guard = lock_env();
         let previous = std::env::var_os("AGENT_ACTIVITY_DOCK_NO_TITLE");
         std::env::remove_var("AGENT_ACTIVITY_DOCK_NO_TITLE");
         let started = DockEvent::new("e1", EventKind::Started, "grok", "s1");

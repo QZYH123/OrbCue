@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use agent_activity_dock_core::{DockEvent, EventKind};
 use agent_activity_dock_ipc::{default_endpoint, encode_line, WireResponse};
 use agent_activity_dock_service::{attach_or_listen, spawn, spawn_persistent};

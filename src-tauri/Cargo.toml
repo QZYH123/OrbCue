@@ -30,3 +30,9 @@ tauri-plugin-single-instance = "2"
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+] }

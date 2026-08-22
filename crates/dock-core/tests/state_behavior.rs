@@ -539,6 +539,43 @@ fn events_without_terminal_id_do_not_replace() {
 }
 
 #[test]
+fn existing_session_idle_does_not_close_other_sessions() {
+    let mut state = DockState::new();
+    let mut keep = event("e1", EventKind::Started, "keep");
+    keep.cwd = Some("/tmp/same-project".to_owned());
+    state.apply(keep);
+    let mut other = DockEvent::new("e2", EventKind::Started, "grok", "other");
+    other.cwd = Some("/tmp/same-project".to_owned());
+    state.apply(other.with_terminal_id("term"));
+    assert_eq!(state.snapshot().tracked_count, 2);
+
+    let idle = state.apply(event("e3", EventKind::Idle, "keep").with_terminal_id("term"));
+    assert_eq!(
+        idle.snapshot.tracked_count, 2,
+        "idle of an existing session must not evict others"
+    );
+
+    let closed = state.apply(event("e4", EventKind::Closed, "keep"));
+    assert_eq!(closed.snapshot.tracked_count, 1);
+    assert_eq!(closed.snapshot.sessions[0].session_id, "other");
+}
+
+#[test]
+fn reset_one_session_leaves_others_in_the_same_project() {
+    let mut state = DockState::new();
+    let mut first = event("e1", EventKind::Started, "s1");
+    first.cwd = Some("/tmp/same-project".to_owned());
+    state.apply(first);
+    let mut second = event("e2", EventKind::Started, "s2");
+    second.cwd = Some("/tmp/same-project".to_owned());
+    state.apply(second);
+    state.reset("claude", "s1");
+    let snapshot = state.snapshot();
+    assert_eq!(snapshot.tracked_count, 1);
+    assert_eq!(snapshot.sessions[0].session_id, "s2");
+}
+
+#[test]
 fn parent_events_do_not_replace_the_terminal_session() {
     let mut state = DockState::new();
     state.apply(event("e1", EventKind::Started, "parent").with_terminal_id("term"));
@@ -565,6 +602,16 @@ fn terminal_replacement_is_recorded_in_audit() {
         .audit
         .iter()
         .any(|entry| entry.session_id == "fresh"));
+}
+
+#[test]
+fn snapshot_exposes_terminal_id() {
+    let mut state = DockState::new();
+    state.apply(event("e1", EventKind::Started, "keep").with_terminal_id("dock:ab12cd"));
+    assert_eq!(
+        state.snapshot().sessions[0].terminal_id.as_deref(),
+        Some("dock:ab12cd")
+    );
 }
 
 #[test]

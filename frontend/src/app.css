@@ -138,12 +138,15 @@ h1 { margin: 0; font-size: 17px; letter-spacing: -.03em; }
 .state-mark.failed { background: #f47878; box-shadow: 0 0 0 3px rgba(244,120,120,.14); }
 .session-content { min-width: 0; flex: 1; }
 .session-topline { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.session-heading { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
 .session-topline span { color: #9eafc5; }
 .session-id { overflow: hidden; margin-top: 3px; color: #a9b8ca; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .session-path { overflow: hidden; margin-top: 2px; color: #7d8ea3; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .session-card p { margin: 6px 0 0; color: #8ea0b9; font-size: 11px; line-height: 1.4; }
 .session-actions { display: flex; gap: 11px; margin-top: 7px; }
 .session-card p.session-focus-error { margin: 6px 0 0; color: #f3b4b4; font-size: 11px; line-height: 1.4; }
+.session-card p.session-focus-note { margin: 6px 0 0; color: #9ee7b0; font-size: 11px; line-height: 1.4; }
+.jump-badge { flex: 0 0 auto; padding: 2px 7px; border-radius: 99px; color: #93dcab; background: rgba(31, 77, 51, .55); font-size: 9px; font-weight: 800; letter-spacing: .06em; }
 .session-actions button, .text-button { padding: 0; border: 0; color: #91c7ff; background: none; font-size: 11px; cursor: pointer; }
 .session-actions button:hover, .text-button:hover { color: #d4eaff; }
 .audit-list { display: grid; flex: 1 1 auto; align-content: start; gap: 7px; min-height: 0; overflow-y: auto; padding-right: 2px; }

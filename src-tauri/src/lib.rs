@@ -450,6 +450,7 @@ fn focus_source(
         Err(reason) => {
             return FocusResult {
                 focused: false,
+                precise: false,
                 reason: Some(reason),
             }
         }
@@ -485,6 +486,17 @@ fn show_panel(app: &AppHandle) {
         let _ = panel.show();
         let _ = panel.set_focus();
     }
+    refresh_presenter_snapshot(app);
+}
+
+fn refresh_presenter_snapshot(app: &AppHandle) {
+    let Some(state) = app.try_state::<AppService>() else {
+        return;
+    };
+    let Ok(snapshot) = current_session(&state).and_then(|session| session.snapshot()) else {
+        return;
+    };
+    let _ = app.emit("dock:snapshot", SnapshotMessage::snapshot(snapshot, None));
 }
 
 #[tauri::command]
@@ -673,6 +685,13 @@ pub fn run() {
             } if label == "ball" => {
                 api.prevent_close();
                 hide_panel_window(app);
+            }
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Focused(true),
+                ..
+            } if label == "panel" => {
+                refresh_presenter_snapshot(app);
             }
             _ => {}
         });

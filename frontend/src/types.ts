@@ -16,6 +16,7 @@ export interface SessionSnapshot {
   deep_link: string | null;
   project_path: string | null;
   window_title: string | null;
+  terminal_id: string | null;
   requires_user_action: boolean;
   acknowledged: boolean;
   occurred_at: string;
@@ -42,6 +43,7 @@ export interface Snapshot {
 
 export interface FocusResult {
   focused: boolean;
+  precise: boolean;
   reason: string | null;
 }
 

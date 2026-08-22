@@ -10,9 +10,11 @@ mod notify;
 
 pub use capture::{captured_keys_to_drop, sessions_to_capture, CaptureSession, SessionKey};
 pub use jump::{
-    focus_decision, is_terminal_window_candidate, process_image_file_name, project_path_hint,
+    captured_hwnd_usable, dock_tab_title, dock_terminal_marker, focus_decision, format_dock_marker,
+    is_terminal_window_candidate, process_image_file_name, project_path_hint,
     select_unique_window_title, select_window_by_hints, session_terminal_title, FocusDecision,
-    FocusRequest, TERMINAL_PROCESS_NAMES, TERMINAL_WINDOW_CLASSES,
+    FocusRequest, DOCK_MARKER_HEX_LEN, DOCK_TERMINAL_PREFIX, JUMP_WINDOW_MISSING,
+    TERMINAL_PROCESS_NAMES, TERMINAL_WINDOW_CLASSES,
 };
 pub use notify::{
     dispatch_attention_toast, highlight_key, highlight_target, toast_for_attention,
@@ -203,6 +205,8 @@ pub struct SessionSnapshot {
     pub project_path: Option<String>,
     #[serde(default)]
     pub window_title: Option<String>,
+    #[serde(default)]
+    pub terminal_id: Option<String>,
     pub requires_user_action: bool,
     pub acknowledged: bool,
     pub occurred_at: String,
@@ -453,7 +457,8 @@ impl DockState {
         if matches!(
             kind,
             EventKind::Started | EventKind::Working | EventKind::Idle
-        ) {
+        ) && !self.sessions.contains_key(&key)
+        {
             if let Some(terminal_id) = normalize_optional(&event.terminal_id).map(str::to_owned) {
                 self.retire_other_terminal_sessions(&terminal_id, &key);
             }
@@ -804,6 +809,7 @@ impl SessionRecord {
             deep_link: self.deep_link.clone(),
             project_path: self.project_path.clone(),
             window_title: self.window_title.clone(),
+            terminal_id: self.terminal_id.clone(),
             requires_user_action: self.requires_user_action,
             acknowledged: self.acknowledged,
             occurred_at: self.occurred_at.clone(),

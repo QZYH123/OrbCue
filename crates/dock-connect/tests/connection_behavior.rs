@@ -8,7 +8,14 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_env() -> MutexGuard<'static, ()> {
+    ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner())
+}
 
 fn temp_root() -> std::path::PathBuf {
     let nonce = SystemTime::now()
@@ -142,6 +149,7 @@ fn wrapper_path_is_injected_into_every_existing_shell_profile() {
 
 #[test]
 fn zsh_users_get_a_zshrc_snippet_even_when_only_bashrc_exists() {
+    let _guard = lock_env();
     let root = temp_root();
     let home = root.join("home");
     fs::create_dir_all(&home).unwrap();
@@ -256,6 +264,7 @@ fn all_paths(root: &Path) -> BTreeSet<PathBuf> {
 }
 
 fn with_shell(shell: &str, body: impl FnOnce()) {
+    let _guard = lock_env();
     let previous = std::env::var_os("SHELL");
     std::env::set_var("SHELL", shell);
     body();
@@ -387,6 +396,7 @@ fn claude_preview_notes_backup_and_disconnect_keeps_other_hooks() {
         root.join("data"),
         root.join("dock"),
     );
+    let _guard = lock_env();
     let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
     std::env::set_var("CLAUDE_CONFIG_DIR", &claude_dir);
     let preview = manager.preview("claude", &original).unwrap();
