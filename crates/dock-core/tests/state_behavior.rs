@@ -735,6 +735,19 @@ fn liveness_merges_as_a_complete_tuple_and_stays_off_the_snapshot() {
         Some("Ubuntu-24.04")
     );
 
+    let mut hijack = event("e2b", EventKind::Completed, "s1");
+    hijack
+        .metadata
+        .insert("agent_os".to_owned(), "linux".to_owned());
+    hijack
+        .metadata
+        .insert("agent_pid".to_owned(), "99".to_owned());
+    hijack
+        .metadata
+        .insert("agent_starttime".to_owned(), "1".to_owned());
+    state.apply(hijack);
+    assert_eq!(state.liveness_targets()[0].2.pid, 42);
+
     let mut incomplete = event("e3", EventKind::Idle, "s1");
     incomplete
         .metadata

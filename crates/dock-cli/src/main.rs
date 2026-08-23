@@ -490,16 +490,17 @@ fn attach_liveness(event: &mut DockEvent) {
     {
         return;
     }
+    // Stop/SessionEnd run as the turn or session is ending. Recording that
+    // short-lived hook parent would make the 15s reaper close a live agent.
+    if matches!(
+        event.kind,
+        EventKind::Completed | EventKind::Closed | EventKind::Failed | EventKind::Cancelled
+    ) {
+        return;
+    }
     #[cfg(unix)]
     {
-        let pid = unsafe { libc::getppid() };
-        if pid <= 1 {
-            return;
-        }
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            return;
-        };
-        let Some((_, _, starttime)) = parse_proc_stat(&stat) else {
+        let Some((pid, starttime)) = linux_agent_liveness() else {
             return;
         };
         event
@@ -892,6 +893,30 @@ fn looks_like_tty_path(path: &str) -> bool {
             || path
                 .strip_prefix("/dev/tty")
                 .is_some_and(|rest| !rest.is_empty()))
+}
+
+#[cfg(unix)]
+fn linux_agent_liveness() -> Option<(u32, u64)> {
+    let mut pid = unsafe { libc::getppid() };
+    if pid <= 1 {
+        return None;
+    }
+    for _ in 0..8 {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (ppid, _, starttime) = parse_proc_stat(&stat)?;
+        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+        if is_short_lived_hook_parent(comm.trim()) && ppid > 1 {
+            pid = ppid;
+            continue;
+        }
+        return Some((pid as u32, starttime));
+    }
+    None
+}
+
+#[cfg(unix)]
+fn is_short_lived_hook_parent(comm: &str) -> bool {
+    matches!(comm, "sh" | "dash" | "bash" | "zsh" | "fish")
 }
 
 fn parse_proc_stat(contents: &str) -> Option<(i32, u32, u64)> {
@@ -1818,6 +1843,21 @@ mod tests {
         assert!(!stays_on_agent_os(&Command::Bridge));
         assert!(!stays_on_agent_os(&Command::Emit));
         assert!(stays_on_agent_os(&Command::LivenessCheck));
+    }
+
+    #[test]
+    fn completed_hooks_do_not_attach_liveness() {
+        let mut event = agent_activity_dock_core::DockEvent::new(
+            "e-stop",
+            EventKind::Completed,
+            "claude",
+            "s1",
+        );
+        super::attach_liveness(&mut event);
+        assert!(
+            !event.metadata.contains_key("agent_pid"),
+            "Stop/completed must not rewrite liveness to a dying hook parent"
+        );
     }
 
     #[test]

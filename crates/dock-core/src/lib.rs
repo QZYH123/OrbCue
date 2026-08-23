@@ -896,10 +896,27 @@ fn update_record(record: &mut SessionRecord, event: &DockEvent) {
     if let Some(terminal_id) = normalize_optional(&event.terminal_id) {
         record.terminal_id = Some(terminal_id.to_owned());
     }
-    if let Some(liveness) = liveness_from_event(event) {
-        record.liveness = Some(liveness);
-    }
+    record.liveness = merge_liveness(record.liveness.take(), liveness_from_event(event));
     record.occurred_at = event.occurred_at.clone();
+}
+
+fn merge_liveness(
+    existing: Option<AgentLiveness>,
+    incoming: Option<AgentLiveness>,
+) -> Option<AgentLiveness> {
+    match (existing, incoming) {
+        (None, incoming) => incoming,
+        (existing, None) => existing,
+        (Some(old), Some(new)) if old.pid == new.pid && old.starttime == new.starttime => {
+            Some(AgentLiveness {
+                os: new.os,
+                pid: old.pid,
+                starttime: old.starttime,
+                distro: new.distro.or(old.distro),
+            })
+        }
+        (Some(old), Some(_)) => Some(old),
+    }
 }
 
 fn liveness_from_event(event: &DockEvent) -> Option<AgentLiveness> {
