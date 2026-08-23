@@ -142,6 +142,32 @@ fn dock_binary_path(app: &AppHandle) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("dock"))
 }
 
+fn install_windows_trampoline_cli(app: &AppHandle) {
+    #[cfg(windows)]
+    {
+        let source = dock_binary_path(app);
+        if !source.is_file() {
+            return;
+        }
+        let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let dest_dir = std::path::PathBuf::from(local).join("Agent Activity Dock");
+        if let Err(error) = std::fs::create_dir_all(&dest_dir) {
+            eprintln!("Agent Activity Dock: cannot create trampoline dir: {error}");
+            return;
+        }
+        let dest = dest_dir.join("dock.exe");
+        if let Err(error) = std::fs::copy(&source, &dest) {
+            eprintln!(
+                "Agent Activity Dock: cannot install trampoline {}: {error}",
+                dest.display()
+            );
+        }
+    }
+    let _ = app;
+}
+
 fn sidecar_name() -> String {
     let target = if cfg!(all(windows, target_arch = "x86_64")) {
         return "dock-x86_64-pc-windows-msvc.exe".to_owned();
@@ -623,6 +649,7 @@ pub fn run() {
         .setup(move |app| {
             let app_handle = app.handle().clone();
             configure_windows(&app_handle);
+            install_windows_trampoline_cli(&app_handle);
             position_ball(&app_handle);
             region::apply_ball_region_for(&app_handle);
             install_tray(app);
