@@ -427,8 +427,22 @@ fn claude_preview_notes_backup_and_disconnect_keeps_other_hooks() {
     manager.connect("claude", &original).unwrap();
     let connected = fs::read_to_string(&settings).unwrap();
     assert!(connected.contains("SessionStart"));
+    assert!(connected.contains("UserPromptSubmit"));
     assert!(connected.contains("PreToolUse"));
+    assert!(connected.contains("PostToolUse"));
+    assert!(connected.contains("\"Stop\""));
     assert!(connected.contains("user-hook"));
+    fs::write(
+        &settings,
+        br#"{"hooks":{"UserEvent":[{"hooks":[{"type":"command","command":"user-hook"}]}],"SessionStart":[{"hooks":[{"type":"command","command":"/usr/bin/python3","args":["/tmp/agent-activity-dock/hooks/claude-hook.py"]}]}]}}"#,
+    )
+    .unwrap();
+    manager.connect("claude", &original).unwrap();
+    let refreshed = fs::read_to_string(&settings).unwrap();
+    assert!(refreshed.contains("UserPromptSubmit"));
+    assert!(refreshed.contains("\"Stop\""));
+    assert!(!refreshed.contains("python3"));
+    assert!(!refreshed.contains("claude-hook.py"));
     assert!(manager.disconnect("claude").unwrap());
     let remaining = fs::read_to_string(&settings).unwrap();
     assert!(remaining.contains("user-hook"));

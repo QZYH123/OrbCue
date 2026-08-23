@@ -216,8 +216,14 @@ impl ConnectionManager {
         let mut file = self.load();
         if let Some(existing) = file.agents.get(name) {
             if existing.original == original && existing.method == method {
-                if method == ConnectionMethod::GrokHook {
-                    self.install_grok_hook()?;
+                match method {
+                    ConnectionMethod::GrokHook => {
+                        self.install_grok_hook()?;
+                    }
+                    ConnectionMethod::ClaudeHook => {
+                        self.install_claude_hook()?;
+                    }
+                    ConnectionMethod::Wrapper => {}
                 }
                 return Ok(existing.clone());
             }
@@ -702,12 +708,14 @@ fn install_claude_settings_at(
         let entries = entries
             .as_array_mut()
             .ok_or_else(|| format!("Claude hook {event} must be an array"))?;
-        entries.retain(|entry| {
-            !entry
-                .to_string()
-                .contains(&hook.to_string_lossy().to_string())
-        });
-        entries.push(json!({"hooks":[{"type":"command","command":hook.to_string_lossy()}]}));
+        entries.retain(|entry| !is_dock_claude_hook(entry, hook));
+        entries.push(json!({
+            "hooks": [{
+                "type": "command",
+                "command": hook.to_string_lossy(),
+                "timeout": 5
+            }]
+        }));
     }
     let backup = existing.map(|bytes| {
         let backup = settings_path.with_file_name("settings.json.agent-activity-dock.bak");
@@ -750,11 +758,7 @@ fn uninstall_claude_settings_at(settings_path: &Path, hook: &Path) -> Result<(),
     if let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) {
         for entries in hooks.values_mut() {
             if let Some(entries) = entries.as_array_mut() {
-                entries.retain(|entry| {
-                    !entry
-                        .to_string()
-                        .contains(&hook.to_string_lossy().to_string())
-                });
+                entries.retain(|entry| !is_dock_claude_hook(entry, hook));
             }
         }
     }
@@ -825,13 +829,26 @@ fn preview_notes(method: ConnectionMethod) -> Vec<String> {
     }
 }
 
+fn is_dock_claude_hook(entry: &Value, hook: &Path) -> bool {
+    let text = entry.to_string();
+    let hook = hook.to_string_lossy();
+    text.contains(hook.as_ref())
+        || text.contains("agent-activity-dock")
+        || text.contains("claude-hook")
+        || text.contains("hook claude")
+}
+
 fn claude_hook_events() -> Vec<String> {
     [
         "SessionStart",
+        "UserPromptSubmit",
         "PreToolUse",
+        "PostToolUse",
         "PermissionRequest",
-        "SessionEnd",
+        "Notification",
+        "Stop",
         "StopFailure",
+        "SessionEnd",
     ]
     .into_iter()
     .map(str::to_owned)

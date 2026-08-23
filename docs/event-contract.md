@@ -135,7 +135,7 @@ dock reset --source claude --session-id session-123
 
 | source | 输入 | 能力 |
 | --- | --- | --- |
-| Claude | `settings.json` hooks：`SessionStart`、`PreToolUse`、`PermissionRequest`、`SessionEnd`、`StopFailure`；`SubagentStart` / `SubagentStop` 及带 parent 线索的 payload | working、permission、completed、failed；子代理填 `parent_session_id` 或丢弃 |
+| Claude | 结构化 hook payload | idle、working、permission、waiting、completed、failed、closed；`UserPromptSubmit`/`PreToolUse`/`PostToolUse` 标工作中；`Stop` 在仍有 background subagent 时保持 working，否则已完成；`SessionEnd` 为关闭（不是已完成）；带 parent 线索的子代理 permission/failed 可折叠，否则丢弃。hook 是观察者，投递失败必须 exit 0 |
 | Codex | 结构化 notification payload | working、completed、failed、cancelled；payload 带 parent 线索时填 `parent_session_id` |
 | DSH | `session.*` projection payload | working、waiting、completed、failed、cancelled；payload 带 parent 线索时填 `parent_session_id` |
 | Grok | 结构化 hook payload | idle、working、permission、completed、failed、closed；`PreToolUse`/`PostToolUse` 标回工作中；`Stop end_turn` 在仍有 background subagent 时保持 working，shell/monitor 挂起与空任务视为已完成；带 `subagentType` 的 payload 仍丢弃。hook 是观察者：投递失败必须 exit 0，不得把 Grok `Stop` 变成闸门。生成的 hook 脚本必须 `exec dock`，否则 liveness 会把短命 hook 壳当成 agent，约 15s 后误发 `session.closed` |

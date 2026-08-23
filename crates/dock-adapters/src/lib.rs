@@ -9,20 +9,43 @@ pub fn claude_hook(payload: &Value) -> Option<DockEvent> {
     let event_name = payload
         .get("hook_event_name")
         .or_else(|| payload.get("hook_event"))
-        .and_then(Value::as_str)?;
-    let kind = match event_name {
-        "SessionStart" | "PreToolUse" | "SubagentStart" => EventKind::Working,
-        "PermissionRequest" => EventKind::PermissionRequested,
-        "SessionEnd" | "SubagentStop" => EventKind::Completed,
-        "StopFailure" => EventKind::Failed,
+        .or_else(|| payload.get("hookEventName"))
+        .and_then(Value::as_str)
+        .map(normalize_hook_event)?;
+    let kind = match event_name.as_str() {
+        "session_start" => EventKind::Idle,
+        "user_prompt_submit" | "pre_tool_use" | "post_tool_use" | "subagent_start" => {
+            EventKind::Working
+        }
+        "permission_request" => EventKind::PermissionRequested,
+        "stop" => match payload.get("reason").and_then(Value::as_str).unwrap_or("") {
+            "channel_closed" | "shutdown" => EventKind::Closed,
+            _ if stop_has_active_subagent(payload) => EventKind::Working,
+            _ => EventKind::Completed,
+        },
+        "stop_failure" => EventKind::Failed,
+        "session_end" => EventKind::Closed,
+        "notification" => match notification_type(payload)? {
+            "permission_prompt" | "permission" => EventKind::PermissionRequested,
+            "agent_needs_input" => EventKind::WaitingInput,
+            "idle_prompt" | "task_complete" | "agent_completed" => EventKind::Completed,
+            _ => return None,
+        },
+        "subagent_stop" => return None,
         _ => return None,
     };
-    let session_id = payload.get("session_id").and_then(Value::as_str)?;
-    if is_named_subagent_hook(event_name) && extract_parent(payload).is_none() {
+    let session_id = payload
+        .get("session_id")
+        .or_else(|| payload.get("sessionId"))
+        .and_then(Value::as_str)?;
+    if is_named_subagent_hook(&event_name) && extract_parent(payload).is_none() {
         return None;
     }
     let mut event = make_event("claude", session_id, kind, payload);
-    if kind == EventKind::PermissionRequested {
+    if matches!(
+        kind,
+        EventKind::PermissionRequested | EventKind::WaitingInput
+    ) {
         event.severity = Severity::Attention;
         event.requires_user_action = Some(true);
     }
@@ -56,13 +79,13 @@ pub fn grok_hook(payload: &Value) -> Option<DockEvent> {
         .or_else(|| payload.get("hook_event_name"))
         .or_else(|| payload.get("hook_event"))
         .and_then(Value::as_str)
-        .map(|value| value.replace('-', "_").to_ascii_lowercase())?;
+        .map(normalize_hook_event)?;
     let kind = match event_name.as_str() {
         "session_start" => EventKind::Idle,
         "user_prompt_submit" | "pre_tool_use" | "post_tool_use" => EventKind::Working,
         "stop" => match payload.get("reason").and_then(Value::as_str).unwrap_or("") {
             "channel_closed" | "shutdown" => EventKind::Closed,
-            "end_turn" | "" if grok_stop_has_active_subagent(payload) => EventKind::Working,
+            "end_turn" | "" if stop_has_active_subagent(payload) => EventKind::Working,
             "end_turn" | "" => EventKind::Completed,
             _ => return None,
         },
@@ -91,7 +114,7 @@ pub fn grok_hook(payload: &Value) -> Option<DockEvent> {
     Some(event)
 }
 
-fn grok_stop_has_active_subagent(payload: &Value) -> bool {
+fn stop_has_active_subagent(payload: &Value) -> bool {
     payload
         .get("backgroundTasks")
         .or_else(|| payload.get("background_tasks"))
@@ -174,6 +197,8 @@ fn extract_parent(payload: &Value) -> Option<String> {
     payload
         .get("parent_session_id")
         .or_else(|| payload.get("parentSessionId"))
+        .or_else(|| payload.get("parent_agent_id"))
+        .or_else(|| payload.get("parentAgentId"))
         .or_else(|| payload.get("parent_id"))
         .or_else(|| payload.get("parentId"))
         .and_then(Value::as_str)
@@ -182,9 +207,28 @@ fn extract_parent(payload: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn normalize_hook_event(value: &str) -> String {
+    let mut out = String::new();
+    let mut prev_lower = false;
+    for character in value.chars() {
+        if matches!(character, '-' | '_') {
+            if !out.ends_with('_') {
+                out.push('_');
+            }
+            prev_lower = false;
+            continue;
+        }
+        if character.is_ascii_uppercase() && prev_lower {
+            out.push('_');
+        }
+        out.push(character.to_ascii_lowercase());
+        prev_lower = character.is_ascii_lowercase() || character.is_ascii_digit();
+    }
+    out
+}
+
 fn is_named_subagent_hook(event_name: &str) -> bool {
-    let normalized = event_name.replace('-', "_").to_ascii_lowercase();
-    normalized.contains("subagent")
+    normalize_hook_event(event_name).contains("subagent")
 }
 
 fn kind_name(kind: EventKind) -> &'static str {

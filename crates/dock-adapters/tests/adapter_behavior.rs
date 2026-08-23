@@ -17,6 +17,53 @@ fn claude_adapter_uses_only_hook_metadata() {
 }
 
 #[test]
+fn claude_adapter_follows_turn_lifecycle() {
+    let opened = claude_hook(&serde_json::json!({
+        "hook_event_name": "SessionStart",
+        "session_id": "claude-session"
+    }))
+    .unwrap();
+    assert_eq!(opened.kind, EventKind::Idle);
+
+    let prompt = claude_hook(&serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "claude-session"
+    }))
+    .unwrap();
+    assert_eq!(prompt.kind, EventKind::Working);
+
+    let tool = claude_hook(&serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "session_id": "claude-session",
+        "tool_name": "Read"
+    }))
+    .unwrap();
+    assert_eq!(tool.kind, EventKind::Working);
+
+    let stop = claude_hook(&serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "claude-session"
+    }))
+    .unwrap();
+    assert_eq!(stop.kind, EventKind::Completed);
+
+    let nested = claude_hook(&serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "claude-session",
+        "background_tasks": [{"id": "s1", "type": "subagent", "status": "running"}]
+    }))
+    .unwrap();
+    assert_eq!(nested.kind, EventKind::Working);
+
+    let ended = claude_hook(&serde_json::json!({
+        "hook_event_name": "SessionEnd",
+        "session_id": "claude-session"
+    }))
+    .unwrap();
+    assert_eq!(ended.kind, EventKind::Closed);
+}
+
+#[test]
 fn claude_named_subagent_hooks_are_dropped_without_parent() {
     assert!(claude_hook(&serde_json::json!({
         "hook_event_name": "SubagentStop",
