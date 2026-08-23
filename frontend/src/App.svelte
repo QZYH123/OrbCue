@@ -536,6 +536,8 @@
       const result = await invoke<FocusResult>('focus_source', {
         source: session.source,
         sessionId: session.session_id,
+        terminalId: session.terminal_id,
+        deepLink: session.deep_link,
       });
       const feedback = jumpFeedback(result);
       if (feedback.kind === 'error') {

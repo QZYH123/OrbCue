@@ -29,7 +29,8 @@ const AGENT_NAMES: Record<string, string> = {
   dsh: 'DSH',
 };
 
-const DOCK_MARKER = /^dock:[0-9a-f]{6}\s*[·•\-–—]\s*/i;
+const DOCK_MARKER_PREFIX = /^dock:[0-9a-f]{6}\s*[·•\-–—]\s*/i;
+const DOCK_MARKER_SUFFIX = /\s*[·•\-–—]\s*dock:[0-9a-f]{6}$/i;
 const WT_PREFIX = /^Windows Terminal\s*[-–—]\s*/i;
 const OTHER_LABEL = '其他';
 
@@ -59,7 +60,11 @@ export function shortSessionId(id: string): string {
 }
 
 export function cleanWindowTitle(title: string): string {
-  return title.replace(WT_PREFIX, '').replace(DOCK_MARKER, '').trim();
+  return title
+    .replace(WT_PREFIX, '')
+    .replace(DOCK_MARKER_PREFIX, '')
+    .replace(DOCK_MARKER_SUFFIX, '')
+    .trim();
 }
 
 export function sessionDetail(session: SessionLike): string {

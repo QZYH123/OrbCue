@@ -24,19 +24,31 @@ impl FocusDecision {
 }
 
 pub fn focus_decision(request: &FocusRequest) -> FocusDecision {
+    focus_attempts(request)
+        .into_iter()
+        .next()
+        .unwrap_or(FocusDecision::UseCapturedWindow)
+}
+
+/// Ordered attempts for one jump-back click. `dock:` is precise; captured HWND
+/// is only a fallback after that channel misses.
+pub fn focus_attempts(request: &FocusRequest) -> Vec<FocusDecision> {
     if let Some(url) = nonempty(request.deep_link.as_deref()) {
-        return FocusDecision::OpenDeepLink(url.to_owned());
+        return vec![FocusDecision::OpenDeepLink(url.to_owned())];
     }
     if let Some(marker) = request
         .terminal_id
         .as_deref()
         .and_then(dock_terminal_marker)
     {
-        return FocusDecision::FocusDockMarker {
-            marker: marker.to_owned(),
-        };
+        return vec![
+            FocusDecision::FocusDockMarker {
+                marker: marker.to_owned(),
+            },
+            FocusDecision::UseCapturedWindow,
+        ];
     }
-    FocusDecision::UseCapturedWindow
+    vec![FocusDecision::UseCapturedWindow]
 }
 
 /// `dock:` + 6 hex digits. Used as both `terminal_id` and the WT tab title marker.
@@ -160,19 +172,19 @@ pub fn is_terminal_window_candidate(class_name: &str, process_image: &str) -> bo
 
 pub fn session_terminal_title(source: &str, project_path: Option<&str>) -> String {
     match nonempty(project_path) {
-        Some(path) => format!("{source} · {}", project_path_hint(path)),
+        Some(path) => format!("{} · {source}", project_path_hint(path)),
         None => source.to_owned(),
     }
 }
 
 pub fn dock_tab_title(agent: &str, project_path: Option<&str>, marker: &str) -> String {
-    format!("{marker} · {}", session_terminal_title(agent, project_path))
+    format!("{} · {marker}", session_terminal_title(agent, project_path))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        captured_hwnd_usable, dock_tab_title, dock_terminal_marker, focus_decision,
+        captured_hwnd_usable, dock_tab_title, dock_terminal_marker, focus_attempts, focus_decision,
         format_dock_marker, is_terminal_window_candidate, project_path_hint,
         select_unique_window_title, session_terminal_title, FocusDecision, FocusRequest,
         JUMP_WINDOW_MISSING,
@@ -234,6 +246,32 @@ mod tests {
     }
 
     #[test]
+    fn dock_marker_falls_back_to_captured_window() {
+        assert_eq!(
+            focus_attempts(&request(None, Some("dock:ab12cd"))),
+            [
+                FocusDecision::FocusDockMarker {
+                    marker: "dock:ab12cd".to_owned(),
+                },
+                FocusDecision::UseCapturedWindow,
+            ]
+        );
+        assert_eq!(
+            focus_attempts(&request(
+                Some("https://example.invalid/s"),
+                Some("dock:ab12cd")
+            )),
+            [FocusDecision::OpenDeepLink(
+                "https://example.invalid/s".to_owned()
+            )]
+        );
+        assert_eq!(
+            focus_attempts(&request(None, None)),
+            [FocusDecision::UseCapturedWindow]
+        );
+    }
+
+    #[test]
     fn captured_hwnd_dead_or_non_terminal_is_not_usable() {
         assert!(!captured_hwnd_usable(false, true));
         assert!(!captured_hwnd_usable(true, false));
@@ -245,11 +283,11 @@ mod tests {
     fn unique_title_match_returns_that_title() {
         let titles = [
             "Visual Studio Code",
-            "grok · agent-activity-dock — dock:ab12cd",
+            "agent-activity-dock · grok · dock:ab12cd",
         ];
         assert_eq!(
             select_unique_window_title(&titles, "dock:ab12cd").unwrap(),
-            "grok · agent-activity-dock — dock:ab12cd"
+            "agent-activity-dock · grok · dock:ab12cd"
         );
     }
 
@@ -318,16 +356,16 @@ mod tests {
         assert_eq!(project_path_hint(path), "agent-activity-dock");
         assert_eq!(
             session_terminal_title("grok", Some(path)),
-            "grok · agent-activity-dock"
+            "agent-activity-dock · grok"
         );
         assert_eq!(
             dock_tab_title("grok", Some(path), "dock:ab12cd"),
-            "dock:ab12cd · grok · agent-activity-dock"
+            "agent-activity-dock · grok · dock:ab12cd"
         );
         assert_eq!(
             session_terminal_title("claude", Some(r"C:\Users\qingz\work\repo\")),
             format!(
-                "claude · {}",
+                "{} · claude",
                 project_path_hint(r"C:\Users\qingz\work\repo\\")
             )
         );
@@ -335,7 +373,7 @@ mod tests {
         assert_eq!(session_terminal_title("grok", Some("")), "grok");
         assert_eq!(
             dock_tab_title("claude", None, "dock:00ffaa"),
-            "dock:00ffaa · claude"
+            "claude · dock:00ffaa"
         );
     }
 }

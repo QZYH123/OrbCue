@@ -30,6 +30,9 @@ pub struct SpawnRequest {
     pub distro: String,
     pub shell: String,
     pub extra_exports: Vec<(String, String)>,
+    /// Windows Terminal profile name or GUID. Inherited from the current tab
+    /// when omitted (`WT_PROFILE_ID`).
+    pub profile: Option<String>,
     /// Linux path of the tab bootstrap script. Avoids `;` / quotes on the WT
     /// command line — WT treats `;` as a command separator.
     pub run_script: Option<PathBuf>,
@@ -172,8 +175,8 @@ pub struct SpawnPlan {
 static MARKERS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 static MARKER_SEQ: AtomicU64 = AtomicU64::new(1);
 
-pub fn run_command(agent: &str, args: &[String], json_output: bool) -> i32 {
-    match run_command_inner(agent, args) {
+pub fn run_command(agent: &str, args: &[String], profile: Option<&str>, json_output: bool) -> i32 {
+    match run_command_inner(agent, args, profile) {
         Ok(started) => {
             if json_output {
                 println!(
@@ -183,6 +186,7 @@ pub fn run_command(agent: &str, args: &[String], json_output: bool) -> i32 {
                         "marker": started.marker,
                         "title": started.title,
                         "agent": started.agent,
+                        "profile": started.profile,
                     })
                 );
             } else {
@@ -208,9 +212,14 @@ struct StartedTab {
     agent: String,
     marker: String,
     title: String,
+    profile: Option<String>,
 }
 
-fn run_command_inner(agent: &str, args: &[String]) -> Result<StartedTab, String> {
+fn run_command_inner(
+    agent: &str,
+    args: &[String],
+    profile: Option<&str>,
+) -> Result<StartedTab, String> {
     let command = resolve_agent(agent)?;
     let adapter = WindowsTerminalAdapter {
         wt: find_wt()?,
@@ -225,6 +234,7 @@ fn run_command_inner(agent: &str, args: &[String]) -> Result<StartedTab, String>
         .unwrap_or_else(|| "/bin/bash".to_owned());
     let marker = allocate_dock_marker();
     let extra_exports = forwarded_exports();
+    let profile = resolve_wt_profile(profile)?;
     let mut request = SpawnRequest {
         agent: agent.to_owned(),
         command,
@@ -234,6 +244,7 @@ fn run_command_inner(agent: &str, args: &[String]) -> Result<StartedTab, String>
         distro,
         shell,
         extra_exports,
+        profile: profile.clone(),
         run_script: None,
     };
     request.run_script = Some(write_run_script(&request)?);
@@ -242,6 +253,7 @@ fn run_command_inner(agent: &str, args: &[String]) -> Result<StartedTab, String>
         agent: agent.to_owned(),
         marker,
         title: plan.title,
+        profile,
     })
 }
 
@@ -263,26 +275,34 @@ pub fn spawn_plan(wt: &Path, wsl: &Path, request: &SpawnRequest) -> Result<Spawn
         .run_script
         .as_ref()
         .ok_or_else(|| "missing dock run bootstrap script".to_owned())?;
+    let mut args = vec!["-w".to_owned(), "0".to_owned(), "nt".to_owned()];
+    if let Some(profile) = request
+        .profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        args.push("--profile".to_owned());
+        args.push(profile.to_owned());
+    }
+    args.extend([
+        "--title".to_owned(),
+        title.clone(),
+        "--suppressApplicationTitle".to_owned(),
+        "--".to_owned(),
+        windows_wsl_command(wsl),
+        "-d".to_owned(),
+        request.distro.clone(),
+        "--cd".to_owned(),
+        cwd.to_owned(),
+        "--".to_owned(),
+        request.shell.clone(),
+        "-l".to_owned(),
+        script.display().to_string(),
+    ]);
     Ok(SpawnPlan {
         program: wt.to_path_buf(),
-        args: vec![
-            "-w".to_owned(),
-            "0".to_owned(),
-            "nt".to_owned(),
-            "--title".to_owned(),
-            title.clone(),
-            "--suppressApplicationTitle".to_owned(),
-            "--".to_owned(),
-            windows_wsl_command(wsl),
-            "-d".to_owned(),
-            request.distro.clone(),
-            "--cd".to_owned(),
-            cwd.to_owned(),
-            "--".to_owned(),
-            request.shell.clone(),
-            "-l".to_owned(),
-            script.display().to_string(),
-        ],
+        args,
         title,
     })
 }
@@ -385,6 +405,44 @@ fn resolve_agent(name: &str) -> Result<String, String> {
     Err(format!(
         "`{name}` 未连接，也不在 PATH 上。先执行 `dock connect {name}`，或确认该命令可用。"
     ))
+}
+
+fn resolve_wt_profile(explicit: Option<&str>) -> Result<Option<String>, String> {
+    choose_wt_profile(
+        explicit,
+        env::var("AGENT_ACTIVITY_DOCK_WT_PROFILE").ok().as_deref(),
+        env::var("WT_PROFILE_ID").ok().as_deref(),
+    )
+}
+
+fn choose_wt_profile(
+    explicit: Option<&str>,
+    env_override: Option<&str>,
+    wt_profile_id: Option<&str>,
+) -> Result<Option<String>, String> {
+    if let Some(value) = explicit {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        if !valid_wt_profile(trimmed) {
+            return Err("Windows Terminal 配置文件名无效".to_owned());
+        }
+        return Ok(Some(trimmed.to_owned()));
+    }
+    for value in [env_override, wt_profile_id].into_iter().flatten() {
+        let trimmed = value.trim();
+        if valid_wt_profile(trimmed) {
+            return Ok(Some(trimmed.to_owned()));
+        }
+    }
+    Ok(None)
+}
+
+fn valid_wt_profile(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && !value.chars().any(|character| character.is_control())
 }
 
 fn valid_run_agent_name(name: &str) -> bool {
@@ -503,8 +561,8 @@ pub fn posix_single_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        allocate_dock_marker, inner_script, posix_single_quote, spawn_plan, windows_quote,
-        wt_windows_command_line, SpawnRequest,
+        allocate_dock_marker, choose_wt_profile, inner_script, posix_single_quote, spawn_plan,
+        windows_quote, wt_windows_command_line, SpawnRequest,
     };
     use agent_activity_dock_core::{dock_terminal_marker, DOCK_MARKER_HEX_LEN};
     use std::collections::HashSet;
@@ -523,6 +581,7 @@ mod tests {
                 "AGENT_ACTIVITY_DOCK_SOCKET".to_owned(),
                 "/tmp/dock.sock".to_owned(),
             )],
+            profile: None,
             run_script: Some(PathBuf::from("/tmp/aadock-dock-ab12cd.sh")),
         }
     }
@@ -537,7 +596,7 @@ mod tests {
         .unwrap();
         assert_eq!(plan.program, PathBuf::from("/tmp/wt.exe"));
         assert_eq!(plan.args[..4], ["-w", "0", "nt", "--title"]);
-        assert_eq!(plan.title, "dock:ab12cd · grok · agent-activity-dock");
+        assert_eq!(plan.title, "agent-activity-dock · grok · dock:ab12cd");
         assert!(plan.args.contains(&"--suppressApplicationTitle".to_owned()));
         assert_eq!(plan.args[4], plan.title);
         assert!(plan.args.contains(&"wsl.exe".to_owned()));
@@ -556,6 +615,49 @@ mod tests {
             dock_terminal_marker("dock:ab12cd").map(str::len),
             Some("dock:".len() + DOCK_MARKER_HEX_LEN)
         );
+        assert!(!plan.args.contains(&"--profile".to_owned()));
+    }
+
+    #[test]
+    fn spawn_plan_passes_the_windows_terminal_profile() {
+        let mut req = request();
+        req.profile = Some("{49e41c3b-ba28-5ee9-9084-d161a8acb68e}".to_owned());
+        let plan = spawn_plan(
+            Path::new("/tmp/wt.exe"),
+            Path::new("/mnt/c/Windows/System32/wsl.exe"),
+            &req,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.args[..6],
+            [
+                "-w",
+                "0",
+                "nt",
+                "--profile",
+                "{49e41c3b-ba28-5ee9-9084-d161a8acb68e}",
+                "--title"
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_wt_profile_prefers_explicit_then_env() {
+        assert_eq!(
+            choose_wt_profile(Some("Ubuntu-24.04"), Some("FromEnv"), Some("{guid}")).unwrap(),
+            Some("Ubuntu-24.04".to_owned())
+        );
+        assert_eq!(
+            choose_wt_profile(None, Some("FromEnv"), Some("{guid}")).unwrap(),
+            Some("FromEnv".to_owned())
+        );
+        assert_eq!(
+            choose_wt_profile(None, None, Some("{49e41c3b-ba28-5ee9-9084-d161a8acb68e}")).unwrap(),
+            Some("{49e41c3b-ba28-5ee9-9084-d161a8acb68e}".to_owned())
+        );
+        assert!(choose_wt_profile(Some("bad\nname"), None, None).is_err());
+        assert_eq!(choose_wt_profile(Some("  "), None, None).unwrap(), None);
+        assert_eq!(choose_wt_profile(None, None, None).unwrap(), None);
     }
 
     #[test]

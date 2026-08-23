@@ -6,7 +6,7 @@
 #[cfg(windows)]
 use agent_activity_dock_core::{captured_hwnd_usable, select_unique_window_title};
 use agent_activity_dock_core::{
-    captured_keys_to_drop, dock_terminal_marker, focus_decision, sessions_to_capture,
+    captured_keys_to_drop, dock_terminal_marker, focus_attempts, sessions_to_capture,
     CaptureSession, FocusDecision, FocusRequest, SessionKey, SessionSnapshot, JUMP_WINDOW_MISSING,
 };
 use serde::{Deserialize, Serialize};
@@ -134,29 +134,34 @@ fn forget_hwnd(source: &str, session_id: &str) {
 }
 
 pub fn focus_session(
-    sessions: &[SessionSnapshot],
     source: &str,
     session_id: &str,
+    deep_link: Option<String>,
+    terminal_id: Option<String>,
     open_deep_link: impl FnOnce(&str) -> Result<(), String>,
 ) -> FocusResult {
-    let Some(session) = sessions
-        .iter()
-        .find(|session| session.source == source && session.session_id == session_id)
-    else {
-        forget_hwnd(source, session_id);
-        return FocusResult::failure("会话已不存在");
-    };
-    match focus_decision(&FocusRequest {
-        deep_link: session.deep_link.clone(),
-        terminal_id: session.terminal_id.clone(),
+    let mut last = FocusResult::failure(JUMP_WINDOW_MISSING);
+    let mut opener = Some(open_deep_link);
+    for decision in focus_attempts(&FocusRequest {
+        deep_link,
+        terminal_id,
     }) {
-        FocusDecision::OpenDeepLink(url) => match open_deep_link(&url) {
-            Ok(()) => FocusResult::success(true),
-            Err(reason) => FocusResult::failure(reason),
-        },
-        FocusDecision::FocusDockMarker { marker } => focus_dock_marker(&marker),
-        FocusDecision::UseCapturedWindow => focus_captured_window(source, session_id),
+        last = match decision {
+            FocusDecision::OpenDeepLink(url) => match opener.take() {
+                Some(open) => match open(&url) {
+                    Ok(()) => FocusResult::success(true),
+                    Err(reason) => FocusResult::failure(reason),
+                },
+                None => FocusResult::failure("无法打开会话链接"),
+            },
+            FocusDecision::FocusDockMarker { marker } => focus_dock_marker(&marker),
+            FocusDecision::UseCapturedWindow => focus_captured_window(source, session_id),
+        };
+        if last.focused {
+            return last;
+        }
     }
+    last
 }
 
 fn focus_captured_window(source: &str, session_id: &str) -> FocusResult {
@@ -244,10 +249,15 @@ mod win32 {
         fn ShowWindow(hwnd: isize, ncmd: i32) -> i32;
         fn GetForegroundWindow() -> isize;
         fn IsWindow(hwnd: isize) -> i32;
+        fn AttachThreadInput(attach: u32, attach_to: u32, attach_flag: i32) -> i32;
+        fn BringWindowToTop(hwnd: isize) -> i32;
+        fn AllowSetForegroundWindow(process_id: u32) -> i32;
+        fn keybd_event(vk: u8, scan: u8, flags: u32, extra: usize);
     }
 
     #[link(name = "kernel32")]
     extern "system" {
+        fn GetCurrentThreadId() -> u32;
         fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
         fn QueryFullProcessImageNameW(
             process: isize,
@@ -259,7 +269,11 @@ mod win32 {
     }
 
     const SW_RESTORE: i32 = 9;
+    const SW_SHOW: i32 = 5;
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const ASFW_ANY: u32 = u32::MAX;
+    const VK_MENU: u8 = 0x12;
+    const KEYEVENTF_KEYUP: u32 = 0x0002;
 
     fn utf16_to_string(buf: &[u16], written: i32) -> String {
         if written <= 0 {
@@ -347,10 +361,44 @@ mod win32 {
 
     pub fn bring_to_foreground(hwnd: isize) -> bool {
         unsafe {
+            if hwnd == 0 || IsWindow(hwnd) == 0 {
+                return false;
+            }
             if IsIconic(hwnd) != 0 {
                 ShowWindow(hwnd, SW_RESTORE);
+            } else {
+                ShowWindow(hwnd, SW_SHOW);
             }
-            SetForegroundWindow(hwnd) != 0
+            let _ = AllowSetForegroundWindow(ASFW_ANY);
+            let foreground = GetForegroundWindow();
+            if foreground == hwnd {
+                return true;
+            }
+            let current = GetCurrentThreadId();
+            let foreground_thread = GetWindowThreadProcessId(foreground, std::ptr::null_mut());
+            let target_thread = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
+            let attached_foreground = foreground_thread != 0
+                && foreground_thread != current
+                && AttachThreadInput(current, foreground_thread, 1) != 0;
+            let attached_target = target_thread != 0
+                && target_thread != current
+                && target_thread != foreground_thread
+                && AttachThreadInput(current, target_thread, 1) != 0;
+            let _ = BringWindowToTop(hwnd);
+            let mut focused = SetForegroundWindow(hwnd) != 0 || GetForegroundWindow() == hwnd;
+            if !focused {
+                keybd_event(VK_MENU, 0, 0, 0);
+                focused = SetForegroundWindow(hwnd) != 0;
+                keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0);
+                focused = focused || GetForegroundWindow() == hwnd;
+            }
+            if attached_foreground {
+                let _ = AttachThreadInput(current, foreground_thread, 0);
+            }
+            if attached_target {
+                let _ = AttachThreadInput(current, target_thread, 0);
+            }
+            focused
         }
     }
 
@@ -369,7 +417,7 @@ mod win32 {
         use windows::Win32::UI::Accessibility::{
             CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationElementArray,
             IUIAutomationSelectionItemPattern, TreeScope_Descendants, UIA_ControlTypePropertyId,
-            UIA_SelectionItemPatternId, UIA_TabItemControlTypeId, UIA_WindowControlTypeId,
+            UIA_SelectionItemPatternId, UIA_TabItemControlTypeId,
         };
 
         static COM: Once = Once::new();
@@ -386,29 +434,6 @@ mod win32 {
                     .map_err(|error| error.to_string())?
             };
             let needle = marker.to_lowercase();
-            let root = unsafe {
-                automation
-                    .GetRootElement()
-                    .map_err(|error| error.to_string())?
-            };
-            if focus_named_control(
-                &automation,
-                &root,
-                UIA_WindowControlTypeId.0,
-                &needle,
-                false,
-            )? {
-                return Ok(());
-            }
-            if focus_named_control(
-                &automation,
-                &root,
-                UIA_TabItemControlTypeId.0,
-                &needle,
-                true,
-            )? {
-                return Ok(());
-            }
             for window in windows {
                 let Some(element) = (unsafe {
                     automation
@@ -457,19 +482,22 @@ mod win32 {
                 if !name_contains(&element, needle) {
                     continue;
                 }
+                let mut selected = false;
                 if select_tab {
                     if let Ok(pattern) = unsafe {
                         element.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
                             UIA_SelectionItemPatternId,
                         )
                     } {
-                        let _ = unsafe { pattern.Select() };
+                        selected = unsafe { pattern.Select() }.is_ok();
                     }
                 }
                 if let Some(hwnd) = containing_window(automation, &element) {
-                    if bring_to_foreground(hwnd) {
+                    if bring_to_foreground(hwnd) || selected {
                         return Ok(true);
                     }
+                } else if selected {
+                    return Ok(true);
                 }
             }
             Ok(false)

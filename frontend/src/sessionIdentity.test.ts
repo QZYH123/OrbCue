@@ -46,6 +46,10 @@ describe('cleanWindowTitle', () => {
       'grok · dock',
     );
     expect(cleanWindowTitle('dock:ff00aa · claude · app')).toBe('claude · app');
+    expect(
+      cleanWindowTitle('Windows Terminal - agent-activity-dock · grok · dock:ab12cd'),
+    ).toBe('agent-activity-dock · grok');
+    expect(cleanWindowTitle('app · claude · dock:ff00aa')).toBe('app · claude');
     expect(cleanWindowTitle('just a title')).toBe('just a title');
   });
 });

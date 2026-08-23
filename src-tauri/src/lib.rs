@@ -442,20 +442,11 @@ fn reset(
 fn focus_source(
     source: String,
     session_id: String,
+    terminal_id: Option<String>,
+    deep_link: Option<String>,
     app: AppHandle,
-    state: State<'_, AppService>,
 ) -> FocusResult {
-    let snapshot = match current_session(&state).and_then(|session| session.snapshot()) {
-        Ok(snapshot) => snapshot,
-        Err(reason) => {
-            return FocusResult {
-                focused: false,
-                precise: false,
-                reason: Some(reason),
-            }
-        }
-    };
-    focus::focus_session(&snapshot.sessions, &source, &session_id, |url| {
+    focus::focus_session(&source, &session_id, deep_link, terminal_id, |url| {
         app.opener()
             .open_url(url, None::<&str>)
             .map_err(|error| error.to_string())

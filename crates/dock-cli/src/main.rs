@@ -3,7 +3,8 @@ mod terminal;
 use agent_activity_dock_adapters::{claude_hook, codex_notification, dsh_projection, grok_hook};
 use agent_activity_dock_connect::{ConnectionManager, ConnectionPreview, PreviewAction};
 use agent_activity_dock_core::{
-    session_terminal_title, DockEvent, EventKind, Severity, EVENT_VERSION,
+    dock_tab_title, dock_terminal_marker, session_terminal_title, DockEvent, EventKind, Severity,
+    EVENT_VERSION,
 };
 use agent_activity_dock_ipc::{
     default_endpoint, default_state_path, local_connect, local_set_recv_timeout,
@@ -79,6 +80,9 @@ enum Command {
     Bridge,
     /// Start an Agent in a dedicated Windows Terminal tab.
     Run {
+        /// Windows Terminal profile name or GUID. Defaults to the current tab.
+        #[arg(long)]
+        profile: Option<String>,
         /// Agent command, such as grok, claude, or codex.
         agent: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -157,8 +161,13 @@ fn main() {
         }
         return;
     }
-    if let Command::Run { agent, args } = &cli.command {
-        let status = terminal::run_command(agent, args, cli.json);
+    if let Command::Run {
+        agent,
+        args,
+        profile,
+    } = &cli.command
+    {
+        let status = terminal::run_command(agent, args, profile.as_deref(), cli.json);
         if status != 0 {
             std::process::exit(status);
         }
@@ -489,13 +498,19 @@ fn maybe_set_terminal_title(event: &DockEvent) {
     if !should_set_terminal_title(event) {
         return;
     }
+    write_terminal_title(&lifecycle_terminal_title(event));
+}
+
+fn lifecycle_terminal_title(event: &DockEvent) -> String {
     let path = event
         .workspace_root
         .as_deref()
         .or(event.cwd.as_deref())
         .filter(|value| !value.is_empty());
-    let title = session_terminal_title(&event.source, path);
-    write_terminal_title(&title);
+    match event.terminal_id.as_deref().and_then(dock_terminal_marker) {
+        Some(marker) => dock_tab_title(&event.source, path, marker),
+        None => session_terminal_title(&event.source, path),
+    }
 }
 
 fn should_set_terminal_title(event: &DockEvent) -> bool {
@@ -1105,6 +1120,7 @@ mod tests {
     fn event_and_query_commands_can_forward() {
         assert!(is_forwardable_command(&Command::Status));
         assert!(is_forwardable_command(&Command::Run {
+            profile: None,
             agent: "grok".to_owned(),
             args: Vec::new(),
         }));
@@ -1274,6 +1290,31 @@ mod tests {
         assert!(allow_completed);
         assert!(allow_waiting);
         assert!(!allow_cancelled);
+    }
+
+    #[test]
+    fn lifecycle_title_is_project_then_agent_then_dock_marker() {
+        let mut with_marker = DockEvent::new("e1", EventKind::Started, "grok", "s1");
+        with_marker.cwd = Some("/home/qingz/projects/agent-activity-dock".to_owned());
+        with_marker.terminal_id = Some("dock:ab12cd".to_owned());
+        assert_eq!(
+            super::lifecycle_terminal_title(&with_marker),
+            "agent-activity-dock · grok · dock:ab12cd"
+        );
+
+        let mut without_marker = DockEvent::new("e2", EventKind::Started, "grok", "s2");
+        without_marker.cwd = Some("/home/qingz/projects/agent-activity-dock".to_owned());
+        assert_eq!(
+            super::lifecycle_terminal_title(&without_marker),
+            "agent-activity-dock · grok"
+        );
+
+        let mut marker_only = DockEvent::new("e3", EventKind::Started, "claude", "s3");
+        marker_only.terminal_id = Some("dock:00ffaa".to_owned());
+        assert_eq!(
+            super::lifecycle_terminal_title(&marker_only),
+            "claude · dock:00ffaa"
+        );
     }
 
     #[cfg(unix)]

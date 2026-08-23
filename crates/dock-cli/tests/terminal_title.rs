@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const PROJECT: &str = "/tmp/title-e2e/agent-activity-dock";
-const OSC_NEEDLE: &str = "]0;grok · agent-activity-dock";
+const OSC_NEEDLE: &str = "]0;agent-activity-dock · grok";
 
 fn isolated_root() -> PathBuf {
     let nonce = SystemTime::now()

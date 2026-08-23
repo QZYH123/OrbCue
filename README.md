@@ -98,13 +98,13 @@ dock run grok
 
 `dock reset` 是显式的陈旧状态恢复操作，不会向 Agent 发送任何控制命令。reset 之后迟到的 `complete` / `waiting` / `failed` 不会复活该会话。带 `parent_session_id` 的子代理事件不计入小球上的主会话数。
 
-Win+WSL 下用 `dock run <agent> [args…]` 在新的 Windows Terminal 标签里启动 Agent。标签标题带 `dock:xxxxxx` 标记，标签环境注入 `AGENT_ACTIVITY_DOCK_TERMINAL_ID`，面板「回去」可做标签级精确跳回（撕出/合并后仍有效）。手开的会话仍走窗口级 HWND 兜底：成功时标明「已回到最近交互的窗口」，HWND 失效则诚实失败并提示 `dock run`。不再按项目名或 source 做模糊标题匹配。`AGENT_ACTIVITY_DOCK_NO_TITLE=1` 可关闭写标题。
+Win+WSL 下用 `dock run <agent> [args…]` 在新的 Windows Terminal 标签里启动 Agent。默认沿用当前标签的配置文件（`WT_PROFILE_ID`）；可用 `dock run --profile "Ubuntu-24.04" grok` 或 `AGENT_ACTIVITY_DOCK_WT_PROFILE` 覆盖。标签标题带 `dock:xxxxxx` 标记，标签环境注入 `AGENT_ACTIVITY_DOCK_TERMINAL_ID`，面板「回去」可做标签级精确跳回（撕出/合并后仍有效）。手开的会话仍走窗口级 HWND 兜底：成功时标明「已回到最近交互的窗口」，HWND 失效则诚实失败并提示 `dock run`。不再按项目名或 source 做模糊标题匹配。`AGENT_ACTIVITY_DOCK_NO_TITLE=1` 可关闭写标题。
 
 ## 隐私与可靠性
 
 - Unix 状态文件默认位于 `$XDG_STATE_HOME/agent-activity-dock/state.json`；Windows 默认位于 `%LOCALAPPDATA%\\Agent Activity Dock\\state.json`。
 - Unix socket 目录权限为 0700、socket 权限为 0600；Windows 使用本机 named pipe。服务不会监听网络端口。
-- 持久化只保留来源、session、状态、时间和确认标记；摘要、prompt、命令和 transcript 只在内存中短暂存在。
+- 持久化保留来源、session、状态、时间、确认标记、终端标记和项目路径；摘要、prompt、命令和 transcript 只在内存中短暂存在。
 - 重启会恢复最小状态，但不会重播旧声音；陈旧事件会被拒绝。
 - 审计页只保留当前运行期间最近 128 条状态变更，不写入状态文件。
 - 声音、前端和 Agent 连接失败不会让状态服务退出；用户可以用面板或 CLI 手动 reset。
