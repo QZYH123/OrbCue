@@ -920,7 +920,7 @@ fn hook_script(dock_binary: &Path, provider: &str) -> String {
     #[cfg(not(windows))]
     {
         format!(
-            "#!/bin/sh\n# Agent Activity Dock generated {provider} hook.\n{} hook {provider} || true\n",
+            "#!/bin/sh\n# Agent Activity Dock generated {provider} hook.\n# exec so dock's PPID is the agent; liveness reaps that PID.\nexec {} hook {provider}\n",
             shell_quote(&dock_binary.to_string_lossy())
         )
     }

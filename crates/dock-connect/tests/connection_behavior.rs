@@ -212,12 +212,12 @@ fn grok_connect_writes_a_revocable_hook_file() {
     )
     .unwrap();
     assert!(
-        script.contains("|| true"),
-        "hook script must fail open: {script}"
+        script.contains("exec "),
+        "hook must exec dock so liveness PPID is the agent: {script}"
     );
     assert!(
-        !script.contains("exec "),
-        "exec would drop || true: {script}"
+        !script.contains("|| true"),
+        "|| true would keep a short-lived shell as dock's parent: {script}"
     );
     assert!(manager.disconnect("grok").unwrap());
     assert!(!hooks.exists());
