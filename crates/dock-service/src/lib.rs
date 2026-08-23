@@ -22,7 +22,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
-#[cfg(windows)]
 use std::time::Duration;
 use thiserror::Error;
 
@@ -206,6 +205,12 @@ fn spawn_internal(
         .expect("spawn Dock IPC accept thread");
 
     schedule_wsl_state_migration(Arc::clone(&state), Arc::clone(&updates), state_path.clone());
+    schedule_liveness_reaper(
+        Arc::clone(&state),
+        Arc::clone(&updates),
+        state_path.clone(),
+        Arc::clone(&stopping),
+    );
 
     Ok(ServiceHandle {
         endpoint,
@@ -605,6 +610,258 @@ fn cat_wsl_state(timeout: Duration) -> Result<(String, String), MigrationReason>
     }
 }
 
+fn schedule_liveness_reaper(
+    state: Arc<Mutex<DockState>>,
+    updates: Arc<Mutex<Vec<mpsc::Sender<SnapshotMessage>>>>,
+    state_path: Option<PathBuf>,
+    stopping: Arc<AtomicBool>,
+) {
+    let _ = thread::Builder::new()
+        .name("dock-liveness".to_owned())
+        .spawn(move || {
+            let busy = Arc::new(AtomicBool::new(false));
+            while !stopping.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_secs(15));
+                if stopping.load(Ordering::Acquire) {
+                    break;
+                }
+                if busy.swap(true, Ordering::AcqRel) {
+                    continue;
+                }
+                reap_dead_sessions(&state, &updates, state_path.as_deref());
+                busy.store(false, Ordering::Release);
+            }
+        });
+}
+
+fn reap_dead_sessions(
+    state: &Arc<Mutex<DockState>>,
+    updates: &Arc<Mutex<Vec<mpsc::Sender<SnapshotMessage>>>>,
+    state_path: Option<&Path>,
+) {
+    let targets = state.lock().expect("state lock").liveness_targets();
+    let dead = find_dead_sessions(&targets);
+    for (source, session_id, liveness) in dead {
+        let event_id = agent_activity_dock_core::liveness_closed_event_id(
+            &source,
+            &session_id,
+            liveness.pid,
+            liveness.starttime,
+        );
+        let event = agent_activity_dock_core::DockEvent::new(
+            &event_id,
+            agent_activity_dock_core::EventKind::Closed,
+            &source,
+            &session_id,
+        );
+        let response = dispatch(IpcRequest::Event(event), state, state_path);
+        if response.accepted {
+            broadcast(
+                updates,
+                SnapshotMessage::snapshot(response.snapshot.clone(), response.attention.clone()),
+            );
+        }
+    }
+}
+
+fn find_dead_sessions(
+    targets: &[(String, String, agent_activity_dock_core::AgentLiveness)],
+) -> Vec<(String, String, agent_activity_dock_core::AgentLiveness)> {
+    let mut dead = Vec::new();
+    #[cfg(windows)]
+    {
+        let mut by_distro: std::collections::BTreeMap<
+            String,
+            Vec<(String, String, agent_activity_dock_core::AgentLiveness)>,
+        > = std::collections::BTreeMap::new();
+        for (source, session_id, liveness) in targets {
+            match liveness.os.as_str() {
+                "windows" => {
+                    if windows_pid_is_dead(liveness.pid, liveness.starttime) == Some(true) {
+                        dead.push((source.clone(), session_id.clone(), liveness.clone()));
+                    }
+                }
+                "linux" => {
+                    let Some(distro) = liveness.distro.as_deref().filter(|value| !value.is_empty())
+                    else {
+                        continue;
+                    };
+                    by_distro.entry(distro.to_owned()).or_default().push((
+                        source.clone(),
+                        session_id.clone(),
+                        liveness.clone(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        for (distro, group) in by_distro {
+            dead.extend(wsl_dead_sessions(&distro, &group));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        for (source, session_id, liveness) in targets {
+            if liveness.os != "linux" {
+                continue;
+            }
+            if linux_pid_is_dead(liveness.pid, liveness.starttime) == Some(true) {
+                dead.push((source.clone(), session_id.clone(), liveness.clone()));
+            }
+        }
+    }
+    dead
+}
+
+#[cfg(not(windows))]
+fn linux_pid_is_dead(pid: u32, starttime: u64) -> Option<bool> {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => {
+            let recorded = parse_proc_starttime(&stat);
+            Some(match recorded {
+                Some(value) => value != starttime,
+                None => true,
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(true),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => None,
+        Err(_) => None,
+    }
+}
+
+#[cfg(not(windows))]
+fn parse_proc_starttime(contents: &str) -> Option<u64> {
+    let end = contents.rfind(')')?;
+    let mut fields = contents.get(end + 1..)?.split_whitespace();
+    let _state = fields.next()?;
+    let _ppid = fields.next()?;
+    let _pgrp = fields.next()?;
+    let _session = fields.next()?;
+    let _tty_nr = fields.next()?;
+    for _ in 0..14 {
+        fields.next()?;
+    }
+    fields.next()?.parse().ok()
+}
+
+#[cfg(windows)]
+fn windows_pid_is_dead(pid: u32, starttime: u64) -> Option<bool> {
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const ERROR_ACCESS_DENIED: u32 = 5;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+        fn GetProcessTimes(
+            process: isize,
+            creation: *mut u64,
+            exit: *mut u64,
+            kernel: *mut u64,
+            user: *mut u64,
+        ) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
+        fn GetLastError() -> u32;
+    }
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle == 0 {
+            return if GetLastError() == ERROR_ACCESS_DENIED {
+                Some(false)
+            } else {
+                Some(true)
+            };
+        }
+        let mut creation = 0u64;
+        let mut exit = 0u64;
+        let mut kernel = 0u64;
+        let mut user = 0u64;
+        let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
+        CloseHandle(handle);
+        if ok == 0 {
+            return None;
+        }
+        Some(creation != starttime)
+    }
+}
+
+#[cfg(windows)]
+fn wsl_dead_sessions(
+    distro: &str,
+    group: &[(String, String, agent_activity_dock_core::AgentLiveness)],
+) -> Vec<(String, String, agent_activity_dock_core::AgentLiveness)> {
+    let queries: Vec<serde_json::Value> = group
+        .iter()
+        .map(|(source, session_id, liveness)| {
+            serde_json::json!({
+                "source": source,
+                "session_id": session_id,
+                "pid": liveness.pid,
+                "starttime": liveness.starttime,
+            })
+        })
+        .collect();
+    let mut command = std::process::Command::new("wsl.exe");
+    command.args([
+        "-d",
+        distro,
+        "-e",
+        "sh",
+        "-c",
+        r#"exec "$HOME/.local/bin/dock" "$@""#,
+        "sh",
+        "liveness-check",
+    ]);
+    command.env("AGENT_ACTIVITY_DOCK_HOP", "wsl");
+    command.env("AGENT_ACTIVITY_DOCK_BACKEND", "local");
+    command.stdin(std::process::Stdio::piped());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(_) => return Vec::new(),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&serde_json::to_vec(&queries).unwrap_or_default());
+    }
+    let pid = child.id();
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = sender.send(child.wait_with_output());
+    });
+    let output = match receiver.recv_timeout(Duration::from_secs(2)) {
+        Ok(Ok(output)) if output.status.success() => output,
+        Err(_) => {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/F"])
+                .status();
+            return Vec::new();
+        }
+        _ => return Vec::new(),
+    };
+    let parsed: serde_json::Value = match serde_json::from_slice(&output.stdout) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let Some(dead_list) = parsed.get("dead").and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+    let mut dead = Vec::new();
+    for item in dead_list {
+        let Some(session_id) = item.get("session_id").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let Some(source) = item.get("source").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if let Some(found) = group
+            .iter()
+            .find(|(src, sid, _)| src == source && sid == session_id)
+        {
+            dead.push(found.clone());
+        }
+    }
+    dead
+}
+
 #[cfg(test)]
 mod tests {
     use super::{apply_copied_sessions, SnapshotMessage};
@@ -664,5 +921,20 @@ mod tests {
             "live"
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_host_reaps_without_wsl_distro() {
+        let dead = super::linux_pid_is_dead(u32::MAX, 1);
+        assert_eq!(dead, Some(true));
+        let liveness = agent_activity_dock_core::AgentLiveness {
+            os: "linux".to_owned(),
+            pid: u32::MAX,
+            starttime: 1,
+            distro: None,
+        };
+        let found = super::find_dead_sessions(&[("grok".to_owned(), "s1".to_owned(), liveness)]);
+        assert_eq!(found.len(), 1);
     }
 }

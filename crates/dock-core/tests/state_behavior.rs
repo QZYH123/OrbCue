@@ -676,3 +676,87 @@ fn audit_stream_is_bounded_and_contains_no_event_content() {
     assert_eq!(snapshot.audit.first().unwrap().session_id, "s-12");
     assert_eq!(snapshot.audit.last().unwrap().session_id, "s-139");
 }
+
+#[test]
+fn liveness_merges_as_a_complete_tuple_and_stays_off_the_snapshot() {
+    let mut state = DockState::new();
+    let mut started = event("e1", EventKind::Started, "s1");
+    started
+        .metadata
+        .insert("agent_os".to_owned(), "linux".to_owned());
+    started
+        .metadata
+        .insert("agent_pid".to_owned(), "42".to_owned());
+    started
+        .metadata
+        .insert("agent_starttime".to_owned(), "99".to_owned());
+    state.apply(started);
+    assert!(state
+        .snapshot()
+        .sessions
+        .iter()
+        .all(|session| serde_json::to_value(session)
+            .unwrap()
+            .get("agent_pid")
+            .is_none()));
+    let targets = state.liveness_targets();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].2.pid, 42);
+    assert_eq!(targets[0].2.distro, None);
+
+    let mut later = event("e2", EventKind::Working, "s1");
+    later
+        .metadata
+        .insert("agent_os".to_owned(), "linux".to_owned());
+    later
+        .metadata
+        .insert("agent_pid".to_owned(), "42".to_owned());
+    later
+        .metadata
+        .insert("agent_starttime".to_owned(), "99".to_owned());
+    later
+        .metadata
+        .insert("agent_wsl_distro".to_owned(), "Ubuntu-24.04".to_owned());
+    state.apply(later);
+    assert_eq!(
+        state.liveness_targets()[0].2.distro.as_deref(),
+        Some("Ubuntu-24.04")
+    );
+
+    let mut incomplete = event("e3", EventKind::Idle, "s1");
+    incomplete
+        .metadata
+        .insert("agent_os".to_owned(), "linux".to_owned());
+    state.apply(incomplete);
+    assert_eq!(
+        state.liveness_targets()[0].2.distro.as_deref(),
+        Some("Ubuntu-24.04")
+    );
+}
+
+#[test]
+fn old_state_files_without_liveness_still_load() {
+    let restored = DockState::from_persisted(serde_json::from_str(
+        r#"{"version":1,"sessions":[{"source":"grok","session_id":"s1","state":"idle","attention_reason":null,"requires_user_action":false,"acknowledged":true,"occurred_at":"2026-08-23T00:00:00Z"}]}"#,
+    ).unwrap());
+    assert!(restored.liveness_targets().is_empty());
+}
+
+#[test]
+fn hashed_liveness_event_id_fits_a_256_byte_session_id() {
+    use agent_activity_dock_core::{liveness_closed_event_id, MAX_EVENT_ID_LEN};
+    let session_id = "s".repeat(256);
+    let event_id = liveness_closed_event_id("grok", &session_id, 7, 11);
+    assert!(event_id.len() <= MAX_EVENT_ID_LEN);
+    assert!(event_id.starts_with("dock-liveness-"));
+    let mut state = DockState::new();
+    state.apply(event("e1", EventKind::Started, &session_id));
+    let closed = state.apply(DockEvent::new(
+        &event_id,
+        EventKind::Closed,
+        "claude",
+        &session_id,
+    ));
+    assert!(closed.accepted);
+    assert_eq!(closed.snapshot.tracked_count, 0);
+}

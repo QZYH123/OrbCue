@@ -84,6 +84,9 @@ enum Command {
     /// Receive one DockEvent JSON on stdin and send it to the local daemon.
     #[command(hide = true)]
     Emit,
+    /// Report whether the given Linux PIDs are still the original processes.
+    #[command(hide = true)]
+    LivenessCheck,
     /// Start an Agent in a dedicated Windows Terminal tab.
     Run {
         /// Windows Terminal profile name or GUID. Defaults to the current tab.
@@ -178,6 +181,13 @@ fn main() {
     } = &cli.command
     {
         let status = terminal::run_command(agent, args, profile.as_deref(), cli.json);
+        if status != 0 {
+            std::process::exit(status);
+        }
+        return;
+    }
+    if matches!(&cli.command, Command::LivenessCheck) {
+        let status = run_liveness_check();
         if status != 0 {
             std::process::exit(status);
         }
@@ -363,6 +373,7 @@ fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
         return;
     };
     attach_terminal_id(&mut event);
+    attach_liveness(&mut event);
     maybe_set_terminal_title(&event);
     if should_trampoline_to_windows(&Command::Hook { provider }) {
         std::process::exit(trampoline_emit(&event));
@@ -403,7 +414,7 @@ fn request_for(command: &Command) -> Result<IpcRequest, String> {
         }
         Command::Fail(args) | Command::Error(args) => event_request(args, EventKind::Failed)?,
         Command::Cancel(args) => event_request(args, EventKind::Cancelled)?,
-        Command::Hook { .. } | Command::Emit => {
+        Command::Hook { .. } | Command::Emit | Command::LivenessCheck => {
             return Err("hook is handled before event parsing".to_owned())
         }
         Command::Agents
@@ -462,6 +473,197 @@ fn attach_terminal_id(event: &mut DockEvent) {
     if event.terminal_id.is_none() {
         event.terminal_id = resolve_terminal_id();
     }
+}
+
+fn attach_liveness(event: &mut DockEvent) {
+    if event
+        .parent_session_id
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        let pid = unsafe { libc::getppid() };
+        if pid <= 1 {
+            return;
+        }
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return;
+        };
+        let Some((_, _, starttime)) = parse_proc_stat(&stat) else {
+            return;
+        };
+        event
+            .metadata
+            .insert("agent_os".to_owned(), "linux".to_owned());
+        event
+            .metadata
+            .insert("agent_pid".to_owned(), pid.to_string());
+        event
+            .metadata
+            .insert("agent_starttime".to_owned(), starttime.to_string());
+        if let Ok(distro) = std::env::var("WSL_DISTRO_NAME") {
+            let trimmed = distro.trim();
+            if !trimmed.is_empty() {
+                event
+                    .metadata
+                    .insert("agent_wsl_distro".to_owned(), trimmed.to_owned());
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Some((pid, starttime)) = windows_parent_liveness() {
+            event
+                .metadata
+                .insert("agent_os".to_owned(), "windows".to_owned());
+            event
+                .metadata
+                .insert("agent_pid".to_owned(), pid.to_string());
+            event
+                .metadata
+                .insert("agent_starttime".to_owned(), starttime.to_string());
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_parent_liveness() -> Option<(u32, u64)> {
+    windows_parent_liveness_inner()
+}
+
+#[cfg(windows)]
+fn windows_parent_liveness_inner() -> Option<(u32, u64)> {
+    use std::mem::{size_of, zeroed};
+    #[repr(C)]
+    struct ProcessEntry32W {
+        dw_size: u32,
+        cnt_usage: u32,
+        th32_process_id: u32,
+        th32_default_heap_id: usize,
+        th32_module_id: u32,
+        cnt_threads: u32,
+        th32_parent_process_id: u32,
+        pc_pri_class_base: i32,
+        dw_flags: u32,
+        sz_exe_file: [u16; 260],
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcessId() -> u32;
+        fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> isize;
+        fn Process32FirstW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
+        fn Process32NextW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+        fn GetProcessTimes(
+            process: isize,
+            creation: *mut u64,
+            exit: *mut u64,
+            kernel: *mut u64,
+            user: *mut u64,
+        ) -> i32;
+        fn GetLastError() -> u32;
+    }
+    const TH32CS_SNAPPROCESS: u32 = 0x2;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const INVALID: isize = -1;
+    unsafe {
+        let current = GetCurrentProcessId();
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == 0 || snapshot == INVALID {
+            return None;
+        }
+        let mut entry: ProcessEntry32W = zeroed();
+        entry.dw_size = size_of::<ProcessEntry32W>() as u32;
+        let mut parent = 0;
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                if entry.th32_process_id == current {
+                    parent = entry.th32_parent_process_id;
+                    break;
+                }
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+        if parent == 0 {
+            return None;
+        }
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, parent);
+        if handle == 0 {
+            let _ = GetLastError();
+            return None;
+        }
+        let mut creation = 0u64;
+        let mut exit = 0u64;
+        let mut kernel = 0u64;
+        let mut user = 0u64;
+        let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
+        CloseHandle(handle);
+        if ok == 0 {
+            return None;
+        }
+        Some((parent, creation))
+    }
+}
+
+fn linux_pid_is_dead(pid: u32, starttime: u64) -> Option<bool> {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => {
+            let parsed = parse_proc_stat(&stat);
+            Some(match parsed {
+                Some((_, _, recorded)) => recorded != starttime,
+                None => true,
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(true),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => None,
+        Err(_) => None,
+    }
+}
+
+fn run_liveness_check() -> i32 {
+    let mut input = String::new();
+    if let Err(error) = std::io::stdin().read_to_string(&mut input) {
+        eprintln!("dock liveness-check: cannot read stdin: {error}");
+        return 2;
+    }
+    let queries: Vec<Value> = match serde_json::from_str(input.trim()) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("dock liveness-check: invalid JSON ({error})");
+            return 2;
+        }
+    };
+    let mut dead = Vec::new();
+    for query in queries {
+        let Some(pid) = query
+            .get("pid")
+            .and_then(Value::as_u64)
+            .map(|value| value as u32)
+        else {
+            continue;
+        };
+        let Some(starttime) = query.get("starttime").and_then(Value::as_u64) else {
+            continue;
+        };
+        if linux_pid_is_dead(pid, starttime) != Some(true) {
+            continue;
+        }
+        dead.push(serde_json::json!({
+            "source": query.get("source").cloned().unwrap_or(Value::Null),
+            "session_id": query.get("session_id").cloned().unwrap_or(Value::Null),
+            "pid": pid,
+            "starttime": starttime,
+        }));
+    }
+    println!("{}", serde_json::json!({ "dead": dead }));
+    0
 }
 
 fn resolve_terminal_id() -> Option<String> {
@@ -685,8 +887,7 @@ fn looks_like_tty_path(path: &str) -> bool {
                 .is_some_and(|rest| !rest.is_empty()))
 }
 
-#[cfg(unix)]
-fn parse_proc_stat(contents: &str) -> Option<(i32, u32)> {
+fn parse_proc_stat(contents: &str) -> Option<(i32, u32, u64)> {
     let end = contents.rfind(')')?;
     let mut fields = contents.get(end + 1..)?.split_whitespace();
     let _state = fields.next()?;
@@ -694,7 +895,11 @@ fn parse_proc_stat(contents: &str) -> Option<(i32, u32)> {
     let _pgrp = fields.next()?;
     let _session = fields.next()?;
     let tty_nr = fields.next()?.parse().ok()?;
-    Some((ppid, tty_nr))
+    for _ in 0..14 {
+        fields.next()?;
+    }
+    let starttime = fields.next()?.parse().ok()?;
+    Some((ppid, tty_nr, starttime))
 }
 
 #[cfg(unix)]
@@ -749,7 +954,7 @@ fn unix_ancestor_tty_id() -> Option<String> {
         let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
             break;
         };
-        let Some((ppid, tty_nr)) = parse_proc_stat(&stat) else {
+        let Some((ppid, tty_nr, _)) = parse_proc_stat(&stat) else {
             break;
         };
         if let Some(path) = path_from_tty_nr(tty_nr) {
@@ -783,6 +988,7 @@ fn stays_on_agent_os(command: &Command) -> bool {
             | Command::Connect { .. }
             | Command::Disconnect { .. }
             | Command::Run { .. }
+            | Command::LivenessCheck
     )
 }
 
@@ -1603,6 +1809,30 @@ mod tests {
         assert!(!stays_on_agent_os(&Command::Up));
         assert!(!stays_on_agent_os(&Command::Bridge));
         assert!(!stays_on_agent_os(&Command::Emit));
+        assert!(stays_on_agent_os(&Command::LivenessCheck));
+    }
+
+    #[test]
+    fn wrapper_event_path_does_not_attach_liveness() {
+        let request = super::event_request(
+            &super::EventArgs {
+                session_id: "s1".to_owned(),
+                source: "grok".to_owned(),
+                summary: None,
+                deep_link: None,
+                cwd: None,
+                workspace_root: None,
+                window_title: None,
+                requires_user_action: false,
+            },
+            EventKind::Started,
+        )
+        .unwrap();
+        let agent_activity_dock_ipc::IpcRequest::Event(event) = request else {
+            panic!("expected event");
+        };
+        assert!(!event.metadata.contains_key("agent_pid"));
+        assert!(!event.metadata.contains_key("agent_os"));
         assert!(trampoline_to_windows_predicate(
             true,
             true,
@@ -1831,15 +2061,15 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn proc_stat_tty_nr_decodes_like_unix98_pts() {
-        let line = "35022 (grok) S 1000 35022 35022 34821 35022 0 0";
-        assert_eq!(super::parse_proc_stat(line), Some((1000, 34821)));
+        let line = "35022 (grok) S 1000 35022 35022 34821 35022 0 0 0 0 0 0 0 0 0 0 0 0 0 12345";
+        assert_eq!(super::parse_proc_stat(line), Some((1000, 34821, 12345)));
         assert_eq!(super::new_decode_dev(34821), (136, 5));
         assert_eq!(
             super::tty_path_for_dev(136, 5).as_deref(),
             Some("/dev/pts/5")
         );
-        let spaced = "12 (my (weird) name) R 99 12 12 0 12";
-        assert_eq!(super::parse_proc_stat(spaced), Some((99, 0)));
+        let spaced = "12 (my (weird) name) R 99 12 12 0 12 0 0 0 0 0 0 0 0 0 0 0 0 0 4242";
+        assert_eq!(super::parse_proc_stat(spaced), Some((99, 0, 4242)));
     }
 }
 

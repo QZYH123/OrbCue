@@ -54,6 +54,8 @@
 
 浏览器窗口不参与。捕获决策本身不变：只在新主会话或转入 working 时记录当时的前台终端窗口。
 
+可选 liveness metadata（仅 hook 路径写入，`dock start`/`complete` 不写）：`agent_os`（`linux` 或 `windows`）、`agent_pid`、`agent_starttime`（Linux `/proc/<pid>/stat` 字段 22，或 Windows `GetProcessTimes` FILETIME）、可选 `agent_wsl_distro`（仅 `WSL_DISTRO_NAME` 非空时）。三项 os+pid+starttime 齐全才合并进会话；缺一则忽略整组。不进入面板 snapshot。GUI-OS daemon 每 15s 查询「是否仍是原进程」，死亡则发 `session.closed`（`event_id` 为 `dock-liveness-` + SHA-256 前 8 字节 hex）。不扫进程表，不因 HWND 消失删会话。
+
 大小限制：`event_id` / `terminal_id` 各 128 字节、`source` 64 字节、`session_id` / `parent_session_id` 各 256 字节、`summary` 512 字节、`deep_link` 2048 字节、`cwd` / `workspace_root` 各 256 字节、metadata 最多 32 项且 key/value 各 256 字节。
 
 事件时间超过当前时间 24 小时，或超前超过 5 分钟，会返回 `stale_event`。这避免服务离线恢复后突然播放很久以前的提醒。`DockEvent::new` 也会生成当前 RFC3339 时间；外部集成不应发送伪造的 epoch 时间。

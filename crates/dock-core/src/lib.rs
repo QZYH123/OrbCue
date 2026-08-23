@@ -276,6 +276,22 @@ pub struct PersistedSession {
     pub terminal_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_os: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_starttime: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_wsl_distro: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentLiveness {
+    pub os: String,
+    pub pid: u32,
+    pub starttime: u64,
+    pub distro: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -292,6 +308,7 @@ struct SessionRecord {
     acknowledged: bool,
     occurred_at: String,
     terminal_id: Option<String>,
+    liveness: Option<AgentLiveness>,
 }
 
 /// Deterministic in-memory session registry.
@@ -328,6 +345,12 @@ impl DockState {
             let project_path = normalize_optional(&item.project_path)
                 .filter(|value| valid_len(value, MAX_METADATA_VALUE_LEN))
                 .map(str::to_owned);
+            let liveness = complete_liveness(
+                item.agent_os.clone(),
+                item.agent_pid,
+                item.agent_starttime,
+                item.agent_wsl_distro.clone(),
+            );
             let key = session_key(&item.source, &item.session_id);
             state.sessions.insert(
                 key,
@@ -344,6 +367,7 @@ impl DockState {
                     acknowledged: item.acknowledged,
                     occurred_at: item.occurred_at,
                     terminal_id,
+                    liveness,
                 },
             );
         }
@@ -365,6 +389,13 @@ impl DockState {
                 occurred_at: record.occurred_at.clone(),
                 terminal_id: record.terminal_id.clone(),
                 project_path: record.project_path.clone(),
+                agent_os: record.liveness.as_ref().map(|item| item.os.clone()),
+                agent_pid: record.liveness.as_ref().map(|item| item.pid),
+                agent_starttime: record.liveness.as_ref().map(|item| item.starttime),
+                agent_wsl_distro: record
+                    .liveness
+                    .as_ref()
+                    .and_then(|item| item.distro.clone()),
             })
             .collect();
         sessions.sort_by(|left, right| left.occurred_at.cmp(&right.occurred_at));
@@ -375,6 +406,18 @@ impl DockState {
             version: EVENT_VERSION,
             sessions,
         }
+    }
+
+    pub fn liveness_targets(&self) -> Vec<(String, String, AgentLiveness)> {
+        self.sessions
+            .values()
+            .filter_map(|record| {
+                record
+                    .liveness
+                    .clone()
+                    .map(|liveness| (record.source.clone(), record.session_id.clone(), liveness))
+            })
+            .collect()
     }
 
     pub fn snapshot(&self) -> DockSnapshot {
@@ -801,6 +844,7 @@ impl SessionRecord {
             acknowledged: reason.is_none(),
             occurred_at: event.occurred_at.clone(),
             terminal_id: normalize_optional(&event.terminal_id).map(str::to_owned),
+            liveness: liveness_from_event(event),
         }
     }
 
@@ -838,7 +882,71 @@ fn update_record(record: &mut SessionRecord, event: &DockEvent) {
     if let Some(terminal_id) = normalize_optional(&event.terminal_id) {
         record.terminal_id = Some(terminal_id.to_owned());
     }
+    if let Some(liveness) = liveness_from_event(event) {
+        record.liveness = Some(liveness);
+    }
     record.occurred_at = event.occurred_at.clone();
+}
+
+fn liveness_from_event(event: &DockEvent) -> Option<AgentLiveness> {
+    if normalize_optional(&event.parent_session_id).is_some() {
+        return None;
+    }
+    complete_liveness(
+        event.metadata.get("agent_os").cloned(),
+        event
+            .metadata
+            .get("agent_pid")
+            .and_then(|value| value.parse().ok()),
+        event
+            .metadata
+            .get("agent_starttime")
+            .and_then(|value| value.parse().ok()),
+        event.metadata.get("agent_wsl_distro").cloned(),
+    )
+}
+
+fn complete_liveness(
+    os: Option<String>,
+    pid: Option<u32>,
+    starttime: Option<u64>,
+    distro: Option<String>,
+) -> Option<AgentLiveness> {
+    let os = normalize_optional(&os)?.to_owned();
+    if os != "linux" && os != "windows" {
+        return None;
+    }
+    Some(AgentLiveness {
+        os,
+        pid: pid?,
+        starttime: starttime?,
+        distro: normalize_optional(&distro).map(str::to_owned),
+    })
+}
+
+/// SHA-256 prefix so a 256-byte session_id still fits `MAX_EVENT_ID_LEN`.
+pub fn liveness_closed_event_id(
+    source: &str,
+    session_id: &str,
+    pid: u32,
+    starttime: u64,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(source.as_bytes());
+    hasher.update([0x1f]);
+    hasher.update(session_id.as_bytes());
+    hasher.update([0x1f]);
+    hasher.update(pid.to_string().as_bytes());
+    hasher.update([0x1f]);
+    hasher.update(starttime.to_string().as_bytes());
+    let digest = hasher.finalize();
+    let hex: String = digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("dock-liveness-{hex}")
 }
 
 fn resolve_project_path(event: &DockEvent) -> Option<String> {
