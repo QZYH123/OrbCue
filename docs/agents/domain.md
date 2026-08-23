@@ -22,4 +22,4 @@
 - 不把声音、窗口和 Agent adapter 的失败传播回事件发送方；
 - 不把摘要或原始 payload 写入默认持久化；
 - 修改 Claude `settings.json` 前保留一次用户可恢复的备份，断开时只清理 Dock 自己的 Hook；
-- 不让两个 `dockd` 同时绑定同一 socket。Windows presenter 经 `dock bridge` attach，不自己 listen named pipe。
+- 不让两个 `dockd` 同时服务同一用户。Presenter 默认仍经 `dock bridge` attach WSL daemon；`AGENT_ACTIVITY_DOCK_BACKEND=local` 时在 GUI OS 上 `attach_or_listen`，并由 WSL `dock` trampoline 事件。禁止在 WSL-canonical 与 GUI-OS-canonical 之间静默探测切换。

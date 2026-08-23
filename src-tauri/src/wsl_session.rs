@@ -247,6 +247,21 @@ fn wsl_dock_command(args: &[&str]) -> Result<Command, String> {
         "sh",
     ]);
     command.args(args);
+    let backend = agent_activity_dock_ipc::resolve_backend_from_env();
+    command.env("AGENT_ACTIVITY_DOCK_BACKEND", backend.as_str());
+    let extra = "AGENT_ACTIVITY_DOCK_BACKEND/u";
+    match env::var("WSLENV") {
+        Ok(existing)
+            if existing
+                .split(':')
+                .any(|part| part.starts_with("AGENT_ACTIVITY_DOCK_BACKEND")) => {}
+        Ok(existing) if !existing.is_empty() => {
+            command.env("WSLENV", format!("{existing}:{extra}"));
+        }
+        _ => {
+            command.env("WSLENV", extra);
+        }
+    }
     hide_console(&mut command);
     Ok(command)
 }

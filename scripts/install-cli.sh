@@ -8,6 +8,7 @@ cargo build -p agent-activity-dock-service --release --manifest-path "$root/Carg
 install -m 755 "$root/target/release/dock" "$dest/dock"
 install -m 755 "$root/target/release/dockd" "$dest/dockd"
 echo "Installed $dest/dock and $dest/dockd"
+echo "Canonical daemon is the GUI-OS presenter; WSL dockd is only for AGENT_ACTIVITY_DOCK_BACKEND=wsl rollback."
 if ! echo ":$PATH:" | grep -q ":$dest:"; then
   echo "Add $dest to PATH for this shell, then reopen terminals:"
   echo "  export PATH=\"$dest:\$PATH\""

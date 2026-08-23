@@ -8,9 +8,12 @@ use agent_activity_dock_core::{
 };
 use agent_activity_dock_ipc::{
     default_endpoint, default_state_path, local_connect, local_set_recv_timeout,
-    local_set_send_timeout, local_try_clone, IpcRequest, SnapshotView, WireResponse,
+    local_set_send_timeout, local_try_clone, resolve_backend_from_env, DockBackend, IpcRequest,
+    SnapshotView, WireResponse,
 };
+#[cfg(not(windows))]
 use agent_activity_dock_service::attach_or_listen;
+use agent_activity_dock_service::connect_or_spawn_detached;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::Value;
 use std::ffi::OsString;
@@ -78,6 +81,9 @@ enum Command {
     Down,
     /// Forward stdin/stdout NDJSON to the current-user Dock socket.
     Bridge,
+    /// Receive one DockEvent JSON on stdin and send it to the local daemon.
+    #[command(hide = true)]
+    Emit,
     /// Start an Agent in a dedicated Windows Terminal tab.
     Run {
         /// Windows Terminal profile name or GUID. Defaults to the current tab.
@@ -137,6 +143,9 @@ fn main() {
     if should_forward_to_wsl(&cli.command, &endpoint) {
         std::process::exit(forward_to_wsl());
     }
+    if should_trampoline_argv(&cli.command) {
+        std::process::exit(trampoline_to_windows());
+    }
     if matches!(
         &cli.command,
         Command::Agents | Command::Connect { .. } | Command::Disconnect { .. }
@@ -173,6 +182,13 @@ fn main() {
         }
         return;
     }
+    if matches!(&cli.command, Command::Emit) {
+        let status = run_emit(&endpoint, cli.json);
+        if status != 0 {
+            std::process::exit(status);
+        }
+        return;
+    }
     if let Command::Hook { provider } = &cli.command {
         run_hook(*provider, &endpoint, cli.json);
         return;
@@ -184,6 +200,14 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if let IpcRequest::Event(event) = &request {
+        if should_trampoline_to_windows(&cli.command) {
+            std::process::exit(trampoline_emit(event));
+        }
+    }
+    if let Err(status) = ensure_cli_daemon(&endpoint) {
+        std::process::exit(status);
+    }
     match send(&endpoint, &request) {
         Ok(response) => {
             if cli.json {
@@ -339,6 +363,12 @@ fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
     };
     attach_terminal_id(&mut event);
     maybe_set_terminal_title(&event);
+    if should_trampoline_to_windows(&Command::Hook { provider }) {
+        std::process::exit(trampoline_emit(&event));
+    }
+    if let Err(status) = ensure_cli_daemon(endpoint) {
+        std::process::exit(status);
+    }
     match send(endpoint, &IpcRequest::Event(event)) {
         Ok(response) => {
             if json_output {
@@ -372,7 +402,9 @@ fn request_for(command: &Command) -> Result<IpcRequest, String> {
         }
         Command::Fail(args) | Command::Error(args) => event_request(args, EventKind::Failed)?,
         Command::Cancel(args) => event_request(args, EventKind::Cancelled)?,
-        Command::Hook { .. } => return Err("hook is handled before event parsing".to_owned()),
+        Command::Hook { .. } | Command::Emit => {
+            return Err("hook is handled before event parsing".to_owned())
+        }
         Command::Agents
         | Command::Connect { .. }
         | Command::Disconnect { .. }
@@ -743,10 +775,39 @@ fn is_forwardable_command(command: &Command) -> bool {
     )
 }
 
+fn stays_on_agent_os(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Agents
+            | Command::Connect { .. }
+            | Command::Disconnect { .. }
+            | Command::Run { .. }
+    )
+}
+
 fn explicit_wsl_forward() -> bool {
     std::env::var("AGENT_ACTIVITY_DOCK_FORWARD")
         .ok()
         .is_some_and(|value| value.eq_ignore_ascii_case("wsl"))
+}
+
+fn hop_token() -> Option<String> {
+    std::env::var("AGENT_ACTIVITY_DOCK_HOP")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn looks_like_wsl() -> bool {
+    env_nonempty("WSL_DISTRO_NAME")
+        || env_nonempty("WSL_INTEROP")
+        || env_nonempty("AGENT_ACTIVITY_DOCK_WINDOWS_DOCK")
+}
+
+fn env_nonempty(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
 }
 
 fn looks_like_windows_pipe(value: &OsString) -> bool {
@@ -758,14 +819,118 @@ fn local_daemon_present(endpoint: &Path) -> bool {
     local_connect(endpoint).is_ok()
 }
 
+fn forward_to_wsl_predicate(
+    forwardable: bool,
+    is_windows: bool,
+    hop_set: bool,
+    backend: DockBackend,
+    explicit_forward: bool,
+    pipe_present: bool,
+) -> bool {
+    if !is_windows || !forwardable || hop_set {
+        return false;
+    }
+    match backend {
+        DockBackend::Local => explicit_forward,
+        DockBackend::Wsl => explicit_forward || !pipe_present,
+    }
+}
+
+fn trampoline_to_windows_predicate(
+    is_unix: bool,
+    like_wsl: bool,
+    hop_set: bool,
+    backend: DockBackend,
+    stays_on_agent_os: bool,
+) -> bool {
+    is_unix && like_wsl && !hop_set && backend == DockBackend::Local && !stays_on_agent_os
+}
+
 fn should_forward_to_wsl(command: &Command, endpoint: &Path) -> bool {
-    if !is_forwardable_command(command) {
-        return false;
+    let hop_set = hop_token().is_some();
+    let backend = resolve_backend_from_env();
+    if hop_set
+        && cfg!(windows)
+        && forward_to_wsl_predicate(
+            is_forwardable_command(command),
+            true,
+            false,
+            backend,
+            explicit_wsl_forward(),
+            local_daemon_present(endpoint),
+        )
+    {
+        eprintln!("dock: refusing hop, AGENT_ACTIVITY_DOCK_HOP already set");
     }
-    if !cfg!(windows) {
-        return false;
+    if backend == DockBackend::Local && explicit_wsl_forward() && !hop_set && cfg!(windows) {
+        eprintln!("dock: AGENT_ACTIVITY_DOCK_FORWARD=wsl with BACKEND=local is unsupported");
     }
-    explicit_wsl_forward() || !local_daemon_present(endpoint)
+    forward_to_wsl_predicate(
+        is_forwardable_command(command),
+        cfg!(windows),
+        hop_set,
+        backend,
+        explicit_wsl_forward(),
+        local_daemon_present(endpoint),
+    )
+}
+
+fn should_trampoline_to_windows(command: &Command) -> bool {
+    let hop_set = hop_token().is_some();
+    let would = trampoline_to_windows_predicate(
+        cfg!(unix),
+        looks_like_wsl(),
+        false,
+        resolve_backend_from_env(),
+        stays_on_agent_os(command),
+    );
+    if hop_set && would {
+        eprintln!("dock: refusing hop, AGENT_ACTIVITY_DOCK_HOP already set");
+    }
+    trampoline_to_windows_predicate(
+        cfg!(unix),
+        looks_like_wsl(),
+        hop_set,
+        resolve_backend_from_env(),
+        stays_on_agent_os(command),
+    )
+}
+
+fn should_trampoline_argv(command: &Command) -> bool {
+    should_trampoline_to_windows(command) && !needs_local_event_prep(command)
+}
+
+fn needs_local_event_prep(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Hook { .. }
+            | Command::Start(_)
+            | Command::Working(_)
+            | Command::Waiting(_)
+            | Command::Permission(_)
+            | Command::Complete(_)
+            | Command::Completed(_)
+            | Command::Fail(_)
+            | Command::Error(_)
+            | Command::Cancel(_)
+    )
+}
+
+fn inject_wsl_backend(command: &mut ProcessCommand, backend: DockBackend) {
+    command.env("AGENT_ACTIVITY_DOCK_BACKEND", backend.as_str());
+    let extra = "AGENT_ACTIVITY_DOCK_BACKEND/u";
+    match std::env::var("WSLENV") {
+        Ok(existing)
+            if existing
+                .split(':')
+                .any(|part| part.starts_with("AGENT_ACTIVITY_DOCK_BACKEND")) => {}
+        Ok(existing) if !existing.is_empty() => {
+            command.env("WSLENV", format!("{existing}:{extra}"));
+        }
+        _ => {
+            command.env("WSLENV", extra);
+        }
+    }
 }
 
 fn forward_to_wsl() -> i32 {
@@ -785,6 +950,8 @@ fn forward_to_wsl() -> i32 {
     ]);
     command.args(&args);
     command.env_remove("AGENT_ACTIVITY_DOCK_FORWARD");
+    command.env("AGENT_ACTIVITY_DOCK_HOP", "wsl");
+    inject_wsl_backend(&mut command, DockBackend::Wsl);
     if std::env::var_os("AGENT_ACTIVITY_DOCK_SOCKET")
         .as_ref()
         .is_some_and(looks_like_windows_pipe)
@@ -796,6 +963,216 @@ fn forward_to_wsl() -> i32 {
         Err(error) => {
             eprintln!("dock: cannot forward to WSL via wsl.exe ({error})");
             2
+        }
+    }
+}
+
+fn apply_windows_hop_env(command: &mut ProcessCommand) {
+    command.env("AGENT_ACTIVITY_DOCK_HOP", "windows");
+    command.env(
+        "AGENT_ACTIVITY_DOCK_BACKEND",
+        resolve_backend_from_env().as_str(),
+    );
+    command.env_remove("AGENT_ACTIVITY_DOCK_SOCKET");
+    command.env_remove("XDG_RUNTIME_DIR");
+}
+
+fn trampoline_to_windows() -> i32 {
+    let exe = match find_windows_dock() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("dock: {error}");
+            return 2;
+        }
+    };
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let mut command = ProcessCommand::new(&exe);
+    command.args(&args);
+    command.stdin(Stdio::inherit());
+    command.stdout(Stdio::inherit());
+    command.stderr(Stdio::inherit());
+    apply_windows_hop_env(&mut command);
+    match command.status() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(error) => {
+            eprintln!("dock: cannot trampoline to {}: {error}", exe.display());
+            2
+        }
+    }
+}
+
+fn trampoline_emit(event: &DockEvent) -> i32 {
+    let exe = match find_windows_dock() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("dock: {error}");
+            return 2;
+        }
+    };
+    let mut command = ProcessCommand::new(&exe);
+    command.arg("emit");
+    command.stdin(Stdio::piped());
+    command.stdout(Stdio::inherit());
+    command.stderr(Stdio::inherit());
+    apply_windows_hop_env(&mut command);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("dock: cannot trampoline to {}: {error}", exe.display());
+            return 2;
+        }
+    };
+    let Some(mut stdin) = child.stdin.take() else {
+        eprintln!("dock: trampoline emit lost stdin");
+        return 2;
+    };
+    match serde_json::to_vec(event) {
+        Ok(mut line) => {
+            line.push(b'\n');
+            if let Err(error) = stdin.write_all(&line) {
+                eprintln!("dock: cannot write emit payload: {error}");
+                return 2;
+            }
+        }
+        Err(error) => {
+            eprintln!("dock: cannot serialize event: {error}");
+            return 2;
+        }
+    }
+    drop(stdin);
+    match child.wait() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(error) => {
+            eprintln!("dock: trampoline emit failed: {error}");
+            2
+        }
+    }
+}
+
+fn find_windows_dock() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("AGENT_ACTIVITY_DOCK_WINDOWS_DOCK")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(format!(
+            "AGENT_ACTIVITY_DOCK_WINDOWS_DOCK is not a file: {}",
+            path.display()
+        ));
+    }
+    let mut candidates = Vec::new();
+    if let Some(local) = windows_local_app_data() {
+        candidates.push(local.join("Agent Activity Dock").join("dock.exe"));
+    }
+    if let Some(user) = std::env::var("USER")
+        .ok()
+        .or_else(|| std::env::var("USERNAME").ok())
+    {
+        candidates.push(PathBuf::from(format!(
+            "/mnt/c/Users/{user}/AppData/Local/Agent Activity Dock/dock.exe"
+        )));
+    }
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            "cannot find Windows dock.exe; install the presenter, or set AGENT_ACTIVITY_DOCK_WINDOWS_DOCK"
+                .to_owned()
+        })
+}
+
+fn windows_local_app_data() -> Option<PathBuf> {
+    if let Ok(output) = ProcessCommand::new("cmd.exe")
+        .args(["/c", "echo", "%LOCALAPPDATA%"])
+        .output()
+    {
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let windows_path = text.lines().next().unwrap_or("").trim();
+            if !windows_path.is_empty() && windows_path != "%LOCALAPPDATA%" {
+                if let Some(unix) = wslpath_unix(windows_path) {
+                    return Some(unix);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn wslpath_unix(windows_path: &str) -> Option<PathBuf> {
+    let output = ProcessCommand::new("wslpath")
+        .args(["-u", windows_path])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+}
+
+fn run_emit(endpoint: &Path, json_output: bool) -> i32 {
+    if let Err(status) = ensure_cli_daemon(endpoint) {
+        return status;
+    }
+    let mut input = String::new();
+    if let Err(error) = std::io::stdin().read_to_string(&mut input) {
+        eprintln!("dock emit: cannot read stdin: {error}");
+        return 2;
+    }
+    let event: DockEvent = match serde_json::from_str(input.trim()) {
+        Ok(event) => event,
+        Err(error) => {
+            eprintln!("dock emit: invalid event JSON ({error})");
+            return 2;
+        }
+    };
+    match send(&endpoint.to_path_buf(), &IpcRequest::Event(event)) {
+        Ok(response) => {
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string(&response).expect("response serializes")
+                );
+            } else {
+                print_summary(&response);
+            }
+            if response.ok {
+                0
+            } else {
+                1
+            }
+        }
+        Err(error) => {
+            eprintln!(
+                "dock emit: cannot reach Dock at {}: {error}",
+                endpoint.display()
+            );
+            2
+        }
+    }
+}
+
+fn ensure_cli_daemon(endpoint: &Path) -> Result<(), i32> {
+    if resolve_backend_from_env() != DockBackend::Local {
+        return Ok(());
+    }
+    if looks_like_wsl() {
+        return Ok(());
+    }
+    let dockd = dockd_binary();
+    match connect_or_spawn_detached(
+        endpoint,
+        default_state_path(),
+        dockd.is_file().then_some(dockd),
+    ) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            eprintln!("dock: {error}");
+            Err(2)
         }
     }
 }
@@ -891,7 +1268,7 @@ fn start_daemon(endpoint: &Path, json_output: bool) -> i32 {
     let dockd = dockd_binary();
     if !dockd.is_file() {
         eprintln!(
-            "dock up: cannot find dockd at {} (install with scripts/install-cli.sh)",
+            "dock up: cannot find dockd at {}. Start the presenter or install dockd.exe.",
             dockd.display()
         );
         return 1;
@@ -1006,29 +1383,43 @@ fn stop_daemon(endpoint: &Path, json_output: bool) -> i32 {
 
 fn run_bridge(endpoint: &Path) -> i32 {
     let dockd = dockd_binary();
-    let session = match attach_or_listen(
-        endpoint,
-        default_state_path(),
-        dockd.is_file().then_some(dockd),
-    ) {
-        Ok(session) => session,
-        Err(error) => {
+    let dockd = dockd.is_file().then_some(dockd);
+    #[cfg(windows)]
+    {
+        if let Err(error) = connect_or_spawn_detached(endpoint, default_state_path(), dockd) {
             eprintln!("dock bridge: {error}");
             return 2;
         }
-    };
-    let status = match forward_stdio(endpoint) {
-        Ok(()) => 0,
-        Err(error) => {
-            eprintln!("dock bridge: {error}");
-            2
-        }
-    };
-    if session.owns_daemon() {
-        session.request_shutdown();
-        session.wait_for_shutdown();
+        return match forward_stdio(endpoint) {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("dock bridge: {error}");
+                2
+            }
+        };
     }
-    status
+    #[cfg(not(windows))]
+    {
+        let session = match attach_or_listen(endpoint, default_state_path(), dockd) {
+            Ok(session) => session,
+            Err(error) => {
+                eprintln!("dock bridge: {error}");
+                return 2;
+            }
+        };
+        let status = match forward_stdio(endpoint) {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("dock bridge: {error}");
+                2
+            }
+        };
+        if session.owns_daemon() {
+            session.request_shutdown();
+            session.wait_for_shutdown();
+        }
+        status
+    }
 }
 
 fn forward_stdio(endpoint: &Path) -> Result<(), String> {
@@ -1080,20 +1471,33 @@ fn forward_stdio(endpoint: &Path) -> Result<(), String> {
 }
 
 fn dockd_binary() -> PathBuf {
+    let file_name = if cfg!(windows) { "dockd.exe" } else { "dockd" };
+    let mut candidates = Vec::new();
     if let Some(path) =
         std::env::var_os("AGENT_ACTIVITY_DOCK_DOCKD").filter(|value| !value.is_empty())
     {
-        return PathBuf::from(path);
+        candidates.push(PathBuf::from(path));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let candidate = dir.join(if cfg!(windows) { "dockd.exe" } else { "dockd" });
-            if candidate.is_file() {
-                return candidate;
-            }
+            candidates.push(dir.join(file_name));
+            candidates.push(dir.join("binaries").join(file_name));
         }
     }
-    PathBuf::from(if cfg!(windows) { "dockd.exe" } else { "dockd" })
+    if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
+        candidates.push(
+            PathBuf::from(local)
+                .join("Agent Activity Dock")
+                .join("dockd.exe"),
+        );
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(PathBuf::from(home).join(".local/bin").join(file_name));
+    }
+    if let Some(found) = candidates.into_iter().find(|path| path.is_file()) {
+        return found;
+    }
+    PathBuf::from(file_name)
 }
 
 fn runtime_state_dir() -> PathBuf {
@@ -1105,8 +1509,12 @@ fn runtime_state_dir() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_forwardable_command, looks_like_windows_pipe, Command};
+    use super::{
+        forward_to_wsl_predicate, is_forwardable_command, looks_like_windows_pipe,
+        stays_on_agent_os, trampoline_to_windows_predicate, Command,
+    };
     use agent_activity_dock_core::{DockEvent, EventKind};
+    use agent_activity_dock_ipc::DockBackend;
     use std::ffi::OsString;
     use std::sync::{Mutex, MutexGuard};
 
@@ -1116,17 +1524,122 @@ mod tests {
         ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    #[test]
-    fn event_and_query_commands_can_forward() {
-        assert!(is_forwardable_command(&Command::Status));
-        assert!(is_forwardable_command(&Command::Run {
+    fn run_command() -> Command {
+        Command::Run {
             profile: None,
             agent: "grok".to_owned(),
             args: Vec::new(),
-        }));
+        }
+    }
+
+    fn connect_command() -> Command {
+        Command::Connect {
+            name: "grok".to_owned(),
+            original: None,
+            dry_run: false,
+        }
+    }
+
+    #[test]
+    fn event_and_query_commands_can_forward() {
+        assert!(is_forwardable_command(&Command::Status));
+        assert!(is_forwardable_command(&run_command()));
         assert!(!is_forwardable_command(&Command::Agents));
         assert!(!is_forwardable_command(&Command::Up));
         assert!(!is_forwardable_command(&Command::Down));
+    }
+
+    #[test]
+    fn hop_blocks_empty_pipe_forward() {
+        assert!(!forward_to_wsl_predicate(
+            true,
+            true,
+            true,
+            DockBackend::Wsl,
+            false,
+            false,
+        ));
+        assert!(forward_to_wsl_predicate(
+            true,
+            true,
+            false,
+            DockBackend::Wsl,
+            false,
+            false,
+        ));
+        assert!(!forward_to_wsl_predicate(
+            true,
+            true,
+            false,
+            DockBackend::Local,
+            false,
+            false,
+        ));
+        assert!(forward_to_wsl_predicate(
+            true,
+            true,
+            false,
+            DockBackend::Local,
+            true,
+            false,
+        ));
+        assert!(!forward_to_wsl_predicate(
+            true,
+            false,
+            false,
+            DockBackend::Wsl,
+            true,
+            false,
+        ));
+    }
+
+    #[test]
+    fn run_and_agents_do_not_trampoline() {
+        assert!(stays_on_agent_os(&Command::Agents));
+        assert!(stays_on_agent_os(&connect_command()));
+        assert!(stays_on_agent_os(&Command::Disconnect {
+            name: "grok".to_owned()
+        }));
+        assert!(stays_on_agent_os(&run_command()));
+        assert!(!stays_on_agent_os(&Command::Status));
+        assert!(!stays_on_agent_os(&Command::Up));
+        assert!(!stays_on_agent_os(&Command::Bridge));
+        assert!(!stays_on_agent_os(&Command::Emit));
+        assert!(trampoline_to_windows_predicate(
+            true,
+            true,
+            false,
+            DockBackend::Local,
+            false,
+        ));
+        assert!(!trampoline_to_windows_predicate(
+            true,
+            true,
+            false,
+            DockBackend::Local,
+            true,
+        ));
+        assert!(!trampoline_to_windows_predicate(
+            true,
+            true,
+            true,
+            DockBackend::Local,
+            false,
+        ));
+        assert!(!trampoline_to_windows_predicate(
+            true,
+            true,
+            false,
+            DockBackend::Wsl,
+            false,
+        ));
+        assert!(!trampoline_to_windows_predicate(
+            true,
+            false,
+            false,
+            DockBackend::Local,
+            false,
+        ));
     }
 
     #[test]

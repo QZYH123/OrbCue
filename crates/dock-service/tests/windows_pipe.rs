@@ -2,7 +2,9 @@
 
 use agent_activity_dock_core::{DockEvent, EventKind};
 use agent_activity_dock_ipc::{encode_line, local_connect, WireResponse};
-use agent_activity_dock_service::{attach_or_listen, spawn};
+use agent_activity_dock_service::{
+    attach_or_listen, connect_or_spawn_detached, spawn, DetachedConnectError,
+};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -85,5 +87,19 @@ fn attach_or_listen_listens_when_the_named_pipe_is_empty() {
 
     session.request_shutdown();
     session.wait_for_shutdown();
+    let _ = std::fs::remove_file(state);
+}
+
+#[test]
+fn connect_or_spawn_detached_does_not_listen_in_process() {
+    let path = endpoint();
+    let state = state_path(&path);
+    let error = connect_or_spawn_detached(&path, &state, None).unwrap_err();
+    assert!(matches!(error, DetachedConnectError::NeedPresenterOrDockd));
+
+    let service = spawn(&path).unwrap();
+    let attached = connect_or_spawn_detached(&path, &state, None).unwrap();
+    assert_eq!(attached, path);
+    service.shutdown();
     let _ = std::fs::remove_file(state);
 }

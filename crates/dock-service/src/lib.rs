@@ -2,7 +2,9 @@
 
 mod client;
 
-pub use client::{attach_or_listen, query_service, DockSession};
+pub use client::{
+    attach_or_listen, connect_or_spawn_detached, query_service, DetachedConnectError, DockSession,
+};
 
 use agent_activity_dock_core::{DockState, PersistedState};
 use agent_activity_dock_ipc::{

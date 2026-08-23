@@ -135,6 +135,62 @@ pub fn attach_or_listen(
     }
 }
 
+/// CLI short processes use this instead of `attach_or_listen`.
+/// Never `spawn_persistent`: exiting `dock emit` must not take the daemon with it.
+#[derive(Debug)]
+pub enum DetachedConnectError {
+    NeedPresenterOrDockd,
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for DetachedConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NeedPresenterOrDockd => write!(
+                f,
+                "cannot reach Dock named pipe; start the presenter or `dock up` (requires dockd.exe)"
+            ),
+            Self::Io(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl From<std::io::Error> for DetachedConnectError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+pub fn connect_or_spawn_detached(
+    endpoint: impl Into<PathBuf>,
+    state_path: impl Into<PathBuf>,
+    dockd: Option<PathBuf>,
+) -> Result<PathBuf, DetachedConnectError> {
+    let endpoint = endpoint.into();
+    let state_path = state_path.into();
+    if query_service(&endpoint, &IpcRequest::Snapshot).is_ok() {
+        return Ok(endpoint);
+    }
+    let log_path = state_path
+        .parent()
+        .map(|parent| parent.join("dockd.log"))
+        .unwrap_or_else(|| PathBuf::from("dockd.log"));
+    let pid_path = state_path
+        .parent()
+        .map(|parent| parent.join("dockd.pid"))
+        .unwrap_or_else(|| PathBuf::from("dockd.pid"));
+    if let Some(binary) = dockd.filter(|path| path.is_file()) {
+        spawn_detached_daemon(&binary, &log_path, &pid_path)?;
+        for _ in 0..25 {
+            if query_service(&endpoint, &IpcRequest::Snapshot).is_ok() {
+                return Ok(endpoint);
+            }
+            thread::sleep(Duration::from_millis(80));
+        }
+    }
+    Err(DetachedConnectError::NeedPresenterOrDockd)
+}
+
 pub fn query_service(endpoint: &Path, request: &IpcRequest) -> Result<WireResponse, String> {
     let mut stream = local_connect(endpoint).map_err(|error| error.to_string())?;
     local_set_recv_timeout(&stream, Some(QUERY_TIMEOUT)).map_err(|error| error.to_string())?;

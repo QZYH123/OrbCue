@@ -2,7 +2,9 @@
 
 use agent_activity_dock_core::{DockEvent, EventKind};
 use agent_activity_dock_ipc::{default_endpoint, encode_line, WireResponse};
-use agent_activity_dock_service::{attach_or_listen, spawn, spawn_persistent};
+use agent_activity_dock_service::{
+    attach_or_listen, connect_or_spawn_detached, spawn, spawn_persistent, DetachedConnectError,
+};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -109,6 +111,25 @@ fn restart_recovers_minimal_state_without_replaying_attention() {
     assert!(response.attention.is_none());
     restored.shutdown();
     std::fs::remove_file(state_path).unwrap();
+}
+
+#[test]
+fn connect_or_spawn_detached_does_not_listen_in_process() {
+    let path = endpoint();
+    let state = path.with_extension("state.json");
+    let error = connect_or_spawn_detached(&path, &state, None).unwrap_err();
+    assert!(matches!(error, DetachedConnectError::NeedPresenterOrDockd));
+    assert!(query_absent(&path));
+
+    let service = spawn(&path).unwrap();
+    let attached = connect_or_spawn_detached(&path, &state, None).unwrap();
+    assert_eq!(attached, path);
+    service.shutdown();
+}
+
+fn query_absent(path: &std::path::Path) -> bool {
+    agent_activity_dock_service::query_service(path, &agent_activity_dock_ipc::IpcRequest::Snapshot)
+        .is_err()
 }
 
 #[test]
