@@ -10,8 +10,8 @@ mod notify;
 
 pub use capture::{captured_keys_to_drop, sessions_to_capture, CaptureSession, SessionKey};
 pub use jump::{
-    captured_hwnd_usable, dock_tab_title, dock_terminal_marker, focus_decision, format_dock_marker,
-    is_terminal_window_candidate, process_image_file_name, project_path_hint,
+    captured_hwnd_usable, dock_tab_title, dock_terminal_marker, focus_attempts, focus_decision,
+    format_dock_marker, is_terminal_window_candidate, process_image_file_name, project_path_hint,
     select_unique_window_title, select_window_by_hints, session_terminal_title, FocusDecision,
     FocusRequest, DOCK_MARKER_HEX_LEN, DOCK_TERMINAL_PREFIX, JUMP_WINDOW_MISSING,
     TERMINAL_PROCESS_NAMES, TERMINAL_WINDOW_CLASSES,
@@ -274,6 +274,8 @@ pub struct PersistedSession {
     pub occurred_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -323,6 +325,9 @@ impl DockState {
             let terminal_id = normalize_optional(&item.terminal_id)
                 .filter(|value| valid_len(value, MAX_TERMINAL_ID_LEN))
                 .map(str::to_owned);
+            let project_path = normalize_optional(&item.project_path)
+                .filter(|value| valid_len(value, MAX_METADATA_VALUE_LEN))
+                .map(str::to_owned);
             let key = session_key(&item.source, &item.session_id);
             state.sessions.insert(
                 key,
@@ -333,7 +338,7 @@ impl DockState {
                     attention_reason: item.attention_reason,
                     summary: None,
                     deep_link: None,
-                    project_path: None,
+                    project_path,
                     window_title: None,
                     requires_user_action: item.requires_user_action,
                     acknowledged: item.acknowledged,
@@ -359,6 +364,7 @@ impl DockState {
                 acknowledged: record.acknowledged,
                 occurred_at: record.occurred_at.clone(),
                 terminal_id: record.terminal_id.clone(),
+                project_path: record.project_path.clone(),
             })
             .collect();
         sessions.sort_by(|left, right| left.occurred_at.cmp(&right.occurred_at));

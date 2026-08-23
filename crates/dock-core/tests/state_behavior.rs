@@ -121,8 +121,8 @@ fn waiting_for_permission_is_distinct_and_acknowledgeable() {
 fn restart_state_excludes_ephemeral_content_and_does_not_replay_attention() {
     let mut state = DockState::new();
     let mut started = event("e1", EventKind::Started, "s1");
-    started.workspace_root = Some("/secret/project".to_owned());
-    started.cwd = Some("/secret/project".to_owned());
+    started.workspace_root = Some("/home/qingz/projects/agent-activity-dock".to_owned());
+    started.cwd = Some("/home/qingz/projects/agent-activity-dock".to_owned());
     started.window_title = Some("Secret Title".to_owned());
     state.apply(started);
     state.apply(event("e2", EventKind::Failed, "s1").with_summary("private failure details"));
@@ -131,10 +131,9 @@ fn restart_state_excludes_ephemeral_content_and_does_not_replay_attention() {
     assert!(!json.contains("private failure details"));
     assert!(!json.contains("summary"));
     assert!(!json.contains("transcript"));
-    assert!(!json.contains("project_path"));
     assert!(!json.contains("window_title"));
     assert!(!json.contains("Secret Title"));
-    assert!(!json.contains("/secret/project"));
+    assert!(json.contains("/home/qingz/projects/agent-activity-dock"));
 
     let restored = DockState::from_persisted(serde_json::from_str(&json).unwrap());
     assert_eq!(restored.snapshot().pending_count, 1);
@@ -142,8 +141,20 @@ fn restart_state_excludes_ephemeral_content_and_does_not_replay_attention() {
     assert_eq!(restored.snapshot().sessions[0].state, SessionState::Failed);
     assert_eq!(restored.snapshot().sessions[0].mark, "!");
     assert!(restored.snapshot().sessions[0].summary.is_none());
-    assert!(restored.snapshot().sessions[0].project_path.is_none());
+    assert_eq!(
+        restored.snapshot().sessions[0].project_path.as_deref(),
+        Some("/home/qingz/projects/agent-activity-dock")
+    );
     assert!(restored.snapshot().sessions[0].window_title.is_none());
+}
+
+#[test]
+fn old_state_files_without_project_path_still_load() {
+    let restored = DockState::from_persisted(serde_json::from_str(
+        r#"{"version":1,"sessions":[{"source":"grok","session_id":"s1","state":"idle","attention_reason":null,"requires_user_action":false,"acknowledged":true,"occurred_at":"2026-08-23T00:00:00Z","terminal_id":"dock:ab12cd"}]}"#,
+    ).unwrap());
+    assert_eq!(restored.snapshot().sessions[0].terminal_id.as_deref(), Some("dock:ab12cd"));
+    assert_eq!(restored.snapshot().sessions[0].project_path, None);
 }
 
 #[test]
