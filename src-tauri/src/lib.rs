@@ -25,7 +25,7 @@ use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WebviewWindow,
 };
 use tauri_plugin_opener::OpenerExt;
-use toast::PresenterToastSink;
+use toast::{prepare_windows_notifications, preview_attention_toast, PresenterToastSink};
 
 struct AppService(Mutex<Option<Arc<dyn PresenterSession>>>);
 static LAST_BALL_SAVE_MS: AtomicU64 = AtomicU64::new(0);
@@ -498,6 +498,11 @@ fn set_notification_enabled(enabled: bool) {
 }
 
 #[tauri::command]
+fn preview_notification(app: AppHandle) -> Result<(), String> {
+    preview_attention_toast(&app)
+}
+
+#[tauri::command]
 fn highlight_session(source: String, session_id: String, app: AppHandle) {
     show_panel(&app);
     if let Some(target) = highlight_target(Some(&source), Some(&session_id)) {
@@ -649,6 +654,7 @@ pub fn run() {
         .setup(move |app| {
             let app_handle = app.handle().clone();
             configure_windows(&app_handle);
+            prepare_windows_notifications(&app_handle);
             install_windows_trampoline_cli(&app_handle);
             position_ball(&app_handle);
             region::apply_ball_region_for(&app_handle);
@@ -703,6 +709,7 @@ pub fn run() {
             hide_panel,
             focus_source,
             set_notification_enabled,
+            preview_notification,
             highlight_session
         ])
         .build(tauri::generate_context!())

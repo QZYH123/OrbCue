@@ -5,8 +5,14 @@
   import { invoke } from '@tauri-apps/api/core';
   import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
   import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-shortcut';
-  import { onAction } from '@tauri-apps/plugin-notification';
+  import {
+    isPermissionGranted,
+    onAction,
+    requestPermission,
+  } from '@tauri-apps/plugin-notification';
   import { onMount } from 'svelte';
+  import { playChime, unlockAudio, type ChimeSettings } from './chime';
+  import { ensureNotificationPermission } from './notifications';
   import type { AgentInventory, AgentSide, AuditEntry, ConnectionPreview, DiscoveredAgent, FocusResult, SessionSnapshot, Snapshot, SnapshotMessage } from './types';
   import { emptySnapshot } from './types';
   import { highlightFromNotificationExtra, sessionHighlightKey } from './highlight';
@@ -110,6 +116,15 @@
         // toggle it explicitly from Settings.
         if (label === 'ball') {
           try {
+            if (notificationsEnabled) {
+              const granted = await ensureNotificationPermission(
+                isPermissionGranted,
+                requestPermission,
+              );
+              if (!granted) {
+                console.warn('System notifications are not permitted');
+              }
+            }
             await invoke('set_notification_enabled', { enabled: notificationsEnabled });
           } catch (error) {
             console.warn('Could not sync notification preference', error);
@@ -131,7 +146,7 @@
         if (event.payload.attention && label === 'ball') {
           pulse = true;
           window.setTimeout(() => (pulse = false), 280);
-          playChime(event.payload.attention.severity);
+          void playChime(event.payload.attention.severity, currentChimeSettings());
         }
       });
       const stopInventory = await listen<AgentInventory>('dock:inventory', (event) => {
@@ -259,6 +274,7 @@
     dragging = false;
     suppressClick = false;
     dragStart = { x: event.screenX, y: event.screenY };
+    void unlockAudio();
   }
 
   async function onBallPointerMove(event: PointerEvent) {
@@ -459,13 +475,37 @@
   }
 
   async function toggleNotifications() {
-    notificationsEnabled = !notificationsEnabled;
-    localStorage.setItem('notifications-enabled', String(notificationsEnabled));
+    if (notificationsEnabled) {
+      notificationsEnabled = false;
+      localStorage.setItem('notifications-enabled', 'false');
+      try {
+        await invoke('set_notification_enabled', { enabled: false });
+      } catch (error) {
+        console.warn('Could not update notification preference', error);
+      }
+      return;
+    }
+    const granted = await ensureNotificationPermission(isPermissionGranted, requestPermission);
+    if (!granted) {
+      console.warn('System notifications are not permitted');
+      return;
+    }
+    notificationsEnabled = true;
+    localStorage.setItem('notifications-enabled', 'true');
     try {
-      await invoke('set_notification_enabled', { enabled: notificationsEnabled });
+      await invoke('set_notification_enabled', { enabled: true });
+      await invoke('preview_notification');
     } catch (error) {
       console.warn('Could not update notification preference', error);
     }
+  }
+
+  function currentChimeSettings(): ChimeSettings {
+    return {
+      completion: completionSoundEnabled,
+      attention: attentionSoundEnabled,
+      failure: failureSoundEnabled,
+    };
   }
 
   function toggleSound(channel: 'completion' | 'attention' | 'failure') {
@@ -478,6 +518,15 @@
     } else {
       failureSoundEnabled = !failureSoundEnabled;
       localStorage.setItem('failure-sound-enabled', String(failureSoundEnabled));
+    }
+    if (
+      (channel === 'completion' && completionSoundEnabled) ||
+      (channel === 'attention' && attentionSoundEnabled) ||
+      (channel === 'failure' && failureSoundEnabled)
+    ) {
+      const severity =
+        channel === 'completion' ? 'info' : channel === 'attention' ? 'attention' : 'error';
+      void playChime(severity, currentChimeSettings());
     }
   }
 
@@ -598,24 +647,6 @@
     return '已取消';
   }
 
-  function playChime(severity: 'info' | 'attention' | 'error') {
-    if (severity === 'info' && !completionSoundEnabled) return;
-    if (severity === 'attention' && !attentionSoundEnabled) return;
-    if (severity === 'error' && !failureSoundEnabled) return;
-    const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextClass) return;
-    const context = new AudioContextClass();
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    oscillator.type = 'sine';
-    oscillator.frequency.value = severity === 'error' ? 460 : severity === 'attention' ? 620 : 780;
-    gain.gain.setValueAtTime(0.08, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.18);
-    oscillator.connect(gain).connect(context.destination);
-    oscillator.start();
-    oscillator.stop(context.currentTime + 0.2);
-    window.setTimeout(() => void context.close(), 260);
-  }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -853,10 +884,10 @@
           <span><strong>失败提示音</strong><small>任务失败时播放较低音调</small></span><span class:enabled={failureSoundEnabled} class="switch"><i></i></span>
         </button>
         <button class="setting-row" aria-pressed={notificationsEnabled} onclick={() => void toggleNotifications()}>
-          <span><strong>系统通知</strong><small>等待输入、授权或失败时弹出一次系统通知</small></span><span class:enabled={notificationsEnabled} class="switch"><i></i></span>
+          <span><strong>系统通知</strong><small>等待输入、授权或失败时弹出一次；已完成只走提示音</small></span><span class:enabled={notificationsEnabled} class="switch"><i></i></span>
         </button>
         <button class="setting-row" aria-pressed={autostartEnabled} onclick={toggleAutostart}>
-          <span><strong>登录后自动启动</strong><small>让 Agent 事件随时有接收端</small></span><span class:enabled={autostartEnabled} class="switch"><i></i></span>
+          <span><strong>登录后自动启动</strong><small>Windows 登录后自动打开 Dock，不必先手动启动才能接收 Agent 状态</small></span><span class:enabled={autostartEnabled} class="switch"><i></i></span>
         </button>
         <button class="setting-row" aria-pressed={shortcutEnabled} onclick={toggleShortcut}>
           <span><strong>全局快捷键</strong><small>{shortcut} 打开或收起任务面板</small></span><span class:enabled={shortcutEnabled} class="switch"><i></i></span>
