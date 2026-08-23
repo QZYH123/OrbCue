@@ -39,11 +39,20 @@ pub fn local_connect(endpoint: &Path) -> io::Result<LocalStream> {
 }
 
 pub fn local_set_recv_timeout(stream: &LocalStream, timeout: Option<Duration>) -> io::Result<()> {
-    stream.set_recv_timeout(timeout)
+    ignore_unsupported_timeout(stream.set_recv_timeout(timeout))
 }
 
 pub fn local_set_send_timeout(stream: &LocalStream, timeout: Option<Duration>) -> io::Result<()> {
-    stream.set_send_timeout(timeout)
+    ignore_unsupported_timeout(stream.set_send_timeout(timeout))
+}
+
+fn ignore_unsupported_timeout(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        // Windows named pipes reject SO_RCVTIMEO; treating that as failure
+        // made a live daemon look missing.
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => Ok(()),
+        other => other,
+    }
 }
 
 pub fn local_try_clone(stream: &LocalStream) -> io::Result<LocalStream> {
