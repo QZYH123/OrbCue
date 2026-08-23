@@ -153,7 +153,10 @@ fn old_state_files_without_project_path_still_load() {
     let restored = DockState::from_persisted(serde_json::from_str(
         r#"{"version":1,"sessions":[{"source":"grok","session_id":"s1","state":"idle","attention_reason":null,"requires_user_action":false,"acknowledged":true,"occurred_at":"2026-08-23T00:00:00Z","terminal_id":"dock:ab12cd"}]}"#,
     ).unwrap());
-    assert_eq!(restored.snapshot().sessions[0].terminal_id.as_deref(), Some("dock:ab12cd"));
+    assert_eq!(
+        restored.snapshot().sessions[0].terminal_id.as_deref(),
+        Some("dock:ab12cd")
+    );
     assert_eq!(restored.snapshot().sessions[0].project_path, None);
 }
 

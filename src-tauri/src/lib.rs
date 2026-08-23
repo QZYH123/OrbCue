@@ -8,10 +8,8 @@ use agent_activity_dock_connect::{
     AgentOrigin, ConnectionManager, ConnectionPreview, ConnectionRecord, DiscoveredAgent,
 };
 use agent_activity_dock_core::{dispatch_attention_toast, highlight_target, ToastDispatch};
-use agent_activity_dock_ipc::SnapshotView;
-use agent_activity_dock_service::SnapshotMessage;
-#[cfg(not(windows))]
-use agent_activity_dock_service::{attach_or_listen, DockSession};
+use agent_activity_dock_ipc::{DockBackend, SnapshotView};
+use agent_activity_dock_service::{attach_or_listen, DockSession, SnapshotMessage};
 use focus::FocusResult;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -82,7 +80,6 @@ pub(crate) trait PresenterSession: Send + Sync {
     fn wait_for_shutdown(&self);
 }
 
-#[cfg(not(windows))]
 impl PresenterSession for DockSession {
     fn snapshot(&self) -> Result<SnapshotView, String> {
         DockSession::snapshot(self)
@@ -170,7 +167,6 @@ fn sidecar_name() -> String {
     }
 }
 
-#[cfg(not(windows))]
 fn dockd_binary_path() -> Option<PathBuf> {
     let file_name = if cfg!(windows) { "dockd.exe" } else { "dockd" };
     let mut candidates = Vec::new();
@@ -182,7 +178,16 @@ fn dockd_binary_path() -> Option<PathBuf> {
     if let Ok(executable) = std::env::current_exe() {
         if let Some(parent) = executable.parent() {
             candidates.push(parent.join(file_name));
+            candidates.push(parent.join("binaries").join(file_name));
+            candidates.push(parent.join("binaries").join(dockd_sidecar_name()));
         }
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
+        candidates.push(
+            PathBuf::from(local)
+                .join("Agent Activity Dock")
+                .join("dockd.exe"),
+        );
     }
     if let Some(home) = std::env::var_os("HOME") {
         candidates.push(PathBuf::from(home).join(".local/bin").join(file_name));
@@ -193,6 +198,14 @@ fn dockd_binary_path() -> Option<PathBuf> {
         }
     }
     candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn dockd_sidecar_name() -> String {
+    sidecar_name().replacen("dock", "dockd", 1)
+}
+
+fn presenter_backend() -> DockBackend {
+    agent_activity_dock_ipc::resolve_backend_from_env()
 }
 
 fn current_session(state: &AppService) -> Result<Arc<dyn PresenterSession>, String> {
@@ -512,38 +525,13 @@ fn hide_panel_window(app: &AppHandle) {
     }
 }
 
-#[cfg(windows)]
-fn start_session() -> (
+fn start_local_session() -> (
     Arc<dyn PresenterSession>,
     mpsc::Receiver<SnapshotMessage>,
     SnapshotMessage,
 ) {
-    let session: Arc<dyn PresenterSession> = Arc::new(wsl_session::WslSession::connect());
-    let updates = session.subscribe();
-    let initial = match updates.recv_timeout(Duration::from_secs(8)) {
-        Ok(message) => {
-            eprintln!("Agent Activity Dock attached via WSL dock bridge");
-            message
-        }
-        Err(_) => {
-            eprintln!(
-                "Agent Activity Dock: cannot reach WSL dock via wsl.exe. Install WSL and run `bash scripts/install-cli.sh`, or set AGENT_ACTIVITY_DOCK_BRIDGE_COMMAND"
-            );
-            SnapshotMessage::subscribed(empty_snapshot())
-        }
-    };
-    (session, updates, initial)
-}
-
-#[cfg(not(windows))]
-fn start_session() -> (
-    Arc<dyn PresenterSession>,
-    mpsc::Receiver<SnapshotMessage>,
-    SnapshotMessage,
-) {
-    let endpoint = agent_activity_dock_ipc::default_endpoint();
     let session = attach_or_listen(
-        PathBuf::from(&endpoint),
+        agent_activity_dock_ipc::default_endpoint(),
         agent_activity_dock_ipc::default_state_path(),
         dockd_binary_path(),
     )
@@ -570,6 +558,53 @@ fn start_session() -> (
         updates,
         initial,
     )
+}
+
+#[cfg(windows)]
+fn start_wsl_bridge_session() -> (
+    Arc<dyn PresenterSession>,
+    mpsc::Receiver<SnapshotMessage>,
+    SnapshotMessage,
+) {
+    let session: Arc<dyn PresenterSession> = Arc::new(wsl_session::WslSession::connect());
+    let updates = session.subscribe();
+    let initial = match updates.recv_timeout(Duration::from_secs(8)) {
+        Ok(message) => {
+            eprintln!("Agent Activity Dock attached via WSL dock bridge");
+            message
+        }
+        Err(_) => {
+            eprintln!(
+                "Agent Activity Dock: cannot reach WSL dock via wsl.exe. Install WSL and run `bash scripts/install-cli.sh`, or set AGENT_ACTIVITY_DOCK_BRIDGE_COMMAND"
+            );
+            SnapshotMessage::subscribed(empty_snapshot())
+        }
+    };
+    (session, updates, initial)
+}
+
+#[cfg(windows)]
+fn start_session() -> (
+    Arc<dyn PresenterSession>,
+    mpsc::Receiver<SnapshotMessage>,
+    SnapshotMessage,
+) {
+    match presenter_backend() {
+        DockBackend::Wsl => start_wsl_bridge_session(),
+        DockBackend::Local => start_local_session(),
+    }
+}
+
+#[cfg(not(windows))]
+fn start_session() -> (
+    Arc<dyn PresenterSession>,
+    mpsc::Receiver<SnapshotMessage>,
+    SnapshotMessage,
+) {
+    if presenter_backend() == DockBackend::Wsl {
+        eprintln!("Agent Activity Dock: AGENT_ACTIVITY_DOCK_BACKEND=wsl is ignored on this OS");
+    }
+    start_local_session()
 }
 
 pub fn run() {

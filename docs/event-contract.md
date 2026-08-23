@@ -4,7 +4,7 @@
 
 ## Transport
 
-当前实现使用当前用户的本地 IPC，newline-delimited JSON，每个普通请求一行、一个连接。Unix 使用 domain socket；Windows 使用 named pipe。路径/名称按以下规则决定：
+当前实现使用当前用户的本地 IPC，newline-delimited JSON，每个普通请求一行、一个连接。Unix 使用 domain socket；Windows 使用 named pipe。Win+WSL presenter 默认仍经 `wsl.exe dock bridge` 订 WSL socket；`AGENT_ACTIVITY_DOCK_BACKEND=local` 才会对本机 named pipe `attach_or_listen`。在 WSL trampoline 落地前不要设 `local`（Windows 一 listen，`dock.exe` 就停止向 WSL 转发，两边状态裂开）。路径/名称按以下规则决定：
 
 1. `AGENT_ACTIVITY_DOCK_SOCKET`
 2. Windows：`\\.\\pipe\\agent-activity-dock`

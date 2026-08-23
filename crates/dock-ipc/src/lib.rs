@@ -275,3 +275,55 @@ pub fn default_state_path() -> PathBuf {
     #[cfg(not(windows))]
     state_home.join("agent-activity-dock").join("state.json")
 }
+
+/// Canonical daemon topology. Compile default is the WSL bridge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DockBackend {
+    Wsl,
+    Local,
+}
+
+impl DockBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Wsl => "wsl",
+            Self::Local => "local",
+        }
+    }
+}
+
+pub fn default_backend_for_build() -> DockBackend {
+    DockBackend::Wsl
+}
+
+pub fn parse_backend(value: &str) -> Option<DockBackend> {
+    match value.trim() {
+        value if value.eq_ignore_ascii_case("local") => Some(DockBackend::Local),
+        value if value.eq_ignore_ascii_case("wsl") => Some(DockBackend::Wsl),
+        _ => None,
+    }
+}
+
+pub fn resolve_backend_from_env() -> DockBackend {
+    env::var("AGENT_ACTIVITY_DOCK_BACKEND")
+        .ok()
+        .as_deref()
+        .and_then(parse_backend)
+        .unwrap_or_else(default_backend_for_build)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_backend_for_build, parse_backend, DockBackend};
+
+    #[test]
+    fn backend_env_parses_case_insensitively() {
+        assert_eq!(parse_backend("local"), Some(DockBackend::Local));
+        assert_eq!(parse_backend("LOCAL"), Some(DockBackend::Local));
+        assert_eq!(parse_backend(" wsl "), Some(DockBackend::Wsl));
+        assert_eq!(parse_backend("WSL"), Some(DockBackend::Wsl));
+        assert_eq!(parse_backend(""), None);
+        assert_eq!(parse_backend("probe"), None);
+        assert_eq!(default_backend_for_build(), DockBackend::Wsl);
+    }
+}

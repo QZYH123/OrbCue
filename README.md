@@ -46,7 +46,7 @@ Windows PowerShell 把 `scripts/windows/dock.ps1` 放到 PATH（或保存成 `do
 dock down
 ```
 
-Win+WSL 的桌面路径是 **Windows presenter exe + WSL `dock bridge`**：Windows 原生 Tauri（WebView2）画小球和面板，经 `wsl.exe` 拉起 `~/.local/bin/dock bridge`，在 stdio 上转发现有 NDJSON 协议。presenter 只 attach，不会在 Windows 上自己 listen named pipe，也不开网络端口。
+Win+WSL 的桌面路径默认仍是 **Windows presenter exe + WSL `dock bridge`**：Windows 原生 Tauri（WebView2）画小球和面板，经 `wsl.exe` 拉起 `~/.local/bin/dock bridge`，在 stdio 上转发现有 NDJSON 协议。设置 `AGENT_ACTIVITY_DOCK_BACKEND=local` 时，presenter 改为对本机 named pipe 做 `attach_or_listen`。在 WSL `dock` 会 trampoline 到 `dock.exe` 之前，这个值会裂脑（Windows 不再转发、WSL hook 仍打 WSL `dockd`），不要当作用户开关。默认 `wsl`。presenter 不开网络端口。
 
 从 Windows 启动已经打好的 exe（或把 WSL 里交叉编译出的 exe 交给 Windows interop 启动）。不要用 WSL 里的 Linux Tauri / WSLg 显示悬浮窗。
 
@@ -111,6 +111,6 @@ Win+WSL 下用 `dock run <agent> [args…]` 在新的 Windows Terminal 标签里
 
 ## 当前平台范围
 
-Win+WSL 的最低可用路径是 WSL 中的 `dockd` + `dock` CLI + 可撤销连接。桌面路径是 Windows presenter + `dock bridge`，两者共用同一个 WSL daemon。Unix 使用当前用户 socket；Windows named pipe 代码仍保留，但 Win+WSL presenter 不再走这条路径。macOS 安装包尚未验证。
+Win+WSL 的最低可用路径是 WSL 中的 `dockd` + `dock` CLI + 可撤销连接。桌面路径默认是 Windows presenter + `dock bridge`，两者共用同一个 WSL daemon。`AGENT_ACTIVITY_DOCK_BACKEND=local` 会让 presenter 听 named pipe，但在配套 trampoline 落地前不要启用。Unix 使用当前用户 socket。macOS 安装包尚未验证。
 
 `start-dock.sh` / `stop-dock.sh` 管理 Rust `dockd`。
