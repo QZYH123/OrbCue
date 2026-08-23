@@ -205,6 +205,20 @@ fn grok_connect_writes_a_revocable_hook_file() {
     assert!(document.contains("SessionEnd"));
     assert!(document.contains("agent-activity-dock"));
     assert!(document.contains("grok-hook"));
+    let script = fs::read_to_string(
+        root.join("config")
+            .join("agent-activity-dock")
+            .join("grok-hook.sh"),
+    )
+    .unwrap();
+    assert!(
+        script.contains("|| true"),
+        "hook script must fail open: {script}"
+    );
+    assert!(
+        !script.contains("exec "),
+        "exec would drop || true: {script}"
+    );
     assert!(manager.disconnect("grok").unwrap());
     assert!(!hooks.exists());
     fs::remove_dir_all(root).unwrap();

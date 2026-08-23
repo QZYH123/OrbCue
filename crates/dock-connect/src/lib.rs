@@ -913,14 +913,14 @@ fn hook_script(dock_binary: &Path, provider: &str) -> String {
     #[cfg(windows)]
     {
         return format!(
-            "@echo off\r\nrem Agent Activity Dock generated {provider} hook.\r\n{} hook {provider}\r\n",
+            "@echo off\r\nrem Agent Activity Dock generated {provider} hook.\r\n{} hook {provider}\r\nexit /b 0\r\n",
             windows_batch_quote(&dock_binary.to_string_lossy())
         );
     }
     #[cfg(not(windows))]
     {
         format!(
-            "#!/bin/sh\n# Agent Activity Dock generated {provider} hook.\nexec {} hook {provider}\n",
+            "#!/bin/sh\n# Agent Activity Dock generated {provider} hook.\n{} hook {provider} || true\n",
             shell_quote(&dock_binary.to_string_lossy())
         )
     }

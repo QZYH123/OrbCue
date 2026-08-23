@@ -379,11 +379,14 @@ fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
     attach_terminal_id(&mut event);
     attach_liveness(&mut event);
     maybe_set_terminal_title(&event);
+    // Hooks are observers. Grok/Claude treat exit 2 as a Stop or PreToolUse
+    // gate, so a missing named pipe would keep another session working.
     if should_trampoline_to_windows(&Command::Hook { provider }) {
-        std::process::exit(trampoline_emit(&event));
+        let _ = trampoline_emit(&event);
+        return;
     }
-    if let Err(status) = ensure_cli_daemon(endpoint) {
-        std::process::exit(status);
+    if ensure_cli_daemon(endpoint).is_err() {
+        return;
     }
     match send(endpoint, &IpcRequest::Event(event)) {
         Ok(response) => {
