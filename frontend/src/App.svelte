@@ -14,7 +14,7 @@
   import { clampToWorkArea, shouldHidePanelOnBallDrag } from './placement';
   import { isDockTerminalId, jumpFeedback } from './jumpBack';
   import { applyPreviewDocument, demoInventory, demoSnapshot, previewLabel, tauriAvailable } from './preview';
-  import { displayAgent, filterSessionSections, presentSessionSections } from './sessionIdentity';
+  import { auditAttentionNote, displayAgent, filterSessionSections, presentSessionSections } from './sessionIdentity';
 
   const previewMode = !tauriAvailable();
   let label: string = previewMode ? previewLabel() : 'ball';
@@ -734,11 +734,12 @@
           <div class="empty compact"><span>✓</span><p>还没有审计记录</p><small>任务状态发生变化后会显示在这里</small></div>
         {:else}
           {#each [...snapshot.audit].reverse() as entry, index (entry.source + ':' + entry.session_id + ':' + entry.occurred_at + ':' + index)}
+            {@const attentionNote = auditAttentionNote(entry)}
             <article class="audit-card">
               <div class="state-mark {entry.state}" aria-hidden="true"></div>
               <div class="audit-content">
                 <div class="session-topline"><strong>{displayAgent(entry.source)}</strong><time datetime={entry.occurred_at}>{formatAuditTime(entry.occurred_at)}</time></div>
-                <div class="audit-meta"><span>{auditStateLabel(entry)}</span>{#if entry.attention_reason}<span>{entry.attention_reason === 'permission' ? '授权请求' : '需要输入'}</span>{/if}</div>
+                <div class="audit-meta"><span>{auditStateLabel(entry)}</span>{#if attentionNote}<span>{attentionNote}</span>{/if}</div>
               </div>
             </article>
           {/each}

@@ -1,4 +1,5 @@
 import { groupSessionsByProject, shortenProjectPath } from './projectPath';
+import type { AuditEntry } from './types';
 
 export interface SessionLike {
   source: string;
@@ -65,6 +66,13 @@ export function cleanWindowTitle(title: string): string {
     .replace(DOCK_MARKER_PREFIX, '')
     .replace(DOCK_MARKER_SUFFIX, '')
     .trim();
+}
+
+export function auditAttentionNote(entry: Pick<AuditEntry, 'state' | 'attention_reason'>): string | null {
+  if (entry.state !== 'needs_attention') {
+    return null;
+  }
+  return entry.attention_reason === 'permission' ? '授权请求' : '需要输入';
 }
 
 export function sessionDetail(session: SessionLike): string {

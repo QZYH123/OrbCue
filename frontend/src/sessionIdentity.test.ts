@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  auditAttentionNote,
   cleanWindowTitle,
   displayAgent,
   folderName,
@@ -37,6 +38,22 @@ describe('shortSessionId', () => {
     expect(shortSessionId('task-1')).toBe('task-1');
     expect(shortSessionId('a1b2c3d4-e5f6-7890-abcd-ef1234567890')).toBe('a1b2c3d4');
     expect(shortSessionId('very-long-custom-session-name')).toBe('very-lon…');
+  });
+});
+
+describe('auditAttentionNote', () => {
+  it('only labels waiting-for-user on needs_attention rows', () => {
+    expect(
+      auditAttentionNote({ state: 'completed', attention_reason: 'completed' }),
+    ).toBeNull();
+    expect(auditAttentionNote({ state: 'failed', attention_reason: 'failed' })).toBeNull();
+    expect(auditAttentionNote({ state: 'working', attention_reason: null })).toBeNull();
+    expect(
+      auditAttentionNote({ state: 'needs_attention', attention_reason: 'input' }),
+    ).toBe('需要输入');
+    expect(
+      auditAttentionNote({ state: 'needs_attention', attention_reason: 'permission' }),
+    ).toBe('授权请求');
   });
 });
 
