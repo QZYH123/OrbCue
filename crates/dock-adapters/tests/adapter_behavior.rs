@@ -197,6 +197,22 @@ fn grok_adapter_keeps_one_record_per_session() {
     .unwrap();
     assert_eq!(nested.kind, EventKind::Working);
 
+    let finished_subagent = grok_hook(&serde_json::json!({
+        "hookEventName": "stop",
+        "sessionId": "grok-session",
+        "reason": "end_turn",
+        "backgroundTasks": [{"id": "s1", "type": "subagent", "status": "completed"}]
+    }))
+    .unwrap();
+    assert_eq!(finished_subagent.kind, EventKind::Completed);
+
+    let tool_failed = grok_hook(&serde_json::json!({
+        "hookEventName": "PostToolUseFailure",
+        "sessionId": "grok-session"
+    }))
+    .unwrap();
+    assert_eq!(tool_failed.kind, EventKind::Working);
+
     let ended = grok_hook(&serde_json::json!({
         "hookEventName": "session_end",
         "sessionId": "grok-session"

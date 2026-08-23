@@ -47,7 +47,9 @@ pub fn grok_hook(payload: &Value) -> Option<DockEvent> {
         .map(normalize_hook_event)?;
     let kind = match event_name.as_str() {
         "session_start" => EventKind::Idle,
-        "user_prompt_submit" | "pre_tool_use" | "post_tool_use" => EventKind::Working,
+        "user_prompt_submit" | "pre_tool_use" | "post_tool_use" | "post_tool_use_failure" => {
+            EventKind::Working
+        }
         "stop" => match payload.get("reason").and_then(Value::as_str).unwrap_or("") {
             "channel_closed" | "shutdown" => EventKind::Closed,
             "end_turn" | "" if stop_has_active_subagent(payload) => EventKind::Working,
@@ -165,11 +167,23 @@ fn stop_has_active_subagent(payload: &Value) -> bool {
         .get("backgroundTasks")
         .or_else(|| payload.get("background_tasks"))
         .and_then(Value::as_array)
-        .is_some_and(|tasks| {
-            tasks
-                .iter()
-                .any(|task| task.get("type").and_then(Value::as_str) == Some("subagent"))
-        })
+        .is_some_and(|tasks| tasks.iter().any(is_running_background_subagent))
+}
+
+fn is_running_background_subagent(task: &Value) -> bool {
+    let Some(kind) = task.get("type").and_then(Value::as_str) else {
+        return false;
+    };
+    if !kind.eq_ignore_ascii_case("subagent") {
+        return false;
+    }
+    match task.get("status").and_then(Value::as_str) {
+        None => true,
+        Some(status) => matches!(
+            status.to_ascii_lowercase().as_str(),
+            "running" | "in_progress" | "active" | "pending"
+        ),
+    }
 }
 
 fn notification_type(payload: &Value) -> Option<&str> {

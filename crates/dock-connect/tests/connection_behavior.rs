@@ -202,6 +202,7 @@ fn grok_connect_writes_a_revocable_hook_file() {
     assert!(document.contains("UserPromptSubmit"));
     assert!(document.contains("PreToolUse"));
     assert!(document.contains("PostToolUse"));
+    assert!(document.contains("PostToolUseFailure"));
     assert!(document.contains("SessionEnd"));
     assert!(document.contains("agent-activity-dock"));
     assert!(document.contains("grok-hook"));
