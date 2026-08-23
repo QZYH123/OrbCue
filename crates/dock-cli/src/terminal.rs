@@ -21,31 +21,42 @@ pub trait TerminalAdapter {
 
 pub struct SpawnRequest {
     pub agent: String,
-    /// Absolute command used inside the tab. `wsl.exe -- bash script` is not a
-    /// login shell, so a bare `grok` is often missing from PATH.
-    pub command: String,
-    pub args: Vec<String>,
-    pub cwd: PathBuf,
     pub marker: String,
-    pub distro: String,
-    pub shell: String,
-    pub extra_exports: Vec<(String, String)>,
     /// Windows Terminal profile name or GUID. Inherited from the current tab
     /// when omitted (`WT_PROFILE_ID`).
     pub profile: Option<String>,
+    pub inner: InnerCommand,
+}
+
+pub enum InnerCommand {
+    Wsl(WslInner),
+    Native(NativeInner),
+}
+
+pub struct WslInner {
+    pub distro: String,
+    pub shell: String,
+    pub cwd: PathBuf,
     /// Linux path of the tab bootstrap script. Avoids `;` / quotes on the WT
     /// command line — WT treats `;` as a command separator.
-    pub run_script: Option<PathBuf>,
+    pub run_script: PathBuf,
+}
+
+pub struct NativeInner {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    pub extra_env: Vec<(String, String)>,
 }
 
 pub struct WindowsTerminalAdapter {
     pub wt: PathBuf,
-    pub wsl: PathBuf,
+    pub wsl: Option<PathBuf>,
 }
 
 impl TerminalAdapter for WindowsTerminalAdapter {
     fn spawn(&self, request: &SpawnRequest) -> Result<SpawnPlan, String> {
-        let plan = spawn_plan(&self.wt, &self.wsl, request)?;
+        let plan = spawn_plan(&self.wt, self.wsl.as_deref(), request)?;
         execute_plan(&plan)?;
         Ok(plan)
     }
@@ -264,34 +275,27 @@ fn run_command_inner(
     args: &[String],
     profile: Option<&str>,
 ) -> Result<StartedTab, String> {
-    let command = resolve_agent(agent)?;
+    let cwd = env::current_dir().map_err(|error| format!("无法读取当前目录：{error}"))?;
+    let marker = allocate_dock_marker();
+    let profile = resolve_wt_profile(profile)?;
+    let inner = if native_windows_run() {
+        native_inner(agent, args, &cwd, &marker)?
+    } else {
+        wsl_inner(agent, args, &cwd, &marker)?
+    };
     let adapter = WindowsTerminalAdapter {
         wt: find_wt()?,
-        wsl: find_wsl()?,
+        wsl: match &inner {
+            InnerCommand::Wsl(_) => Some(find_wsl()?),
+            InnerCommand::Native(_) => None,
+        },
     };
-    let cwd = env::current_dir().map_err(|error| format!("无法读取当前目录：{error}"))?;
-    let distro = wsl_distro()?;
-    let shell = env::var("SHELL")
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "/bin/bash".to_owned());
-    let marker = allocate_dock_marker();
-    let extra_exports = forwarded_exports();
-    let profile = resolve_wt_profile(profile)?;
-    let mut request = SpawnRequest {
+    let request = SpawnRequest {
         agent: agent.to_owned(),
-        command,
-        args: args.to_vec(),
-        cwd,
         marker: marker.clone(),
-        distro,
-        shell,
-        extra_exports,
         profile: profile.clone(),
-        run_script: None,
+        inner,
     };
-    request.run_script = Some(write_run_script(&request)?);
     let plan = adapter.spawn(&request)?;
     Ok(StartedTab {
         agent: agent.to_owned(),
@@ -301,24 +305,67 @@ fn run_command_inner(
     })
 }
 
-pub fn spawn_plan(wt: &Path, wsl: &Path, request: &SpawnRequest) -> Result<SpawnPlan, String> {
+fn native_windows_run() -> bool {
+    cfg!(windows)
+        && env::var("WSL_DISTRO_NAME")
+            .ok()
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true)
+}
+
+fn wsl_inner(
+    agent: &str,
+    args: &[String],
+    cwd: &Path,
+    marker: &str,
+) -> Result<InnerCommand, String> {
+    let command = resolve_agent(agent)?;
+    let distro = wsl_distro()?;
+    let shell = env::var("SHELL")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/bin/bash".to_owned());
+    let extra_exports = forwarded_exports();
+    let run_script = write_wsl_run_script(marker, &command, args, &extra_exports, &shell)?;
+    Ok(InnerCommand::Wsl(WslInner {
+        distro,
+        shell,
+        cwd: cwd.to_path_buf(),
+        run_script,
+    }))
+}
+
+fn native_inner(
+    agent: &str,
+    args: &[String],
+    cwd: &Path,
+    marker: &str,
+) -> Result<InnerCommand, String> {
+    let program = PathBuf::from(resolve_agent(agent)?);
+    Ok(InnerCommand::Native(NativeInner {
+        program,
+        args: args.to_vec(),
+        cwd: cwd.to_path_buf(),
+        extra_env: vec![(
+            "AGENT_ACTIVITY_DOCK_TERMINAL_ID".to_owned(),
+            marker.to_owned(),
+        )],
+    }))
+}
+
+pub fn spawn_plan(
+    wt: &Path,
+    wsl: Option<&Path>,
+    request: &SpawnRequest,
+) -> Result<SpawnPlan, String> {
     if dock_terminal_marker(&request.marker).is_none() {
         return Err(format!("invalid dock marker {}", request.marker));
     }
-    if request.distro.trim().is_empty() {
-        return Err(
-            "缺少 WSL 发行版名。在 WSL 里运行，或设置 AGENT_ACTIVITY_DOCK_WSL_DISTRO。".to_owned(),
-        );
-    }
-    let cwd = request
-        .cwd
+    let cwd = inner_cwd(&request.inner)
         .to_str()
         .ok_or_else(|| "当前目录不是有效 UTF-8".to_owned())?;
     let title = dock_tab_title(&request.agent, Some(cwd), &request.marker);
-    let script = request
-        .run_script
-        .as_ref()
-        .ok_or_else(|| "missing dock run bootstrap script".to_owned())?;
     let mut args = vec!["-w".to_owned(), "0".to_owned(), "nt".to_owned()];
     if let Some(profile) = request
         .profile
@@ -333,22 +380,73 @@ pub fn spawn_plan(wt: &Path, wsl: &Path, request: &SpawnRequest) -> Result<Spawn
         "--title".to_owned(),
         title.clone(),
         "--suppressApplicationTitle".to_owned(),
-        "--".to_owned(),
-        windows_wsl_command(wsl),
-        "-d".to_owned(),
-        request.distro.clone(),
-        "--cd".to_owned(),
-        cwd.to_owned(),
-        "--".to_owned(),
-        request.shell.clone(),
-        "-l".to_owned(),
-        script.display().to_string(),
     ]);
+    match &request.inner {
+        InnerCommand::Wsl(inner) => {
+            let wsl =
+                wsl.ok_or_else(|| "找不到 wsl.exe。WSL 侧 dock run 需要 Win+WSL。".to_owned())?;
+            args.extend(wsl_inner_args(wsl, inner)?);
+        }
+        InnerCommand::Native(inner) => args.extend(native_inner_args(inner)?),
+    }
     Ok(SpawnPlan {
         program: wt.to_path_buf(),
         args,
         title,
     })
+}
+
+fn inner_cwd(inner: &InnerCommand) -> &Path {
+    match inner {
+        InnerCommand::Wsl(inner) => inner.cwd.as_path(),
+        InnerCommand::Native(inner) => inner.cwd.as_path(),
+    }
+}
+
+pub fn wsl_inner_args(wsl: &Path, inner: &WslInner) -> Result<Vec<String>, String> {
+    if inner.distro.trim().is_empty() {
+        return Err(
+            "缺少 WSL 发行版名。在 WSL 里运行，或设置 AGENT_ACTIVITY_DOCK_WSL_DISTRO。".to_owned(),
+        );
+    }
+    let cwd = inner
+        .cwd
+        .to_str()
+        .ok_or_else(|| "当前目录不是有效 UTF-8".to_owned())?;
+    Ok(vec![
+        "--".to_owned(),
+        windows_wsl_command(wsl),
+        "-d".to_owned(),
+        inner.distro.clone(),
+        "--cd".to_owned(),
+        cwd.to_owned(),
+        "--".to_owned(),
+        inner.shell.clone(),
+        "-l".to_owned(),
+        inner.run_script.display().to_string(),
+    ])
+}
+
+pub fn native_inner_args(inner: &NativeInner) -> Result<Vec<String>, String> {
+    let cwd = inner
+        .cwd
+        .to_str()
+        .ok_or_else(|| "当前目录不是有效 UTF-8".to_owned())?;
+    let mut args = vec!["--startingDirectory".to_owned(), cwd.to_owned()];
+    for (key, value) in &inner.extra_env {
+        if !valid_export_key(key) {
+            continue;
+        }
+        args.push("--env".to_owned());
+        args.push(format!("{key}={value}"));
+    }
+    args.push("--".to_owned());
+    args.push(inner.program.display().to_string());
+    args.extend(inner.args.iter().cloned());
+    if args.iter().any(|arg| arg.contains(';')) {
+        return Err("native dock run arguments cannot contain ';'".to_owned());
+    }
+    Ok(args)
 }
 
 fn windows_wsl_command(wsl: &Path) -> String {
@@ -360,12 +458,18 @@ fn windows_wsl_command(wsl: &Path) -> String {
     }
 }
 
-pub fn inner_script(request: &SpawnRequest) -> String {
-    let mut parts = vec![posix_single_quote(&request.command)];
-    parts.extend(request.args.iter().map(|arg| posix_single_quote(arg)));
+pub fn inner_script(
+    command: &str,
+    args: &[String],
+    extra_exports: &[(String, String)],
+    marker: &str,
+    shell: &str,
+) -> String {
+    let mut parts = vec![posix_single_quote(command)];
+    parts.extend(args.iter().map(|arg| posix_single_quote(arg)));
     let command = parts.join(" ");
     let mut lines = Vec::new();
-    for (key, value) in &request.extra_exports {
+    for (key, value) in extra_exports {
         if !valid_export_key(key) {
             continue;
         }
@@ -373,23 +477,32 @@ pub fn inner_script(request: &SpawnRequest) -> String {
     }
     lines.push(format!(
         "export AGENT_ACTIVITY_DOCK_TERMINAL_ID={}",
-        posix_single_quote(&request.marker)
+        posix_single_quote(marker)
     ));
     lines.push(command);
     lines.push("rm -f -- \"$0\"".to_owned());
-    lines.push(format!("exec {} -l", posix_single_quote(&request.shell)));
+    lines.push(format!("exec {} -l", posix_single_quote(shell)));
     lines.join("\n")
 }
 
-fn write_run_script(request: &SpawnRequest) -> Result<PathBuf, String> {
+fn write_wsl_run_script(
+    marker: &str,
+    command: &str,
+    args: &[String],
+    extra_exports: &[(String, String)],
+    shell: &str,
+) -> Result<PathBuf, String> {
     let dir = env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .filter(|path| path.is_dir())
         .unwrap_or_else(|| PathBuf::from("/tmp"));
-    let name = format!("aadock-{}.sh", request.marker.replace(':', "-"));
+    let name = format!("aadock-{}.sh", marker.replace(':', "-"));
     let path = dir.join(name);
-    fs::write(&path, inner_script(request))
-        .map_err(|error| format!("无法写入启动脚本：{error}"))?;
+    fs::write(
+        &path,
+        inner_script(command, args, extra_exports, marker, shell),
+    )
+    .map_err(|error| format!("无法写入启动脚本：{error}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -544,9 +657,7 @@ fn find_wt() -> Result<PathBuf, String> {
     look_on_path("wt.exe")
         .or_else(|| look_on_path("wt"))
         .or_else(windows_apps_wt)
-        .ok_or_else(|| {
-            "找不到 Windows Terminal（wt.exe）。dock run 目前只支持 Win+WSL。".to_owned()
-        })
+        .ok_or_else(|| "找不到 Windows Terminal（wt.exe）。".to_owned())
 }
 
 fn find_wsl() -> Result<PathBuf, String> {
@@ -557,7 +668,7 @@ fn find_wsl() -> Result<PathBuf, String> {
         .or_else(|| look_on_path("wsl"))
         .or_else(|| existing_path(PathBuf::from("/mnt/c/Windows/System32/wsl.exe")))
         .or_else(|| existing_path(PathBuf::from(r"C:\Windows\System32\wsl.exe")))
-        .ok_or_else(|| "找不到 wsl.exe。dock run 需要在 Win+WSL 下运行。".to_owned())
+        .ok_or_else(|| "找不到 wsl.exe。WSL 侧 dock run 需要 Win+WSL。".to_owned())
 }
 
 fn env_executable(key: &str) -> Option<PathBuf> {
@@ -605,8 +716,9 @@ pub fn posix_single_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        allocate_dock_marker, choose_wt_profile, inner_script, posix_single_quote,
-        should_close_launcher, spawn_plan, windows_quote, wt_windows_command_line, SpawnRequest,
+        allocate_dock_marker, choose_wt_profile, inner_script, native_inner_args,
+        posix_single_quote, should_close_launcher, spawn_plan, windows_quote,
+        wt_windows_command_line, InnerCommand, NativeInner, SpawnRequest, WslInner,
     };
     use agent_activity_dock_core::{dock_terminal_marker, DOCK_MARKER_HEX_LEN};
     use std::collections::HashSet;
@@ -615,18 +727,14 @@ mod tests {
     fn request() -> SpawnRequest {
         SpawnRequest {
             agent: "grok".to_owned(),
-            command: "/home/qingz/.local/bin/grok".to_owned(),
-            args: vec!["--foo".to_owned(), "bar baz".to_owned()],
-            cwd: PathBuf::from("/home/qingz/projects/agent-activity-dock"),
             marker: "dock:ab12cd".to_owned(),
-            distro: "Ubuntu".to_owned(),
-            shell: "/bin/zsh".to_owned(),
-            extra_exports: vec![(
-                "AGENT_ACTIVITY_DOCK_SOCKET".to_owned(),
-                "/tmp/dock.sock".to_owned(),
-            )],
             profile: None,
-            run_script: Some(PathBuf::from("/tmp/aadock-dock-ab12cd.sh")),
+            inner: InnerCommand::Wsl(WslInner {
+                distro: "Ubuntu".to_owned(),
+                shell: "/bin/zsh".to_owned(),
+                cwd: PathBuf::from("/home/qingz/projects/agent-activity-dock"),
+                run_script: PathBuf::from("/tmp/aadock-dock-ab12cd.sh"),
+            }),
         }
     }
 
@@ -634,7 +742,7 @@ mod tests {
     fn spawn_plan_names_the_tab_and_injects_the_marker() {
         let plan = spawn_plan(
             Path::new("/tmp/wt.exe"),
-            Path::new("/mnt/c/Windows/System32/wsl.exe"),
+            Some(Path::new("/mnt/c/Windows/System32/wsl.exe")),
             &request(),
         )
         .unwrap();
@@ -668,7 +776,7 @@ mod tests {
         req.profile = Some("{49e41c3b-ba28-5ee9-9084-d161a8acb68e}".to_owned());
         let plan = spawn_plan(
             Path::new("/tmp/wt.exe"),
-            Path::new("/mnt/c/Windows/System32/wsl.exe"),
+            Some(Path::new("/mnt/c/Windows/System32/wsl.exe")),
             &req,
         )
         .unwrap();
@@ -706,7 +814,16 @@ mod tests {
 
     #[test]
     fn inner_script_forwards_socket_and_quotes_args() {
-        let script = inner_script(&request());
+        let script = inner_script(
+            "/home/qingz/.local/bin/grok",
+            &["--foo".to_owned(), "bar baz".to_owned()],
+            &[(
+                "AGENT_ACTIVITY_DOCK_SOCKET".to_owned(),
+                "/tmp/dock.sock".to_owned(),
+            )],
+            "dock:ab12cd",
+            "/bin/zsh",
+        );
         assert!(script.contains("export AGENT_ACTIVITY_DOCK_SOCKET='/tmp/dock.sock'"));
         assert!(script.contains("export AGENT_ACTIVITY_DOCK_TERMINAL_ID='dock:ab12cd'"));
         assert!(script.contains("'/home/qingz/.local/bin/grok' '--foo' 'bar baz'"));
@@ -729,6 +846,56 @@ mod tests {
             "grok · app — dock:ab12cd".to_owned(),
         ]);
         assert_eq!(line, "-w 0 nt --title \"grok · app — dock:ab12cd\""); // quoting only
+    }
+
+    #[test]
+    fn native_inner_args_set_directory_env_and_program() {
+        let args = native_inner_args(&NativeInner {
+            program: PathBuf::from(r"C:\Users\qingz\AppData\Local\grok.exe"),
+            args: vec!["--foo".to_owned()],
+            cwd: PathBuf::from(r"C:\work\app"),
+            extra_env: vec![(
+                "AGENT_ACTIVITY_DOCK_TERMINAL_ID".to_owned(),
+                "dock:ab12cd".to_owned(),
+            )],
+        })
+        .unwrap();
+        assert_eq!(
+            args[..4],
+            [
+                "--startingDirectory",
+                r"C:\work\app",
+                "--env",
+                "AGENT_ACTIVITY_DOCK_TERMINAL_ID=dock:ab12cd"
+            ]
+        );
+        assert_eq!(
+            args[4..],
+            ["--", r"C:\Users\qingz\AppData\Local\grok.exe", "--foo"]
+        );
+        assert!(!args.iter().any(|arg| arg.contains(';')));
+    }
+
+    #[test]
+    fn spawn_plan_native_does_not_invoke_wsl() {
+        let request = SpawnRequest {
+            agent: "grok".to_owned(),
+            marker: "dock:ab12cd".to_owned(),
+            profile: None,
+            inner: InnerCommand::Native(NativeInner {
+                program: PathBuf::from(r"C:\grok.exe"),
+                args: Vec::new(),
+                cwd: PathBuf::from(r"C:\work"),
+                extra_env: vec![(
+                    "AGENT_ACTIVITY_DOCK_TERMINAL_ID".to_owned(),
+                    "dock:ab12cd".to_owned(),
+                )],
+            }),
+        };
+        let plan = spawn_plan(Path::new("/tmp/wt.exe"), None, &request).unwrap();
+        assert!(!plan.args.iter().any(|arg| arg.contains("wsl")));
+        assert!(plan.args.contains(&"--startingDirectory".to_owned()));
+        assert_eq!(plan.title, "work · grok · dock:ab12cd");
     }
 
     #[test]
