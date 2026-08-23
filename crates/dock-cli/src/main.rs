@@ -98,6 +98,9 @@ enum Command {
         /// Windows Terminal profile name or GUID. Defaults to the current tab.
         #[arg(long)]
         profile: Option<String>,
+        /// After the new tab starts, close this interactive shell tab.
+        #[arg(long)]
+        close: bool,
         /// Agent command, such as grok, claude, or codex.
         agent: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -187,9 +190,10 @@ fn main() {
         agent,
         args,
         profile,
+        close,
     } = &cli.command
     {
-        let status = terminal::run_command(agent, args, profile.as_deref(), cli.json);
+        let status = terminal::run_command(agent, args, profile.as_deref(), *close, cli.json);
         if status != 0 {
             std::process::exit(status);
         }
@@ -1773,6 +1777,7 @@ mod tests {
     fn run_command() -> Command {
         Command::Run {
             profile: None,
+            close: false,
             agent: "grok".to_owned(),
             args: Vec::new(),
         }

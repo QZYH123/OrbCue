@@ -99,7 +99,7 @@ dock run grok
 
 `dock reset` 是显式的陈旧状态恢复操作，不会向 Agent 发送任何控制命令。reset 之后迟到的 `complete` / `waiting` / `failed` 不会复活该会话。带 `parent_session_id` 的子代理事件不计入小球上的主会话数。
 
-Win+WSL 下用 `dock run <agent> [args…]` 在新的 Windows Terminal 标签里启动 Agent。默认沿用当前标签的配置文件（`WT_PROFILE_ID`）；可用 `dock run --profile "Ubuntu-24.04" grok` 或 `AGENT_ACTIVITY_DOCK_WT_PROFILE` 覆盖。标签标题带 `dock:xxxxxx` 标记，标签环境注入 `AGENT_ACTIVITY_DOCK_TERMINAL_ID`，面板「回去」可做标签级精确跳回（撕出/合并后仍有效）。手开的会话仍走窗口级 HWND 兜底：成功时标明「已回到最近交互的窗口」，HWND 失效则诚实失败并提示 `dock run`。不再按项目名或 source 做模糊标题匹配。`AGENT_ACTIVITY_DOCK_NO_TITLE=1` 可关闭写标题。
+Win+WSL 下用 `dock run <agent> [args…]` 在新的 Windows Terminal 标签里启动 Agent。默认沿用当前标签的配置文件（`WT_PROFILE_ID`）；可用 `dock run --profile "Ubuntu-24.04" grok` 或 `AGENT_ACTIVITY_DOCK_WT_PROFILE` 覆盖。`dock run --close grok` 在新标签启动成功后结束当前交互式 shell，从而关掉启动页；管道或脚本里即使带 `--close` 也不会关。标签标题带 `dock:xxxxxx` 标记，标签环境注入 `AGENT_ACTIVITY_DOCK_TERMINAL_ID`，面板「回去」可做标签级精确跳回（撕出/合并后仍有效）。手开的会话仍走窗口级 HWND 兜底：成功时标明「已回到最近交互的窗口」，HWND 失效则诚实失败并提示 `dock run`。不再按项目名或 source 做模糊标题匹配。`AGENT_ACTIVITY_DOCK_NO_TITLE=1` 可关闭写标题。
 
 ## 隐私与可靠性
 

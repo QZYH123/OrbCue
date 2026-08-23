@@ -229,3 +229,17 @@ fn dock_run_injects_marker_and_replaces_the_previous_session() {
     service.shutdown();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn dock_run_close_keeps_the_launcher_when_stdin_is_not_a_tty() {
+    let root = isolated_root();
+    let bin = setup_bin(&root);
+    write_exec(&bin.join("fakeagent"), "#!/bin/sh\nexit 0\n");
+    let (started, stderr) = run_json(&root, &bin, &["--json", "run", "--close", "fakeagent"]);
+    assert_eq!(started["ok"], true, "stdout={started} stderr={stderr}");
+    assert_eq!(
+        started["closed_launcher"], false,
+        "piped stdin must not SIGHUP the test process: {started}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}

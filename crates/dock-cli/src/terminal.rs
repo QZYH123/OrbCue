@@ -175,9 +175,16 @@ pub struct SpawnPlan {
 static MARKERS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 static MARKER_SEQ: AtomicU64 = AtomicU64::new(1);
 
-pub fn run_command(agent: &str, args: &[String], profile: Option<&str>, json_output: bool) -> i32 {
+pub fn run_command(
+    agent: &str,
+    args: &[String],
+    profile: Option<&str>,
+    close: bool,
+    json_output: bool,
+) -> i32 {
     match run_command_inner(agent, args, profile) {
         Ok(started) => {
+            let closed_launcher = close_launcher_after_spawn(close);
             if json_output {
                 println!(
                     "{}",
@@ -187,13 +194,20 @@ pub fn run_command(agent: &str, args: &[String], profile: Option<&str>, json_out
                         "title": started.title,
                         "agent": started.agent,
                         "profile": started.profile,
+                        "closed_launcher": closed_launcher,
                     })
                 );
             } else {
-                println!(
+                print!(
                     "Started {} in Windows Terminal tab {}",
                     started.agent, started.marker
                 );
+                if closed_launcher {
+                    print!("; closing this tab");
+                } else if close {
+                    print!("; current stdin is not a TTY, launcher tab kept");
+                }
+                println!();
             }
             0
         }
@@ -206,6 +220,36 @@ pub fn run_command(agent: &str, args: &[String], profile: Option<&str>, json_out
             1
         }
     }
+}
+
+fn close_launcher_after_spawn(requested: bool) -> bool {
+    if !should_close_launcher(requested, stdin_is_terminal()) {
+        return false;
+    }
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    close_launcher_shell()
+}
+
+pub(crate) fn should_close_launcher(requested: bool, stdin_is_terminal: bool) -> bool {
+    requested && stdin_is_terminal
+}
+
+fn stdin_is_terminal() -> bool {
+    std::io::IsTerminal::is_terminal(&std::io::stdin())
+}
+
+#[cfg(unix)]
+fn close_launcher_shell() -> bool {
+    let ppid = unsafe { libc::getppid() };
+    if ppid <= 1 {
+        return false;
+    }
+    unsafe { libc::kill(ppid, libc::SIGHUP) == 0 }
+}
+
+#[cfg(not(unix))]
+fn close_launcher_shell() -> bool {
+    false
 }
 
 struct StartedTab {
@@ -561,8 +605,8 @@ pub fn posix_single_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        allocate_dock_marker, choose_wt_profile, inner_script, posix_single_quote, spawn_plan,
-        windows_quote, wt_windows_command_line, SpawnRequest,
+        allocate_dock_marker, choose_wt_profile, inner_script, posix_single_quote,
+        should_close_launcher, spawn_plan, windows_quote, wt_windows_command_line, SpawnRequest,
     };
     use agent_activity_dock_core::{dock_terminal_marker, DOCK_MARKER_HEX_LEN};
     use std::collections::HashSet;
@@ -685,6 +729,14 @@ mod tests {
             "grok · app — dock:ab12cd".to_owned(),
         ]);
         assert_eq!(line, "-w 0 nt --title \"grok · app — dock:ab12cd\""); // quoting only
+    }
+
+    #[test]
+    fn close_flag_only_closes_an_interactive_tty() {
+        assert!(!should_close_launcher(false, true));
+        assert!(!should_close_launcher(true, false));
+        assert!(!should_close_launcher(false, false));
+        assert!(should_close_launcher(true, true));
     }
 
     #[test]
