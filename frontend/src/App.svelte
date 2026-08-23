@@ -887,7 +887,7 @@
           <span><strong>系统通知</strong><small>等待输入、授权或失败时弹出一次；已完成只走提示音</small></span><span class:enabled={notificationsEnabled} class="switch"><i></i></span>
         </button>
         <button class="setting-row" aria-pressed={autostartEnabled} onclick={toggleAutostart}>
-          <span><strong>登录后自动启动</strong><small>Windows 登录后自动打开 Dock，不必先手动启动才能接收 Agent 状态</small></span><span class:enabled={autostartEnabled} class="switch"><i></i></span>
+          <span><strong>开机自启</strong><small>登录 Windows 后自动打开 Dock，不必先手动启动才能接收 Agent 状态</small></span><span class:enabled={autostartEnabled} class="switch"><i></i></span>
         </button>
         <button class="setting-row" aria-pressed={shortcutEnabled} onclick={toggleShortcut}>
           <span><strong>全局快捷键</strong><small>{shortcut} 打开或收起任务面板</small></span><span class:enabled={shortcutEnabled} class="switch"><i></i></span>
