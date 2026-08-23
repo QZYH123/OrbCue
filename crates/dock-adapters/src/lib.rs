@@ -59,9 +59,10 @@ pub fn grok_hook(payload: &Value) -> Option<DockEvent> {
         .map(|value| value.replace('-', "_").to_ascii_lowercase())?;
     let kind = match event_name.as_str() {
         "session_start" => EventKind::Idle,
-        "user_prompt_submit" => EventKind::Working,
+        "user_prompt_submit" | "pre_tool_use" | "post_tool_use" => EventKind::Working,
         "stop" => match payload.get("reason").and_then(Value::as_str).unwrap_or("") {
             "channel_closed" | "shutdown" => EventKind::Closed,
+            "end_turn" | "" if grok_stop_has_active_subagent(payload) => EventKind::Working,
             "end_turn" | "" => EventKind::Completed,
             _ => return None,
         },
@@ -88,6 +89,18 @@ pub fn grok_hook(payload: &Value) -> Option<DockEvent> {
         event.requires_user_action = Some(true);
     }
     Some(event)
+}
+
+fn grok_stop_has_active_subagent(payload: &Value) -> bool {
+    payload
+        .get("backgroundTasks")
+        .or_else(|| payload.get("background_tasks"))
+        .and_then(Value::as_array)
+        .is_some_and(|tasks| {
+            tasks
+                .iter()
+                .any(|task| task.get("type").and_then(Value::as_str) == Some("subagent"))
+        })
 }
 
 fn notification_type(payload: &Value) -> Option<&str> {

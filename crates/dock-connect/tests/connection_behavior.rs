@@ -200,6 +200,8 @@ fn grok_connect_writes_a_revocable_hook_file() {
     let document = fs::read_to_string(&hooks).unwrap();
     assert!(document.contains("SessionStart"));
     assert!(document.contains("UserPromptSubmit"));
+    assert!(document.contains("PreToolUse"));
+    assert!(document.contains("PostToolUse"));
     assert!(document.contains("SessionEnd"));
     assert!(document.contains("agent-activity-dock"));
     assert!(document.contains("grok-hook"));

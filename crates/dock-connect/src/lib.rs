@@ -842,6 +842,8 @@ fn grok_hook_events() -> Vec<String> {
     [
         "SessionStart",
         "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
         "Notification",
         "Stop",
         "StopFailure",

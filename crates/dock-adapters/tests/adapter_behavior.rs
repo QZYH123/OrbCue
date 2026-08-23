@@ -111,6 +111,15 @@ fn grok_adapter_keeps_one_record_per_session() {
     assert_eq!(permission.kind, EventKind::PermissionRequested);
     assert_eq!(permission.session_id, "grok-session");
 
+    let tool = grok_hook(&serde_json::json!({
+        "hookEventName": "pre_tool_use",
+        "sessionId": "grok-session",
+        "promptId": "turn-1",
+        "toolName": "read_file"
+    }))
+    .unwrap();
+    assert_eq!(tool.kind, EventKind::Working);
+
     let idle = grok_hook(&serde_json::json!({
         "hookEventName": "stop",
         "sessionId": "grok-session",
@@ -120,6 +129,24 @@ fn grok_adapter_keeps_one_record_per_session() {
     .unwrap();
     assert_eq!(idle.kind, EventKind::Completed);
     assert_eq!(idle.session_id, "grok-session");
+
+    let hanging_service = grok_hook(&serde_json::json!({
+        "hookEventName": "stop",
+        "sessionId": "grok-session",
+        "reason": "end_turn",
+        "backgroundTasks": [{"id": "m1", "type": "monitor", "status": "running"}]
+    }))
+    .unwrap();
+    assert_eq!(hanging_service.kind, EventKind::Completed);
+
+    let nested = grok_hook(&serde_json::json!({
+        "hookEventName": "stop",
+        "sessionId": "grok-session",
+        "reason": "end_turn",
+        "backgroundTasks": [{"id": "s1", "type": "subagent", "status": "running"}]
+    }))
+    .unwrap();
+    assert_eq!(nested.kind, EventKind::Working);
 
     let ended = grok_hook(&serde_json::json!({
         "hookEventName": "session_end",

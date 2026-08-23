@@ -138,6 +138,6 @@ dock reset --source claude --session-id session-123
 | Claude | `settings.json` hooks：`SessionStart`、`PreToolUse`、`PermissionRequest`、`SessionEnd`、`StopFailure`；`SubagentStart` / `SubagentStop` 及带 parent 线索的 payload | working、permission、completed、failed；子代理填 `parent_session_id` 或丢弃 |
 | Codex | 结构化 notification payload | working、completed、failed、cancelled；payload 带 parent 线索时填 `parent_session_id` |
 | DSH | `session.*` projection payload | working、waiting、completed、failed、cancelled；payload 带 parent 线索时填 `parent_session_id` |
-| Grok | 结构化 hook payload | idle、working、permission、completed、failed、closed；带 `subagentType` 的 payload 仍丢弃 |
+| Grok | 结构化 hook payload | idle、working、permission、completed、failed、closed；`PreToolUse`/`PostToolUse` 标回工作中；`Stop end_turn` 在仍有 background subagent 时保持 working，shell/monitor 挂起与空任务视为已完成；带 `subagentType` 的 payload 仍丢弃 |
 
 适配器只读取结构化 stdin。即使 payload 含有 `transcript_path`，也不会打开、保存或转发该路径。
