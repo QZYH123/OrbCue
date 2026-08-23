@@ -49,6 +49,7 @@ dependencies = [
  "agent-activity-dock-service",
  "clap",
  "libc",
+ "serde",
  "serde_json",
  "time",
 ]
