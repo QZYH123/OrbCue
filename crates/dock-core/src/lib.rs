@@ -513,6 +513,10 @@ impl DockState {
         ) && !self.sessions.contains_key(&key)
         {
             if let Some(terminal_id) = normalize_optional(&event.terminal_id).map(str::to_owned) {
+                if self.ignore_nested_start_on_running_terminal(&terminal_id, &event) {
+                    self.remember_event(&event.event_id);
+                    return self.accepted(None);
+                }
                 self.retire_other_terminal_sessions(&terminal_id, &key);
             }
         }
@@ -728,6 +732,24 @@ impl DockState {
                     .unwrap_or_else(|| "invalid_transition".to_owned()),
             )
         }
+    }
+
+    fn ignore_nested_start_on_running_terminal(
+        &self,
+        terminal_id: &str,
+        incoming: &DockEvent,
+    ) -> bool {
+        if resolve_project_path(incoming).is_some() {
+            return false;
+        }
+        self.sessions.values().any(|record| {
+            record.terminal_id.as_deref() == Some(terminal_id)
+                && record.project_path.is_some()
+                && matches!(
+                    record.state,
+                    SessionState::Working | SessionState::NeedsAttention
+                )
+        })
     }
 
     fn retire_other_terminal_sessions(&mut self, terminal_id: &str, keep_key: &str) {

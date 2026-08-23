@@ -557,6 +557,104 @@ fn same_terminal_id_replaces_across_sources() {
 }
 
 #[test]
+fn nested_pathless_start_does_not_steal_a_working_terminal_session() {
+    let mut state = DockState::new();
+    let mut grok = DockEvent::new("e1", EventKind::Working, "grok", "grok-s");
+    grok.cwd = Some("/tmp/project".to_owned());
+    state.apply(grok.with_terminal_id("term"));
+
+    let nested =
+        DockEvent::new("e2", EventKind::Started, "codex", "codex-version").with_terminal_id("term");
+    let result = state.apply(nested);
+    assert!(result.accepted);
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(result.snapshot.working_count, 1);
+    assert_eq!(result.snapshot.sessions[0].source, "grok");
+    assert_eq!(result.snapshot.sessions[0].session_id, "grok-s");
+    assert_eq!(result.snapshot.sessions[0].state, SessionState::Working);
+
+    let done = DockEvent::new("e3", EventKind::Completed, "codex", "codex-version")
+        .with_terminal_id("term");
+    let result = state.apply(done);
+    assert!(result.accepted);
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(result.snapshot.sessions[0].source, "grok");
+    assert_eq!(result.snapshot.sessions[0].state, SessionState::Working);
+}
+
+#[test]
+fn nested_pathless_start_does_not_steal_a_waiting_terminal_session() {
+    let mut state = DockState::new();
+    let mut grok = DockEvent::new("e1", EventKind::Working, "grok", "grok-s");
+    grok.cwd = Some("/tmp/project".to_owned());
+    state.apply(grok.with_terminal_id("term"));
+    state.apply(DockEvent::new(
+        "e2",
+        EventKind::WaitingInput,
+        "grok",
+        "grok-s",
+    ));
+    assert_eq!(
+        state.snapshot().sessions[0].state,
+        SessionState::NeedsAttention
+    );
+
+    let nested =
+        DockEvent::new("e3", EventKind::Started, "codex", "codex-version").with_terminal_id("term");
+    let result = state.apply(nested);
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(result.snapshot.sessions[0].source, "grok");
+    assert_eq!(
+        result.snapshot.sessions[0].state,
+        SessionState::NeedsAttention
+    );
+}
+
+#[test]
+fn start_with_a_project_path_still_replaces_a_working_terminal_session() {
+    let mut state = DockState::new();
+    let mut grok = DockEvent::new("e1", EventKind::Working, "grok", "grok-s");
+    grok.cwd = Some("/tmp/project".to_owned());
+    state.apply(grok.with_terminal_id("term"));
+
+    let mut codex = DockEvent::new("e2", EventKind::Idle, "codex", "codex-s");
+    codex.cwd = Some("/tmp/other".to_owned());
+    let result = state.apply(codex.with_terminal_id("term"));
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(result.snapshot.sessions[0].source, "codex");
+    assert_eq!(result.snapshot.sessions[0].session_id, "codex-s");
+}
+
+#[test]
+fn completed_session_is_still_replaced_by_a_pathless_start() {
+    let mut state = DockState::new();
+    let mut grok = DockEvent::new("e1", EventKind::Working, "grok", "grok-s");
+    grok.cwd = Some("/tmp/project".to_owned());
+    state.apply(grok.with_terminal_id("term"));
+    state.apply(DockEvent::new("e2", EventKind::Completed, "grok", "grok-s"));
+
+    let nested =
+        DockEvent::new("e3", EventKind::Started, "codex", "codex-s").with_terminal_id("term");
+    let result = state.apply(nested);
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(result.snapshot.sessions[0].source, "codex");
+}
+
+#[test]
+fn idle_session_with_a_path_is_still_replaced_by_a_pathless_start() {
+    let mut state = DockState::new();
+    let mut grok = DockEvent::new("e1", EventKind::Idle, "grok", "grok-s");
+    grok.cwd = Some("/tmp/project".to_owned());
+    state.apply(grok.with_terminal_id("term"));
+
+    let nested =
+        DockEvent::new("e2", EventKind::Started, "codex", "codex-s").with_terminal_id("term");
+    let result = state.apply(nested);
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(result.snapshot.sessions[0].source, "codex");
+}
+
+#[test]
 fn events_without_terminal_id_do_not_replace() {
     let mut state = DockState::new();
     state.apply(event("e1", EventKind::Started, "one"));
