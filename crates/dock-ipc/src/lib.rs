@@ -13,8 +13,6 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-#[cfg(not(windows))]
-use std::process::Command;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -334,6 +332,11 @@ fn should_read_windows_backend_file() -> bool {
 }
 
 pub fn windows_app_data_dir() -> Option<PathBuf> {
+    static CACHED: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    CACHED.get_or_init(discover_windows_app_data_dir).clone()
+}
+
+fn discover_windows_app_data_dir() -> Option<PathBuf> {
     if let Some(local) = env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
         return Some(PathBuf::from(local));
     }
@@ -344,39 +347,12 @@ pub fn windows_app_data_dir() -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     {
-        if let Ok(output) = Command::new("cmd.exe")
-            .args(["/c", "echo", "%LOCALAPPDATA%"])
-            .output()
-        {
-            if output.status.success() {
-                let text = String::from_utf8_lossy(&output.stdout);
-                let windows_path = text.lines().next().unwrap_or("").trim();
-                if !windows_path.is_empty() && windows_path != "%LOCALAPPDATA%" {
-                    if let Some(unix) = wslpath_unix(windows_path) {
-                        return Some(unix);
-                    }
-                }
-            }
-        }
         let user = env::var("USER")
             .ok()
             .or_else(|| env::var("USERNAME").ok())?;
-        Some(PathBuf::from(format!("/mnt/c/Users/{user}/AppData/Local")))
+        let guessed = PathBuf::from(format!("/mnt/c/Users/{user}/AppData/Local"));
+        guessed.is_dir().then_some(guessed)
     }
-}
-
-#[cfg(not(windows))]
-fn wslpath_unix(windows_path: &str) -> Option<PathBuf> {
-    let output = Command::new("wslpath")
-        .args(["-u", windows_path])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let trimmed = text.trim();
-    (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
 }
 
 pub fn backend_file_path() -> Option<PathBuf> {

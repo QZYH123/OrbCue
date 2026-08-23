@@ -25,6 +25,13 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use thiserror::Error;
 
+#[cfg(windows)]
+fn hide_windows_console(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
 #[derive(Debug, Error)]
 pub enum ServiceError {
     #[error("cannot prepare endpoint: {0}")]
@@ -574,6 +581,7 @@ fn migrate_wsl_state(
 #[cfg(windows)]
 fn cat_wsl_state(timeout: Duration) -> Result<(String, String), MigrationReason> {
     let mut command = std::process::Command::new("wsl.exe");
+    hide_windows_console(&mut command);
     if let Ok(distro) = std::env::var("AGENT_ACTIVITY_DOCK_WSL_DISTRO") {
         if !distro.is_empty() {
             command.args(["-d", &distro]);
@@ -602,9 +610,9 @@ fn cat_wsl_state(timeout: Duration) -> Result<(String, String), MigrationReason>
         Ok(Ok(_)) => Err(MigrationReason::InvalidJson),
         Ok(Err(_)) => Err(MigrationReason::WslMissing),
         Err(_) => {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .status();
+            let mut kill = std::process::Command::new("taskkill");
+            hide_windows_console(&mut kill);
+            let _ = kill.args(["/PID", &pid.to_string(), "/F"]).status();
             Err(MigrationReason::Timeout)
         }
     }
@@ -800,6 +808,7 @@ fn wsl_dead_sessions(
         })
         .collect();
     let mut command = std::process::Command::new("wsl.exe");
+    hide_windows_console(&mut command);
     command.args([
         "-d",
         distro,
@@ -830,9 +839,9 @@ fn wsl_dead_sessions(
     let output = match receiver.recv_timeout(Duration::from_secs(2)) {
         Ok(Ok(output)) if output.status.success() => output,
         Err(_) => {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .status();
+            let mut kill = std::process::Command::new("taskkill");
+            hide_windows_console(&mut kill);
+            let _ = kill.args(["/PID", &pid.to_string(), "/F"]).status();
             return Vec::new();
         }
         _ => return Vec::new(),

@@ -1,3 +1,5 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod terminal;
 
 use agent_activity_dock_adapters::{claude_hook, codex_notification, dsh_projection, grok_hook};
@@ -137,6 +139,8 @@ struct AcknowledgeArgs {
 }
 
 fn main() {
+    #[cfg(windows)]
+    attach_parent_console();
     persist_default_backend_file();
     let cli = Cli::parse();
     let endpoint = cli
@@ -1140,9 +1144,32 @@ fn inject_wsl_backend(command: &mut ProcessCommand, backend: DockBackend) {
     }
 }
 
+#[cfg(windows)]
+fn attach_parent_console() {
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(pid: u32) -> i32;
+    }
+    unsafe {
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+fn hide_windows_console(command: &mut ProcessCommand) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = command;
+}
+
 fn forward_to_wsl() -> i32 {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let mut command = ProcessCommand::new("wsl.exe");
+    hide_windows_console(&mut command);
     if let Ok(distro) = std::env::var("AGENT_ACTIVITY_DOCK_WSL_DISTRO") {
         if !distro.is_empty() {
             command.args(["-d", &distro]);
@@ -1266,10 +1293,22 @@ fn find_windows_dock() -> Result<PathBuf, String> {
             path.display()
         ));
     }
-    let mut candidates = Vec::new();
-    if let Some(local) = windows_local_app_data() {
-        candidates.push(local.join("Agent Activity Dock").join("dock.exe"));
+    if let Some(path) = cached_windows_dock() {
+        return Ok(path);
     }
+    Err(
+        "cannot find Windows dock.exe; install the presenter, or set AGENT_ACTIVITY_DOCK_WINDOWS_DOCK"
+            .to_owned(),
+    )
+}
+
+fn cached_windows_dock() -> Option<PathBuf> {
+    static CACHED: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    CACHED.get_or_init(discover_windows_dock).clone()
+}
+
+fn discover_windows_dock() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
     if let Some(user) = std::env::var("USER")
         .ok()
         .or_else(|| std::env::var("USERNAME").ok())
@@ -1278,44 +1317,10 @@ fn find_windows_dock() -> Result<PathBuf, String> {
             "/mnt/c/Users/{user}/AppData/Local/Agent Activity Dock/dock.exe"
         )));
     }
-    candidates
-        .into_iter()
-        .find(|path| path.is_file())
-        .ok_or_else(|| {
-            "cannot find Windows dock.exe; install the presenter, or set AGENT_ACTIVITY_DOCK_WINDOWS_DOCK"
-                .to_owned()
-        })
-}
-
-fn windows_local_app_data() -> Option<PathBuf> {
-    if let Ok(output) = ProcessCommand::new("cmd.exe")
-        .args(["/c", "echo", "%LOCALAPPDATA%"])
-        .output()
-    {
-        if output.status.success() {
-            let text = String::from_utf8_lossy(&output.stdout);
-            let windows_path = text.lines().next().unwrap_or("").trim();
-            if !windows_path.is_empty() && windows_path != "%LOCALAPPDATA%" {
-                if let Some(unix) = wslpath_unix(windows_path) {
-                    return Some(unix);
-                }
-            }
-        }
+    if let Some(local) = agent_activity_dock_ipc::windows_app_data_dir() {
+        candidates.push(local.join("Agent Activity Dock").join("dock.exe"));
     }
-    None
-}
-
-fn wslpath_unix(windows_path: &str) -> Option<PathBuf> {
-    let output = ProcessCommand::new("wslpath")
-        .args(["-u", windows_path])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let trimmed = text.trim();
-    (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 fn run_emit(endpoint: &Path, json_output: bool) -> i32 {
