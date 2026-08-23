@@ -14,7 +14,14 @@
   import { clampToWorkArea, shouldHidePanelOnBallDrag } from './placement';
   import { isDockTerminalId, jumpFeedback } from './jumpBack';
   import { applyPreviewDocument, demoInventory, demoSnapshot, previewLabel, tauriAvailable } from './preview';
-  import { auditAttentionNote, displayAgent, filterSessionSections, presentSessionSections } from './sessionIdentity';
+  import {
+    auditProjectLabel,
+    displayAgent,
+    filterSessionSections,
+    formatAuditTime,
+    presentSessionSections,
+    shortSessionId,
+  } from './sessionIdentity';
 
   const previewMode = !tauriAvailable();
   let label: string = previewMode ? previewLabel() : 'ball';
@@ -575,6 +582,7 @@
     }
     if (session.state === 'failed') return '失败';
     if (session.state === 'completed') return '已完成';
+    if (session.state === 'closed') return '已关闭';
     return '已取消';
   }
 
@@ -586,12 +594,8 @@
     }
     if (entry.state === 'failed') return '失败';
     if (entry.state === 'completed') return '已完成';
+    if (entry.state === 'closed') return '已关闭';
     return '已取消';
-  }
-
-  function formatAuditTime(value: string) {
-    const time = new Date(value);
-    return Number.isNaN(time.getTime()) ? value : time.toLocaleString();
   }
 
   function playChime(severity: 'info' | 'attention' | 'error') {
@@ -734,12 +738,19 @@
           <div class="empty compact"><span>✓</span><p>还没有审计记录</p><small>任务状态发生变化后会显示在这里</small></div>
         {:else}
           {#each [...snapshot.audit].reverse() as entry, index (entry.source + ':' + entry.session_id + ':' + entry.occurred_at + ':' + index)}
-            {@const attentionNote = auditAttentionNote(entry)}
+            {@const projectLabel = auditProjectLabel(entry)}
             <article class="audit-card">
               <div class="state-mark {entry.state}" aria-hidden="true"></div>
               <div class="audit-content">
-                <div class="session-topline"><strong>{displayAgent(entry.source)}</strong><time datetime={entry.occurred_at}>{formatAuditTime(entry.occurred_at)}</time></div>
-                <div class="audit-meta"><span>{auditStateLabel(entry)}</span>{#if attentionNote}<span>{attentionNote}</span>{/if}</div>
+                <div class="session-topline">
+                  <strong>{displayAgent(entry.source)}</strong>
+                  <time datetime={entry.occurred_at}>{formatAuditTime(entry.occurred_at)}</time>
+                </div>
+                <div class="audit-meta">
+                  <span>{auditStateLabel(entry)}</span>
+                  {#if projectLabel}<span class="audit-project" title={entry.project_path}>{projectLabel}</span>{/if}
+                  <span class="audit-id" title={entry.session_id}>{shortSessionId(entry.session_id)}</span>
+                </div>
               </div>
             </article>
           {/each}

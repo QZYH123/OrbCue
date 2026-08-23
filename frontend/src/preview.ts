@@ -105,6 +105,7 @@ export const demoSnapshot: Snapshot = {
       state: 'failed',
       attention_reason: null,
       occurred_at: '2026-08-22T09:12:00Z',
+      project_path: '/home/qingz/projects/docs-site',
     },
     {
       source: 'claude',
@@ -112,6 +113,7 @@ export const demoSnapshot: Snapshot = {
       state: 'working',
       attention_reason: null,
       occurred_at: '2026-08-22T10:00:00Z',
+      project_path: '/home/qingz/projects/agent-activity-dock',
     },
     {
       source: 'grok',
@@ -119,6 +121,15 @@ export const demoSnapshot: Snapshot = {
       state: 'needs_attention',
       attention_reason: 'input',
       occurred_at: '2026-08-22T10:04:00Z',
+      project_path: '/home/qingz/projects/agent-activity-dock',
+    },
+    {
+      source: 'grok',
+      session_id: '01a02d1d-7c3d-7401-ad5b-0b33cdba9b0d',
+      state: 'closed',
+      attention_reason: null,
+      occurred_at: '2026-08-22T10:08:00Z',
+      project_path: '/home/qingz/projects/agent-activity-dock',
     },
   ],
 };

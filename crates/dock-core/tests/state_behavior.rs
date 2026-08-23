@@ -48,6 +48,18 @@ fn a_session_lifecycle_updates_the_aggregate_and_notifies_once() {
     assert_eq!(closed.snapshot.working_count, 0);
     assert_eq!(closed.snapshot.tracked_count, 0);
     assert!(closed.snapshot.sessions.is_empty());
+    assert_eq!(
+        closed.snapshot.audit.last().map(|entry| entry.state),
+        Some(SessionState::Closed)
+    );
+    assert_eq!(
+        closed
+            .snapshot
+            .audit
+            .last()
+            .map(|entry| entry.session_id.as_str()),
+        Some("s1")
+    );
 }
 
 #[test]
@@ -610,7 +622,7 @@ fn terminal_replacement_is_recorded_in_audit() {
         .snapshot
         .audit
         .iter()
-        .any(|entry| entry.session_id == "old"));
+        .any(|entry| { entry.session_id == "old" && entry.state == SessionState::Closed }));
     assert!(replaced
         .snapshot
         .audit

@@ -355,6 +355,7 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 .state-mark.needs_attention { background: var(--wait); }
 .state-mark.failed { background: var(--fail); }
 .state-mark.completed { background: transparent; box-shadow: inset 0 0 0 1.5px var(--working); }
+.state-mark.closed { background: var(--faint); }
 
 .session-content,
 .audit-content,
@@ -448,9 +449,22 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 .session-actions button:hover, .text-button:hover { color: var(--text); }
 
 .audit-card { align-items: flex-start; overflow: hidden; }
-.audit-content time { color: var(--faint); font-size: 10px; white-space: nowrap; }
-.audit-meta { display: flex; gap: 8px; margin-top: 4px; color: var(--muted); font-size: 10px; }
-.audit-meta span + span { padding-left: 8px; border-left: 1px solid var(--line); color: var(--wait); }
+.audit-content .session-topline strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audit-content time { flex: 0 0 auto; color: var(--faint); font-size: 10px; white-space: nowrap; }
+.audit-meta { display: flex; gap: 8px; margin-top: 4px; min-width: 0; color: var(--muted); font-size: 10px; }
+.audit-meta span + span { padding-left: 8px; border-left: 1px solid var(--line); }
+.audit-project,
+.audit-id {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audit-id {
+  flex: 0 1 auto;
+  color: var(--faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 
 .empty {
   display: grid;

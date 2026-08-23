@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   auditAttentionNote,
+  auditProjectLabel,
   cleanWindowTitle,
   displayAgent,
   folderName,
   filterSessionSections,
+  formatAuditTime,
   presentSessionSections,
   sessionDetail,
   shortSessionId,
@@ -54,6 +56,25 @@ describe('auditAttentionNote', () => {
     expect(
       auditAttentionNote({ state: 'needs_attention', attention_reason: 'permission' }),
     ).toBe('授权请求');
+  });
+});
+
+describe('formatAuditTime', () => {
+  it('uses a compact local timestamp instead of a locale long form', () => {
+    expect(formatAuditTime('2026-08-22T10:04:00.000Z')).toMatch(
+      /^\d{1,2}\/\d{1,2} \d{2}:\d{2}:\d{2}$/,
+    );
+    expect(formatAuditTime('2026-08-22T10:04:00.000Z')).not.toMatch(/,/);
+    expect(formatAuditTime('not-a-date')).toBe('not-a-date');
+  });
+});
+
+describe('auditProjectLabel', () => {
+  it('shows the project folder when the path is present', () => {
+    expect(auditProjectLabel({ project_path: '/home/qingz/projects/agent-activity-dock/' })).toBe(
+      'agent-activity-dock',
+    );
+    expect(auditProjectLabel({ project_path: null })).toBeNull();
   });
 });
 

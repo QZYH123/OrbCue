@@ -75,6 +75,21 @@ export function auditAttentionNote(entry: Pick<AuditEntry, 'state' | 'attention_
   return entry.attention_reason === 'permission' ? '授权请求' : '需要输入';
 }
 
+export function formatAuditTime(value: string): string {
+  const time = new Date(value);
+  if (Number.isNaN(time.getTime())) return value;
+  const month = time.getMonth() + 1;
+  const day = time.getDate();
+  const hours = String(time.getHours()).padStart(2, '0');
+  const minutes = String(time.getMinutes()).padStart(2, '0');
+  const seconds = String(time.getSeconds()).padStart(2, '0');
+  return `${month}/${day} ${hours}:${minutes}:${seconds}`;
+}
+
+export function auditProjectLabel(entry: Pick<AuditEntry, 'project_path'>): string | null {
+  return folderName(entry.project_path);
+}
+
 export function sessionDetail(session: SessionLike): string {
   const terminal = session.terminal_id?.trim() ?? '';
   const dock = /^dock:([0-9a-fA-F]{6})$/.exec(terminal);

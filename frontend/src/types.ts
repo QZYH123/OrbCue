@@ -4,7 +4,8 @@ export type SessionState =
   | 'needs_attention'
   | 'completed'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  | 'closed';
 
 export interface SessionSnapshot {
   source: string;
@@ -28,6 +29,7 @@ export interface AuditEntry {
   state: SessionState;
   attention_reason: string | null;
   occurred_at: string;
+  project_path?: string | null;
 }
 
 export interface Snapshot {

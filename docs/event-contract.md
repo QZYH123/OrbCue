@@ -106,7 +106,7 @@
 }
 ```
 
-`audit` 是最近的状态变更流，最多保留 128 条，只包含 `source`、`session_id`、状态、等待原因和时间；不会包含摘要或原始 payload。它只在当前运行期间保留，重启后从空流开始。面板的“审计”页按时间倒序展示它。
+`audit` 是最近的状态变更流，最多保留 128 条，包含 `source`、`session_id`、状态、等待原因、时间和可选 `project_path`；不会包含摘要或原始 payload。`session.closed` 与同终端顶替记为 `closed`，不把消失前的 working/completed 再抄一遍。它只在当前运行期间保留，重启后从空流开始。面板的“审计”页按时间倒序展示它。
 
 查询使用同一个 socket：
 

@@ -46,6 +46,7 @@ fn snapshot_view_contains_stable_display_fields() {
             state: SessionState::Completed,
             attention_reason: Some("completed".to_owned()),
             occurred_at: "2026-08-16T00:00:00Z".to_owned(),
+            project_path: Some("/tmp/demo".to_owned()),
         }],
     });
     assert_eq!(view.count_label, "2/3");

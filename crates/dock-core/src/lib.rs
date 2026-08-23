@@ -85,6 +85,7 @@ pub enum SessionState {
     Completed,
     Failed,
     Cancelled,
+    Closed,
 }
 
 impl SessionState {
@@ -100,6 +101,7 @@ impl SessionState {
             Self::Cancelled => "x",
             Self::NeedsAttention => "?",
             Self::Failed => "!",
+            Self::Closed => "",
         }
     }
 }
@@ -229,6 +231,8 @@ pub struct AuditEntry {
     pub state: SessionState,
     pub attention_reason: Option<String>,
     pub occurred_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
 }
 
 impl DockSnapshot {
@@ -737,14 +741,14 @@ impl DockState {
             .collect();
         for key in stale {
             if let Some(record) = self.sessions.remove(&key) {
-                self.remember_audit(&record);
+                self.remember_closed_audit(record, None);
             }
         }
     }
 
     fn apply_closed(&mut self, key: &str, event: DockEvent) -> TransitionResult {
         if let Some(record) = self.sessions.remove(key) {
-            self.remember_audit(&record);
+            self.remember_closed_audit(record, Some(event.occurred_at.clone()));
         }
         TransitionResult::accepted(event.event_id, None)
     }
@@ -815,6 +819,15 @@ impl DockState {
         }
     }
 
+    fn remember_closed_audit(&mut self, mut record: SessionRecord, occurred_at: Option<String>) {
+        record.state = SessionState::Closed;
+        record.attention_reason = None;
+        if let Some(occurred_at) = occurred_at {
+            record.occurred_at = occurred_at;
+        }
+        self.remember_audit(&record);
+    }
+
     fn remember_audit(&mut self, record: &SessionRecord) {
         self.audit.push_back(AuditEntry {
             source: record.source.clone(),
@@ -822,6 +835,7 @@ impl DockState {
             state: record.state,
             attention_reason: record.attention_reason.clone(),
             occurred_at: record.occurred_at.clone(),
+            project_path: record.project_path.clone(),
         });
         while self.audit.len() > MAX_AUDIT_ENTRIES {
             self.audit.pop_front();
@@ -1065,6 +1079,7 @@ fn session_priority(session: &SessionSnapshot) -> u8 {
         SessionState::Completed => 4,
         SessionState::Cancelled => 5,
         SessionState::Idle => 6,
+        SessionState::Closed => 7,
     }
 }
 
