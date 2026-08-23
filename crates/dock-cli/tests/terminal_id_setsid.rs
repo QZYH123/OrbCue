@@ -19,6 +19,7 @@ fn isolated_root() -> PathBuf {
 fn isolate<'a>(command: &'a mut Command, root: &Path, socket: &Path) -> &'a mut Command {
     command
         .env("AGENT_ACTIVITY_DOCK_SOCKET", socket)
+        .env("AGENT_ACTIVITY_DOCK_BACKEND", "wsl")
         .env("XDG_STATE_HOME", root.join("state"))
         .env("HOME", root.join("home"))
         .env("AGENT_ACTIVITY_DOCK_DOCKD", root.join("missing-dockd"))

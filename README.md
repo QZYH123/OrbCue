@@ -38,7 +38,7 @@ dock connect grok
 dock connect codex
 ```
 
-Windows PowerShell 把 `scripts/windows/dock.ps1` 放到 PATH（或保存成 `dock.ps1` 后 `. $PROFILE` 里定义 `Set-Alias dock ...`），即可在 pwsh 里执行同样的 `dock start` / `dock status`。与 presenter 同目录的 `dock.exe` 在本机 named pipe 无 daemon、或设置 `AGENT_ACTIVITY_DOCK_FORWARD=wsl` 时，也会把事件/查询透传到 WSL `~/.local/bin/dock`。不要再单独开一个 Windows `dockd`。`AGENT_ACTIVITY_DOCK_WSL_DISTRO` 对这两种转发都生效。
+Windows PowerShell 把 `scripts/windows/dock.ps1` 放到 PATH（或保存成 `dock.ps1` 后 `. $PROFILE` 里定义 `Set-Alias dock ...`），即可在 pwsh 里执行同样的 `dock start` / `dock status`。默认走同目录 `dock.exe` 连 named pipe；`AGENT_ACTIVITY_DOCK_BACKEND=wsl` 或 `AGENT_ACTIVITY_DOCK_FORWARD=wsl` 时转发到 WSL `~/.local/bin/dock`。`AGENT_ACTIVITY_DOCK_WSL_DISTRO` 对 WSL 转发生效。
 
 停止 daemon：
 
@@ -46,7 +46,7 @@ Windows PowerShell 把 `scripts/windows/dock.ps1` 放到 PATH（或保存成 `do
 dock down
 ```
 
-Win+WSL 的桌面路径默认仍是 **Windows presenter exe + WSL `dock bridge`**：Windows 原生 Tauri（WebView2）画小球和面板，经 `wsl.exe` 拉起 `~/.local/bin/dock bridge`，在 stdio 上转发现有 NDJSON 协议。设置 `AGENT_ACTIVITY_DOCK_BACKEND=local` 时，presenter 对本机 named pipe 做 `attach_or_listen`，WSL `dock` 把 emit/status/up/down/bridge 显式 trampoline 到 `dock.exe`（`run` / `connect` / `agents` 仍留在 WSL）。升级顺序：先装带 trampoline 和 hop 的 WSL `dock`，再设 `local`。旧 shim + 新 presenter listen 会裂脑。默认仍是 `wsl`。`AGENT_ACTIVITY_DOCK_HOP` 已有值时既不 trampoline 也不向 WSL 回跳。presenter 不开网络端口。
+Win+WSL 的桌面路径默认是 **Windows presenter 对本机 named pipe `attach_or_listen`**。WSL `dock` 把 emit/status/up/down/bridge 显式 trampoline 到 `dock.exe`（`run` / `connect` / `agents` 仍留在 WSL）。拓扑持久在 `%LOCALAPPDATA%\Agent Activity Dock\backend`；`AGENT_ACTIVITY_DOCK_BACKEND=wsl` 可回滚到 `dock bridge`。升级顺序：先装带 trampoline 和 hop 的 WSL `dock`，再装会 listen named pipe 的 presenter。旧 shim + 新 presenter listen 会裂脑。`AGENT_ACTIVITY_DOCK_HOP` 已有值时既不 trampoline 也不向 WSL 回跳。presenter 不开网络端口。
 
 从 Windows 启动已经打好的 exe（或把 WSL 里交叉编译出的 exe 交给 Windows interop 启动）。不要用 WSL 里的 Linux Tauri / WSLg 显示悬浮窗。
 
@@ -61,7 +61,7 @@ npm run tauri -- build --runner cargo-xwin --target x86_64-pc-windows-msvc --bun
 
 产物在 `target/x86_64-pc-windows-msvc/release/`。NSIS 安装包由 Windows CI 打。也可用已有 `.github/workflows/ci.yml` 的 Windows job。
 
-不要同时启动两个 `dockd`。默认桌面版经 `dock bridge` attach 到已有 WSL daemon；`BACKEND=local` 时规范 daemon 在 GUI OS，WSL 不再起第二份。桌面版不是终端 Agent 的最低门槛。
+不要同时启动两个 `dockd`。规范 daemon 在 GUI OS；设 `AGENT_ACTIVITY_DOCK_BACKEND=wsl` 才回滚到 WSL `dockd` + `dock bridge`。桌面版不是终端 Agent 的最低门槛。
 
 ## 连接已有 Agent
 
@@ -111,6 +111,6 @@ Win+WSL 下用 `dock run <agent> [args…]` 在新的 Windows Terminal 标签里
 
 ## 当前平台范围
 
-Win+WSL 的最低可用路径是 WSL 中的 `dockd` + `dock` CLI + 可撤销连接。桌面路径默认是 Windows presenter + `dock bridge`，两者共用同一个 WSL daemon。`AGENT_ACTIVITY_DOCK_BACKEND=local` 会让 presenter 听 named pipe，并要求已安装带 trampoline 的 WSL `dock`。Unix 使用当前用户 socket。macOS 安装包尚未验证。
+Win+WSL 的最低可用路径是 WSL 中的 `dock` CLI + 可撤销连接；规范 daemon 在 Windows presenter。回滚：`AGENT_ACTIVITY_DOCK_BACKEND=wsl` 仍用 WSL `dockd` + `dock bridge`。Unix 使用当前用户 socket。macOS 安装包尚未验证。
 
-`start-dock.sh` / `stop-dock.sh` 调用 `dock up` / `dock down`。`BACKEND=wsl` 时仍起 WSL `dockd`；`local` 时 trampoline 到 Windows。
+`start-dock.sh` / `stop-dock.sh` 调用 `dock up` / `dock down`。默认 trampoline 到 Windows；`BACKEND=wsl` 时仍起 WSL `dockd`。

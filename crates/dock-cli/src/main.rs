@@ -8,8 +8,8 @@ use agent_activity_dock_core::{
 };
 use agent_activity_dock_ipc::{
     default_endpoint, default_state_path, local_connect, local_set_recv_timeout,
-    local_set_send_timeout, local_try_clone, resolve_backend_from_env, DockBackend, IpcRequest,
-    SnapshotView, WireResponse,
+    local_set_send_timeout, local_try_clone, persist_default_backend_file, resolve_backend,
+    DockBackend, IpcRequest, SnapshotView, WireResponse,
 };
 #[cfg(not(windows))]
 use agent_activity_dock_service::attach_or_listen;
@@ -134,6 +134,7 @@ struct AcknowledgeArgs {
 }
 
 fn main() {
+    persist_default_backend_file();
     let cli = Cli::parse();
     let endpoint = cli
         .socket
@@ -848,7 +849,7 @@ fn trampoline_to_windows_predicate(
 
 fn should_forward_to_wsl(command: &Command, endpoint: &Path) -> bool {
     let hop_set = hop_token().is_some();
-    let backend = resolve_backend_from_env();
+    let backend = resolve_backend();
     if hop_set
         && cfg!(windows)
         && forward_to_wsl_predicate(
@@ -881,7 +882,7 @@ fn should_trampoline_to_windows(command: &Command) -> bool {
         cfg!(unix),
         looks_like_wsl(),
         false,
-        resolve_backend_from_env(),
+        resolve_backend(),
         stays_on_agent_os(command),
     );
     if hop_set && would {
@@ -891,7 +892,7 @@ fn should_trampoline_to_windows(command: &Command) -> bool {
         cfg!(unix),
         looks_like_wsl(),
         hop_set,
-        resolve_backend_from_env(),
+        resolve_backend(),
         stays_on_agent_os(command),
     )
 }
@@ -969,10 +970,7 @@ fn forward_to_wsl() -> i32 {
 
 fn apply_windows_hop_env(command: &mut ProcessCommand) {
     command.env("AGENT_ACTIVITY_DOCK_HOP", "windows");
-    command.env(
-        "AGENT_ACTIVITY_DOCK_BACKEND",
-        resolve_backend_from_env().as_str(),
-    );
+    command.env("AGENT_ACTIVITY_DOCK_BACKEND", resolve_backend().as_str());
     command.env_remove("AGENT_ACTIVITY_DOCK_SOCKET");
     command.env_remove("XDG_RUNTIME_DIR");
 }
@@ -1157,7 +1155,7 @@ fn run_emit(endpoint: &Path, json_output: bool) -> i32 {
 }
 
 fn ensure_cli_daemon(endpoint: &Path) -> Result<(), i32> {
-    if resolve_backend_from_env() != DockBackend::Local {
+    if resolve_backend() != DockBackend::Local {
         return Ok(());
     }
     if looks_like_wsl() {

@@ -205,7 +205,7 @@ fn dockd_sidecar_name() -> String {
 }
 
 fn presenter_backend() -> DockBackend {
-    agent_activity_dock_ipc::resolve_backend_from_env()
+    agent_activity_dock_ipc::resolve_backend()
 }
 
 fn current_session(state: &AppService) -> Result<Arc<dyn PresenterSession>, String> {
@@ -530,6 +530,7 @@ fn start_local_session() -> (
     mpsc::Receiver<SnapshotMessage>,
     SnapshotMessage,
 ) {
+    agent_activity_dock_ipc::persist_default_backend_file();
     let session = attach_or_listen(
         agent_activity_dock_ipc::default_endpoint(),
         agent_activity_dock_ipc::default_state_path(),

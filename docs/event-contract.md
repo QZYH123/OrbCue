@@ -4,7 +4,7 @@
 
 ## Transport
 
-当前实现使用当前用户的本地 IPC，newline-delimited JSON，每个普通请求一行、一个连接。Unix 使用 domain socket；Windows 使用 named pipe。Win+WSL presenter 默认仍经 `wsl.exe dock bridge` 订 WSL socket；`AGENT_ACTIVITY_DOCK_BACKEND=local` 才会对本机 named pipe `attach_or_listen`，此时 WSL `dock` 把事件/`status`/`up` trampoline 到 `dock.exe`。先装带 hop 的 WSL shim 再设 `local`；旧 shim 加新 presenter listen 会裂脑。路径/名称按以下规则决定：
+当前实现使用当前用户的本地 IPC，newline-delimited JSON，每个普通请求一行、一个连接。Unix 使用 domain socket；Windows 使用 named pipe。Win+WSL presenter 默认对本机 named pipe `attach_or_listen`；WSL `dock` 把事件/`status`/`up` trampoline 到 `dock.exe`。`AGENT_ACTIVITY_DOCK_BACKEND=wsl` 回滚到 `wsl.exe dock bridge`。先装带 hop 的 WSL shim 再装 listen named pipe 的 presenter；旧 shim 加新 presenter listen 会裂脑。项目路径仍按发送侧原样写入 `state.json`（WSL 路径迁到 Windows 文件后不做盘符翻译）。路径/名称按以下规则决定：
 
 1. `AGENT_ACTIVITY_DOCK_SOCKET`
 2. Windows：`\\.\\pipe\\agent-activity-dock`

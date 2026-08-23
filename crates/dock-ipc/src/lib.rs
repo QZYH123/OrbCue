@@ -10,8 +10,11 @@ use interprocess::TryClone;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
+use std::process::Command;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -276,7 +279,7 @@ pub fn default_state_path() -> PathBuf {
     state_home.join("agent-activity-dock").join("state.json")
 }
 
-/// Canonical daemon topology. Compile default is the WSL bridge.
+/// Canonical daemon topology. Compile default is GUI-OS local listen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DockBackend {
     Wsl,
@@ -293,7 +296,7 @@ impl DockBackend {
 }
 
 pub fn default_backend_for_build() -> DockBackend {
-    DockBackend::Wsl
+    DockBackend::Local
 }
 
 pub fn parse_backend(value: &str) -> Option<DockBackend> {
@@ -304,6 +307,73 @@ pub fn parse_backend(value: &str) -> Option<DockBackend> {
     }
 }
 
+pub fn parse_backend_file(contents: &str) -> Option<DockBackend> {
+    parse_backend(contents.lines().next().unwrap_or(""))
+}
+
+fn env_nonempty(key: &str) -> bool {
+    env::var(key)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn should_read_windows_backend_file() -> bool {
+    cfg!(windows)
+        || env_nonempty("WSL_DISTRO_NAME")
+        || env_nonempty("WSL_INTEROP")
+        || env_nonempty("AGENT_ACTIVITY_DOCK_WINDOWS_DOCK")
+}
+
+pub fn windows_app_data_dir() -> Option<PathBuf> {
+    if let Some(local) = env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(local));
+    }
+    #[cfg(windows)]
+    {
+        return env::var_os("USERPROFILE")
+            .map(|home| PathBuf::from(home).join("AppData").join("Local"));
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(output) = Command::new("cmd.exe")
+            .args(["/c", "echo", "%LOCALAPPDATA%"])
+            .output()
+        {
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                let windows_path = text.lines().next().unwrap_or("").trim();
+                if !windows_path.is_empty() && windows_path != "%LOCALAPPDATA%" {
+                    if let Some(unix) = wslpath_unix(windows_path) {
+                        return Some(unix);
+                    }
+                }
+            }
+        }
+        let user = env::var("USER")
+            .ok()
+            .or_else(|| env::var("USERNAME").ok())?;
+        Some(PathBuf::from(format!("/mnt/c/Users/{user}/AppData/Local")))
+    }
+}
+
+#[cfg(not(windows))]
+fn wslpath_unix(windows_path: &str) -> Option<PathBuf> {
+    let output = Command::new("wslpath")
+        .args(["-u", windows_path])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+}
+
+pub fn backend_file_path() -> Option<PathBuf> {
+    windows_app_data_dir().map(|dir| dir.join("Agent Activity Dock").join("backend"))
+}
+
 pub fn resolve_backend_from_env() -> DockBackend {
     env::var("AGENT_ACTIVITY_DOCK_BACKEND")
         .ok()
@@ -312,9 +382,58 @@ pub fn resolve_backend_from_env() -> DockBackend {
         .unwrap_or_else(default_backend_for_build)
 }
 
+pub fn resolve_backend() -> DockBackend {
+    if let Some(value) = env::var("AGENT_ACTIVITY_DOCK_BACKEND")
+        .ok()
+        .as_deref()
+        .and_then(parse_backend)
+    {
+        return value;
+    }
+    if should_read_windows_backend_file() {
+        if let Some(backend) = backend_file_path()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .as_deref()
+            .and_then(parse_backend_file)
+        {
+            return backend;
+        }
+    } else if !cfg!(windows) {
+        return DockBackend::Local;
+    }
+    default_backend_for_build()
+}
+
+pub fn persist_default_backend_file() {
+    if env::var("AGENT_ACTIVITY_DOCK_BACKEND")
+        .ok()
+        .as_deref()
+        .and_then(parse_backend)
+        .is_some()
+    {
+        return;
+    }
+    if default_backend_for_build() != DockBackend::Local {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let Some(path) = backend_file_path() else {
+            return;
+        };
+        if path.exists() {
+            return;
+        }
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(path, "local\n");
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{default_backend_for_build, parse_backend, DockBackend};
+    use super::{default_backend_for_build, parse_backend, parse_backend_file, DockBackend};
 
     #[test]
     fn backend_env_parses_case_insensitively() {
@@ -324,6 +443,16 @@ mod tests {
         assert_eq!(parse_backend("WSL"), Some(DockBackend::Wsl));
         assert_eq!(parse_backend(""), None);
         assert_eq!(parse_backend("probe"), None);
-        assert_eq!(default_backend_for_build(), DockBackend::Wsl);
+        assert_eq!(default_backend_for_build(), DockBackend::Local);
+    }
+
+    #[test]
+    fn backend_file_uses_the_first_line() {
+        assert_eq!(parse_backend_file("local\n"), Some(DockBackend::Local));
+        assert_eq!(
+            parse_backend_file("wsl\n{\"note\":\"ignored\"}\n"),
+            Some(DockBackend::Wsl)
+        );
+        assert_eq!(parse_backend_file("# comment"), None);
     }
 }

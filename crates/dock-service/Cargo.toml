@@ -15,6 +15,7 @@ agent-activity-dock-ipc = { path = "../dock-ipc" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+time.workspace = true
 ctrlc = "3"
 
 [dev-dependencies]

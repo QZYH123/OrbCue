@@ -40,6 +40,7 @@ fn run_json(root: &Path, extra_path: &Path, args: &[&str]) -> (Value, String) {
         .env("HOME", root.join("home"))
         .env("XDG_STATE_HOME", root.join("state"))
         .env("AGENT_ACTIVITY_DOCK_SOCKET", root.join("dock.sock"))
+        .env("AGENT_ACTIVITY_DOCK_BACKEND", "wsl")
         .env("AGENT_ACTIVITY_DOCK_DOCKD", root.join("missing-dockd"))
         .env("AGENT_ACTIVITY_DOCK_WT", root.join("bin").join("wt"))
         .env("AGENT_ACTIVITY_DOCK_WSL", root.join("bin").join("wsl"))
@@ -207,6 +208,7 @@ fn dock_run_injects_marker_and_replaces_the_previous_session() {
         .env("HOME", root.join("home"))
         .env("XDG_STATE_HOME", root.join("state"))
         .env("AGENT_ACTIVITY_DOCK_SOCKET", &socket)
+        .env("AGENT_ACTIVITY_DOCK_BACKEND", "wsl")
         .env_remove("XDG_RUNTIME_DIR")
         .output()
         .expect("status");
