@@ -4,7 +4,7 @@
 
 ## 术语
 
-- **Agent**：能向 Dock 发出状态事件的外部工具（Claude、Codex、DSH、Grok 等）。
+- **Agent**：能向 Dock 发出状态事件的外部工具（Claude、Codex、Cursor、DSH、Grok 等）。
 - **Dock**：独立的本地状态提示层；只收明确事件，不读 Agent 内容、不控制 Agent、不扫进程猜状态。
 - **小球**：收缩呈现；尽量不占空间，不是桌宠或完整桌面壳。
 - **工作中 / 不在工作**：主状态只有这两种。结束、出错、等待输入都算不在工作，小球不要求再拆一套主视觉。
@@ -21,5 +21,5 @@
 - 不替换 Agent 可执行文件，不要求用户重新安装 Agent；
 - 不把声音、窗口和 Agent adapter 的失败传播回事件发送方；
 - 不把摘要或原始 payload 写入默认持久化；
-- 修改 Claude `settings.json` 前保留一次用户可恢复的备份，断开时只清理 Dock 自己的 Hook；
+- 修改 Claude `settings.json`、Codex `~/.codex/hooks.json`、Cursor `~/.cursor/hooks.json` 前保留一次用户可恢复的备份，断开时只清理 Dock 自己的 Hook；
 - 不让两个 `dockd` 同时服务同一用户。Presenter 在 GUI OS 上 `attach_or_listen`；仅当 Agent 跑在另一 OS（WSL）时由该 OS 的 `dock` trampoline 把事件送到这个 daemon。`AGENT_ACTIVITY_DOCK_BACKEND=wsl` 可显式回滚。禁止在 WSL-canonical 与 GUI-OS-canonical 之间静默探测切换。

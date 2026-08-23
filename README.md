@@ -28,7 +28,7 @@ dock start task-1 --source my-agent
 dock complete task-1 --source my-agent
 ```
 
-连接本机已有 Agent 后，在 **新的** zsh/bash/pwsh 会话里继续输入原来的 `claude` / `grok` / `codex` / `dsh`：
+连接本机已有 Agent 后，在 **新的** zsh/bash/pwsh 会话里继续输入原来的 `claude` / `grok` / `codex` / `cursor-agent` / `dsh`：
 
 ```bash
 dock agents
@@ -36,6 +36,7 @@ dock connect claude --dry-run
 dock connect claude
 dock connect grok
 dock connect codex
+dock connect cursor
 ```
 
 Windows PowerShell 把 `scripts/windows/dock.ps1` 放到 PATH（或保存成 `dock.ps1` 后 `. $PROFILE` 里定义 `Set-Alias dock ...`），即可在 pwsh 里执行同样的 `dock start` / `dock status`。默认走同目录 `dock.exe` 连 named pipe；`AGENT_ACTIVITY_DOCK_BACKEND=wsl` 或 `AGENT_ACTIVITY_DOCK_FORWARD=wsl` 时转发到 WSL `~/.local/bin/dock`。`AGENT_ACTIVITY_DOCK_WSL_DISTRO` 对 WSL 转发生效。
@@ -65,13 +66,13 @@ npm run tauri -- build --runner cargo-xwin --target x86_64-pc-windows-msvc --bun
 
 ## 连接已有 Agent
 
-桌面版第一次打开连接页面时，会分别发现 WSL 登录 PATH（并忽略 `/mnt/*`）和 Windows PATH 上的 `claude`、`grok`、`codex` 和 `dsh`；同名工具两侧各算一条。逐个显示变更内容并等待确认。连接只生成可撤销的用户级 wrapper、Claude Hook 或 Grok Hook，不替换原始可执行文件：
+桌面版第一次打开连接页面时，会分别发现 WSL 登录 PATH（并忽略 `/mnt/*`）和 Windows PATH 上的 `claude`、`grok`、`codex`、`cursor-agent`（显示为 Cursor）和 `dsh`；同名工具两侧各算一条。逐个显示变更内容并等待确认。连接只生成可撤销的用户级 wrapper 或 Hook（Claude `settings.json`、Grok 独立 hook 文件、Codex `~/.codex/hooks.json`、Cursor `~/.cursor/hooks.json`），不替换原始可执行文件：
 
 ```bash
 cargo run -p agent-activity-dock-cli -- agents
-cargo run -p agent-activity-dock-cli -- connect codex --dry-run
-cargo run -p agent-activity-dock-cli -- connect codex
-cargo run -p agent-activity-dock-cli -- disconnect codex
+cargo run -p agent-activity-dock-cli -- connect cursor --dry-run
+cargo run -p agent-activity-dock-cli -- connect cursor
+cargo run -p agent-activity-dock-cli -- disconnect cursor
 ```
 
 连接 Claude 前会严格解析 `settings.json`，并在首次修改前保留一份

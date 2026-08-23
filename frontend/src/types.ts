@@ -70,7 +70,7 @@ export interface DiscoveredAgent {
   side: AgentSide;
 }
 
-export type ConnectionMethod = 'Wrapper' | 'ClaudeHook' | 'GrokHook';
+export type ConnectionMethod = 'Wrapper' | 'ClaudeHook' | 'GrokHook' | 'CodexHook' | 'CursorHook';
 
 export interface ConnectionRecord {
   name: string;

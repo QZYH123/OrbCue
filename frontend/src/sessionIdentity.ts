@@ -27,6 +27,8 @@ const AGENT_NAMES: Record<string, string> = {
   'grok-build': 'Grok',
   grok_build: 'Grok',
   codex: 'Codex',
+  cursor: 'Cursor',
+  'cursor-agent': 'Cursor',
   dsh: 'DSH',
 };
 

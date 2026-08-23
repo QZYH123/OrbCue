@@ -40,7 +40,7 @@ fn wrapper_preserves_arguments_and_exit_code_while_emitting_lifecycle() {
     let data = root.join("data");
     fs::create_dir_all(&home).unwrap();
     let dock = root.join("dock");
-    let original = root.join("codex-real");
+    let original = root.join("dsh-real");
     executable(
         &dock,
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$AADOCK_TEST_LOG\"\n",
@@ -52,10 +52,10 @@ fn wrapper_preserves_arguments_and_exit_code_while_emitting_lifecycle() {
     let log = root.join("events.log");
     let manager = ConnectionManager::new(home.clone(), config, data.clone(), dock);
 
-    let record = manager.connect("codex", &original).unwrap();
+    let record = manager.connect("dsh", &original).unwrap();
     assert_eq!(record.method, ConnectionMethod::Wrapper);
     let wrapper = record.wrapper.unwrap();
-    assert_eq!(wrapper, data.join("agent-activity-dock").join("codex"));
+    assert_eq!(wrapper, data.join("agent-activity-dock").join("dsh"));
     let result = Command::new(&wrapper)
         .arg("--model")
         .arg("gpt-test")
@@ -77,10 +77,10 @@ fn wrapper_preserves_arguments_and_exit_code_while_emitting_lifecycle() {
             .unwrap()
             .contains("agent-activity-dock PATH")
     }));
-    let failed_refresh = manager.connect("codex", &wrapper);
+    let failed_refresh = manager.connect("dsh", &wrapper);
     assert!(failed_refresh.is_err());
     assert!(wrapper.exists());
-    assert!(manager.disconnect("codex").unwrap());
+    assert!(manager.disconnect("dsh").unwrap());
     assert!(!wrapper.exists());
     assert!(written_profiles.iter().all(|path| {
         !fs::read_to_string(path)
@@ -110,7 +110,7 @@ fn wrapper_path_is_injected_into_every_existing_shell_profile() {
         "set -gx EXISTING 1\n",
     )
     .unwrap();
-    let original = root.join("codex-real");
+    let original = root.join("dsh-real");
     executable(&original, "#!/bin/sh\nexit 0\n");
     let manager = ConnectionManager::new(
         home.clone(),
@@ -119,7 +119,7 @@ fn wrapper_path_is_injected_into_every_existing_shell_profile() {
         root.join("dock"),
     );
 
-    manager.connect("codex", &original).unwrap();
+    manager.connect("dsh", &original).unwrap();
     let bashrc = fs::read_to_string(home.join(".bashrc")).unwrap();
     let zshrc = fs::read_to_string(home.join(".zshrc")).unwrap();
     let pwsh = fs::read_to_string(
@@ -133,7 +133,7 @@ fn wrapper_path_is_injected_into_every_existing_shell_profile() {
     assert!(zshrc.contains("export PATH="));
     assert!(pwsh.contains("$env:PATH"));
     assert!(fish.contains("set -gx PATH"));
-    assert!(manager.disconnect("codex").unwrap());
+    assert!(manager.disconnect("dsh").unwrap());
     assert!(!fs::read_to_string(home.join(".zshrc"))
         .unwrap()
         .contains("agent-activity-dock PATH"));
@@ -154,7 +154,7 @@ fn zsh_users_get_a_zshrc_snippet_even_when_only_bashrc_exists() {
     let home = root.join("home");
     fs::create_dir_all(&home).unwrap();
     fs::write(home.join(".bashrc"), "export EXISTING=1\n").unwrap();
-    let original = root.join("codex-real");
+    let original = root.join("dsh-real");
     executable(&original, "#!/bin/sh\nexit 0\n");
     let manager = ConnectionManager::new(
         home.clone(),
@@ -164,7 +164,7 @@ fn zsh_users_get_a_zshrc_snippet_even_when_only_bashrc_exists() {
     );
     let old_shell = std::env::var_os("SHELL");
     std::env::set_var("SHELL", "/usr/bin/zsh");
-    manager.connect("codex", &original).unwrap();
+    manager.connect("dsh", &original).unwrap();
     match old_shell {
         Some(value) => std::env::set_var("SHELL", value),
         None => std::env::remove_var("SHELL"),
@@ -296,7 +296,7 @@ fn preview_is_side_effect_free() {
     let home = root.join("home");
     fs::create_dir_all(&home).unwrap();
     fs::write(home.join(".bashrc"), "export EXISTING=1\n").unwrap();
-    let original = root.join("codex-real");
+    let original = root.join("dsh-real");
     executable(&original, "#!/bin/sh\nexit 0\n");
     let manager = ConnectionManager::new(
         home,
@@ -307,7 +307,7 @@ fn preview_is_side_effect_free() {
     let before_paths = all_paths(&root);
     let before_files = file_contents(&root);
     with_shell("/bin/bash", || {
-        let preview = manager.preview("codex", &original).unwrap();
+        let preview = manager.preview("dsh", &original).unwrap();
         assert!(preview.dry_run);
         assert_eq!(preview.method, ConnectionMethod::Wrapper);
         assert!(preview
@@ -334,7 +334,7 @@ fn connect_writes_exactly_the_previewed_paths() {
     let home = root.join("home");
     fs::create_dir_all(&home).unwrap();
     fs::write(home.join(".bashrc"), "export EXISTING=1\n").unwrap();
-    let original = root.join("codex-real");
+    let original = root.join("dsh-real");
     executable(&original, "#!/bin/sh\nexit 0\n");
     let manager = ConnectionManager::new(
         home,
@@ -344,8 +344,8 @@ fn connect_writes_exactly_the_previewed_paths() {
     );
     with_shell("/bin/bash", || {
         let before = file_contents(&root);
-        let preview = manager.preview("codex", &original).unwrap();
-        manager.connect("codex", &original).unwrap();
+        let preview = manager.preview("dsh", &original).unwrap();
+        manager.connect("dsh", &original).unwrap();
         let after = file_contents(&root);
         let changed: BTreeSet<_> = after
             .iter()
@@ -372,16 +372,16 @@ fn refusing_non_dock_overwrite_still_works() {
     let home = root.join("home");
     let data = root.join("data");
     fs::create_dir_all(&home).unwrap();
-    let wrapper = data.join("agent-activity-dock").join("codex");
+    let wrapper = data.join("agent-activity-dock").join("dsh");
     fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
     fs::write(&wrapper, "user-owned wrapper\n").unwrap();
-    let original = root.join("codex-real");
+    let original = root.join("dsh-real");
     executable(&original, "#!/bin/sh\nexit 0\n");
     let manager = ConnectionManager::new(home, root.join("config"), data, root.join("dock"));
     with_shell("/bin/bash", || {
-        let preview = manager.preview("codex", &original).unwrap();
+        let preview = manager.preview("dsh", &original).unwrap();
         assert!(preview.files.iter().any(|file| file.path == wrapper));
-        let error = manager.connect("codex", &original).unwrap_err();
+        let error = manager.connect("dsh", &original).unwrap_err();
         assert!(error.contains("refusing to overwrite non-Dock file"));
         assert_eq!(
             fs::read_to_string(&wrapper).unwrap(),
@@ -463,7 +463,7 @@ fn discovery_skips_the_managed_wrapper_and_finds_the_real_agent() {
     let real_bin = root.join("real-bin");
     fs::create_dir_all(&real_bin).unwrap();
     fs::create_dir_all(&home).unwrap();
-    let original = real_bin.join("codex");
+    let original = real_bin.join("dsh");
     executable(&original, "#!/bin/sh\nexit 0\n");
     let manager = agent_activity_dock_connect::ConnectionManager::new(
         home,
@@ -471,13 +471,17 @@ fn discovery_skips_the_managed_wrapper_and_finds_the_real_agent() {
         data.clone(),
         root.join("dock"),
     );
-    manager.connect("codex", &original).unwrap();
+    manager.connect("dsh", &original).unwrap();
 
+    let nested_stub = data.join("agent-activity-dock").join("bin").join("dsh");
+    fs::create_dir_all(nested_stub.parent().unwrap()).unwrap();
+    executable(&nested_stub, "#!/bin/sh\nexit 0\n");
     let managed_bin = data.join("agent-activity-dock");
-    let path = std::env::join_paths([managed_bin, real_bin.clone()]).unwrap();
+    let path =
+        std::env::join_paths([managed_bin.join("bin"), managed_bin, real_bin.clone()]).unwrap();
     let discovered = manager.discover_from_path(&path);
 
-    assert_eq!(discovered[0].name, "codex");
+    assert_eq!(discovered[0].name, "dsh");
     assert_eq!(discovered[0].path, original);
     assert_eq!(discovered[0].origin, AgentOrigin::Wsl);
     assert!(discovered[0].connectable);
@@ -523,5 +527,191 @@ fn discover_from_path_finds_local_bin_and_prefers_wsl_over_windows() {
         "/mnt/* Windows interop agents are discovered on the Windows side: {windows_only:?}"
     );
     let _ = windows_claude;
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn discover_from_path_names_cursor_agent_cursor() {
+    let root = temp_root();
+    let local_bin = root.join("home").join(".local").join("bin");
+    fs::create_dir_all(&local_bin).unwrap();
+    let cursor_agent = local_bin.join("cursor-agent");
+    let editor = local_bin.join("cursor");
+    executable(&cursor_agent, "#!/bin/sh\nexit 0\n");
+    executable(&editor, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        root.join("home"),
+        root.join("config"),
+        root.join("data"),
+        root.join("dock"),
+    );
+    let path = std::env::join_paths([&local_bin]).unwrap();
+    let discovered = manager.discover_from_path(&path);
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(discovered[0].name, "cursor");
+    assert_eq!(discovered[0].path, cursor_agent);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn codex_connect_merges_hooks_json_and_keeps_other_hooks() {
+    let root = temp_root();
+    let home = root.join("home");
+    let codex_dir = home.join(".codex");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&codex_dir).unwrap();
+    let hooks = codex_dir.join("hooks.json");
+    fs::write(
+        &hooks,
+        br#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"user-hook"}]}]}}"#,
+    )
+    .unwrap();
+    let original = root.join("codex-real");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        home,
+        root.join("config"),
+        root.join("data"),
+        root.join("dock"),
+    );
+    let preview = manager.preview("codex", &original).unwrap();
+    assert_eq!(preview.method, ConnectionMethod::CodexHook);
+    assert!(preview
+        .notes
+        .iter()
+        .any(|note| note.contains("hooks.json") && note.contains("备份")));
+    let record = manager.connect("codex", &original).unwrap();
+    assert_eq!(record.method, ConnectionMethod::CodexHook);
+    let connected = fs::read_to_string(&hooks).unwrap();
+    assert!(connected.contains("SessionStart"));
+    assert!(connected.contains("UserPromptSubmit"));
+    assert!(connected.contains("PreToolUse"));
+    assert!(connected.contains("\"Stop\""));
+    assert!(connected.contains("SessionEnd"));
+    assert!(connected.contains("user-hook"));
+    assert!(connected.contains("codex-hook"));
+    let script = fs::read_to_string(
+        root.join("config")
+            .join("agent-activity-dock")
+            .join("codex-hook.sh"),
+    )
+    .unwrap();
+    assert!(script.contains("exec "), "hook must exec dock: {script}");
+    assert!(
+        !script.contains("|| true"),
+        "|| true would hide the agent PPID: {script}"
+    );
+    assert!(manager.disconnect("codex").unwrap());
+    let remaining = fs::read_to_string(&hooks).unwrap();
+    assert!(remaining.contains("user-hook"));
+    assert!(!remaining.contains("codex-hook"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cursor_connect_writes_camelcase_hooks_and_keeps_other_hooks() {
+    let root = temp_root();
+    let home = root.join("home");
+    let cursor_dir = home.join(".cursor");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cursor_dir).unwrap();
+    let hooks = cursor_dir.join("hooks.json");
+    fs::write(
+        &hooks,
+        br#"{"version":1,"hooks":{"beforeShellExecution":[{"command":"user-hook"}]}}"#,
+    )
+    .unwrap();
+    let original = root.join("cursor-agent");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        home,
+        root.join("config"),
+        root.join("data"),
+        root.join("dock"),
+    );
+    let preview = manager.preview("cursor", &original).unwrap();
+    assert_eq!(preview.method, ConnectionMethod::CursorHook);
+    manager.connect("cursor", &original).unwrap();
+    let connected = fs::read_to_string(&hooks).unwrap();
+    assert!(connected.contains("\"version\": 1") || connected.contains("\"version\":1"));
+    assert!(connected.contains("sessionStart"));
+    assert!(connected.contains("beforeSubmitPrompt"));
+    assert!(connected.contains("preToolUse"));
+    assert!(connected.contains("afterAgentResponse"));
+    assert!(connected.contains("\"stop\""));
+    assert!(connected.contains("sessionEnd"));
+    assert!(connected.contains("loop_limit"));
+    assert!(connected.contains("user-hook"));
+    assert!(connected.contains("cursor-hook"));
+    let script = fs::read_to_string(
+        root.join("config")
+            .join("agent-activity-dock")
+            .join("cursor-hook.sh"),
+    )
+    .unwrap();
+    assert!(script.contains("exec "), "hook must exec dock: {script}");
+    assert!(manager.disconnect("cursor").unwrap());
+    let remaining = fs::read_to_string(&hooks).unwrap();
+    assert!(remaining.contains("user-hook"));
+    assert!(!remaining.contains("cursor-hook"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn reconnecting_codex_replaces_an_old_wrapper() {
+    let root = temp_root();
+    let home = root.join("home");
+    let config = root.join("config");
+    let data = root.join("data");
+    fs::create_dir_all(&home).unwrap();
+    let original = root.join("codex-real");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        home.clone(),
+        config.clone(),
+        data.clone(),
+        root.join("dock"),
+    );
+    let wrapper = data.join("agent-activity-dock").join("codex");
+    fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+    fs::write(&wrapper, "# Agent Activity Dock generated wrapper\n").unwrap();
+    let connections = config.join("agent-activity-dock").join("connections.json");
+    fs::create_dir_all(connections.parent().unwrap()).unwrap();
+    fs::write(
+        &connections,
+        serde_json::json!({
+            "version": 1,
+            "agents": {
+                "codex": {
+                    "name": "codex",
+                    "original": original,
+                    "method": "Wrapper",
+                    "wrapper": wrapper,
+                    "hook_script": null,
+                    "settings_backup": null,
+                    "capabilities": ["started"],
+                    "limitation": "wrapper",
+                    "installed_at": "1"
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    fs::write(
+        home.join(".bashrc"),
+        "export EXISTING=1\n# >>> agent-activity-dock PATH >>>\nexport PATH=\"old-wrapper:$PATH\"\n# <<< agent-activity-dock PATH <<<\n",
+    )
+    .unwrap();
+    with_shell("/bin/bash", || {
+        let record = manager.connect("codex", &original).unwrap();
+        assert_eq!(record.method, ConnectionMethod::CodexHook);
+        assert!(!wrapper.exists());
+        assert!(home.join(".codex").join("hooks.json").is_file());
+        let bashrc = fs::read_to_string(home.join(".bashrc")).unwrap();
+        assert!(bashrc.contains("EXISTING=1"));
+        assert!(!bashrc.contains("agent-activity-dock PATH"));
+    });
     fs::remove_dir_all(root).unwrap();
 }

@@ -2,8 +2,12 @@
 
 mod terminal;
 
-use agent_activity_dock_adapters::{claude_hook, codex_notification, dsh_projection, grok_hook};
-use agent_activity_dock_connect::{ConnectionManager, ConnectionPreview, PreviewAction};
+use agent_activity_dock_adapters::{
+    claude_hook, codex_hook, cursor_hook, dsh_projection, grok_hook,
+};
+use agent_activity_dock_connect::{
+    ConnectionManager, ConnectionMethod, ConnectionPreview, PreviewAction,
+};
 use agent_activity_dock_core::{
     dock_tab_title, dock_terminal_marker, session_terminal_title, DockEvent, EventKind, Severity,
     EVENT_VERSION,
@@ -105,6 +109,7 @@ enum Command {
 enum HookProvider {
     Claude,
     Codex,
+    Cursor,
     Dsh,
     Grok,
 }
@@ -113,7 +118,7 @@ enum HookProvider {
 struct EventArgs {
     /// Stable session identifier from the Agent integration.
     session_id: String,
-    /// Source integration name, such as claude, grok, codex or dsh.
+    /// Source integration name, such as claude, grok, codex, cursor or dsh.
     #[arg(long, default_value = "manual")]
     source: String,
     #[arg(long)]
@@ -366,7 +371,8 @@ fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
     };
     let event = match provider {
         HookProvider::Claude => claude_hook(&payload),
-        HookProvider::Codex => codex_notification(&payload),
+        HookProvider::Codex => codex_hook(&payload),
+        HookProvider::Cursor => cursor_hook(&payload),
         HookProvider::Dsh => dsh_projection(&payload),
         HookProvider::Grok => grok_hook(&payload),
     };
@@ -1448,7 +1454,7 @@ fn print_connect_preview(preview: &ConnectionPreview) {
         "Would connect {} from {} using a revocable user-level {}.",
         preview.name,
         preview.original.display(),
-        connect_method_label(&preview.name)
+        connect_method_label(preview.method)
     );
     println!("Files:");
     for file in &preview.files {
@@ -1473,10 +1479,13 @@ fn print_connect_preview(preview: &ConnectionPreview) {
     }
 }
 
-fn connect_method_label(name: &str) -> &'static str {
-    match name {
-        "claude" | "grok" => "native hook",
-        _ => "wrapper",
+fn connect_method_label(method: ConnectionMethod) -> &'static str {
+    match method {
+        ConnectionMethod::Wrapper => "wrapper",
+        ConnectionMethod::ClaudeHook
+        | ConnectionMethod::GrokHook
+        | ConnectionMethod::CodexHook
+        | ConnectionMethod::CursorHook => "native hook",
     }
 }
 

@@ -6,50 +6,15 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 pub fn claude_hook(payload: &Value) -> Option<DockEvent> {
-    let event_name = payload
-        .get("hook_event_name")
-        .or_else(|| payload.get("hook_event"))
-        .or_else(|| payload.get("hookEventName"))
-        .and_then(Value::as_str)
-        .map(normalize_hook_event)?;
-    let kind = match event_name.as_str() {
-        "session_start" => EventKind::Idle,
-        "user_prompt_submit" | "pre_tool_use" | "post_tool_use" | "subagent_start" => {
-            EventKind::Working
-        }
-        "permission_request" => EventKind::PermissionRequested,
-        "stop" => match payload.get("reason").and_then(Value::as_str).unwrap_or("") {
-            "channel_closed" | "shutdown" => EventKind::Closed,
-            _ if stop_has_active_subagent(payload) => EventKind::Working,
-            _ => EventKind::Completed,
-        },
-        "stop_failure" => EventKind::Failed,
-        "session_end" => EventKind::Closed,
-        "notification" => match notification_type(payload)? {
-            "permission_prompt" | "permission" => EventKind::PermissionRequested,
-            "agent_needs_input" => EventKind::WaitingInput,
-            "idle_prompt" | "task_complete" | "agent_completed" => EventKind::Completed,
-            _ => return None,
-        },
-        "subagent_stop" => return None,
-        _ => return None,
-    };
-    let session_id = payload
-        .get("session_id")
-        .or_else(|| payload.get("sessionId"))
-        .and_then(Value::as_str)?;
-    if is_named_subagent_hook(&event_name) && extract_parent(payload).is_none() {
-        return None;
-    }
-    let mut event = make_event("claude", session_id, kind, payload);
-    if matches!(
-        kind,
-        EventKind::PermissionRequested | EventKind::WaitingInput
-    ) {
-        event.severity = Severity::Attention;
-        event.requires_user_action = Some(true);
-    }
-    Some(event)
+    map_cli_hook("claude", payload)
+}
+
+pub fn codex_hook(payload: &Value) -> Option<DockEvent> {
+    map_cli_hook("codex", payload).or_else(|| codex_notification(payload))
+}
+
+pub fn cursor_hook(payload: &Value) -> Option<DockEvent> {
+    map_cli_hook("cursor", payload)
 }
 
 pub fn dsh_projection(payload: &Value) -> Option<DockEvent> {
@@ -114,6 +79,87 @@ pub fn grok_hook(payload: &Value) -> Option<DockEvent> {
     Some(event)
 }
 
+fn map_cli_hook(source: &str, payload: &Value) -> Option<DockEvent> {
+    let event_name = extract_hook_event(payload)?;
+    let kind = lifecycle_kind(&event_name, payload)?;
+    let session_id = extract_session_id(payload)?;
+    if is_named_subagent_hook(&event_name) && extract_parent(payload).is_none() {
+        return None;
+    }
+    let mut event = make_event(source, session_id, kind, payload);
+    if matches!(
+        kind,
+        EventKind::PermissionRequested | EventKind::WaitingInput
+    ) {
+        event.severity = Severity::Attention;
+        event.requires_user_action = Some(true);
+    }
+    Some(event)
+}
+
+fn extract_hook_event(payload: &Value) -> Option<String> {
+    payload
+        .get("hook_event_name")
+        .or_else(|| payload.get("hook_event"))
+        .or_else(|| payload.get("hookEventName"))
+        .or_else(|| payload.get("hookEvent"))
+        .and_then(Value::as_str)
+        .map(normalize_hook_event)
+}
+
+fn extract_session_id(payload: &Value) -> Option<&str> {
+    payload
+        .get("session_id")
+        .or_else(|| payload.get("sessionId"))
+        .or_else(|| payload.get("conversation_id"))
+        .or_else(|| payload.get("conversationId"))
+        .or_else(|| payload.get("thread_id"))
+        .or_else(|| payload.get("threadId"))
+        .and_then(Value::as_str)
+}
+
+fn lifecycle_kind(event_name: &str, payload: &Value) -> Option<EventKind> {
+    match event_name {
+        "session_start" => Some(EventKind::Idle),
+        "user_prompt_submit"
+        | "before_submit_prompt"
+        | "pre_tool_use"
+        | "post_tool_use"
+        | "post_tool_use_failure"
+        | "subagent_start"
+        | "before_shell_execution"
+        | "after_shell_execution"
+        | "before_mcp_execution"
+        | "after_mcp_execution"
+        | "after_agent_thought" => Some(EventKind::Working),
+        "permission_request" => Some(EventKind::PermissionRequested),
+        "stop" | "after_agent_response" => Some(stop_kind(payload)),
+        "stop_failure" => Some(EventKind::Failed),
+        "session_end" => Some(EventKind::Closed),
+        "notification" => match notification_type(payload)? {
+            "permission_prompt" | "permission" => Some(EventKind::PermissionRequested),
+            "agent_needs_input" => Some(EventKind::WaitingInput),
+            "idle_prompt" | "task_complete" | "agent_completed" => Some(EventKind::Completed),
+            _ => None,
+        },
+        "subagent_stop" => None,
+        _ => None,
+    }
+}
+
+fn stop_kind(payload: &Value) -> EventKind {
+    match payload.get("status").and_then(Value::as_str) {
+        Some("error") => return EventKind::Failed,
+        Some("aborted") => return EventKind::Cancelled,
+        _ => {}
+    }
+    match payload.get("reason").and_then(Value::as_str).unwrap_or("") {
+        "channel_closed" | "shutdown" => EventKind::Closed,
+        _ if stop_has_active_subagent(payload) => EventKind::Working,
+        _ => EventKind::Completed,
+    }
+}
+
 fn stop_has_active_subagent(payload: &Value) -> bool {
     payload
         .get("backgroundTasks")
@@ -165,6 +211,10 @@ fn make_event(source: &str, session_id: &str, kind: EventKind, payload: &Value) 
                 .get("timestamp")
                 .or_else(|| payload.get("promptId"))
                 .or_else(|| payload.get("prompt_id"))
+                .or_else(|| payload.get("generation_id"))
+                .or_else(|| payload.get("generationId"))
+                .or_else(|| payload.get("turn_id"))
+                .or_else(|| payload.get("turnId"))
                 .and_then(Value::as_str)
                 .map(str::to_owned)
                 .unwrap_or_else(|| OffsetDateTime::now_utc().unix_timestamp_nanos().to_string());
@@ -184,8 +234,10 @@ fn make_event(source: &str, session_id: &str, kind: EventKind, payload: &Value) 
         .get("workspaceRoot")
         .or_else(|| payload.get("workspace_root"))
         .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| first_workspace_root(payload))
     {
-        event.workspace_root = Some(workspace_root.to_owned());
+        event.workspace_root = Some(workspace_root);
     }
     if let Some(parent) = extract_parent(payload) {
         event.parent_session_id = Some(parent);
@@ -201,9 +253,21 @@ fn extract_parent(payload: &Value) -> Option<String> {
         .or_else(|| payload.get("parentAgentId"))
         .or_else(|| payload.get("parent_id"))
         .or_else(|| payload.get("parentId"))
+        .or_else(|| payload.get("parent_conversation_id"))
+        .or_else(|| payload.get("parentConversationId"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn first_workspace_root(payload: &Value) -> Option<String> {
+    payload
+        .get("workspace_roots")
+        .or_else(|| payload.get("workspaceRoots"))
+        .and_then(Value::as_array)
+        .and_then(|roots| roots.first())
+        .and_then(Value::as_str)
         .map(str::to_owned)
 }
 

@@ -29,6 +29,7 @@ describe('displayAgent', () => {
   it('pretty-prints known agents and title-cases the rest', () => {
     expect(displayAgent('claude')).toBe('Claude');
     expect(displayAgent('GROK')).toBe('Grok');
+    expect(displayAgent('cursor')).toBe('Cursor');
     expect(displayAgent('dsh')).toBe('DSH');
     expect(displayAgent('my-bot')).toBe('My-bot');
     expect(displayAgent('')).toBe('Agent');

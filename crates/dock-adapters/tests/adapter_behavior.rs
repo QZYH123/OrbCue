@@ -1,4 +1,6 @@
-use agent_activity_dock_adapters::{claude_hook, codex_notification, dsh_projection, grok_hook};
+use agent_activity_dock_adapters::{
+    claude_hook, codex_hook, codex_notification, cursor_hook, dsh_projection, grok_hook,
+};
 use agent_activity_dock_core::{DockState, EventKind, SessionState};
 
 #[test]
@@ -275,4 +277,143 @@ fn grok_session_can_work_again_after_a_turn_ends() {
     assert_eq!(second.snapshot.tracked_count, 1);
     assert_eq!(second.snapshot.sessions[0].session_id, "grok-session");
     assert_eq!(second.snapshot.sessions[0].state, SessionState::Working);
+}
+
+#[test]
+fn codex_hook_follows_claude_turn_lifecycle() {
+    let opened = codex_hook(&serde_json::json!({
+        "hook_event_name": "SessionStart",
+        "session_id": "codex-session"
+    }))
+    .unwrap();
+    assert_eq!(opened.kind, EventKind::Idle);
+    assert_eq!(opened.source, "codex");
+
+    let prompt = codex_hook(&serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "codex-session"
+    }))
+    .unwrap();
+    assert_eq!(prompt.kind, EventKind::Working);
+
+    let tool = codex_hook(&serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "session_id": "codex-session"
+    }))
+    .unwrap();
+    assert_eq!(tool.kind, EventKind::Working);
+
+    let stop = codex_hook(&serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "codex-session"
+    }))
+    .unwrap();
+    assert_eq!(stop.kind, EventKind::Completed);
+
+    let nested = codex_hook(&serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "codex-session",
+        "background_tasks": [{"id": "s1", "type": "subagent", "status": "running"}]
+    }))
+    .unwrap();
+    assert_eq!(nested.kind, EventKind::Working);
+
+    let hanging = codex_hook(&serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "codex-session",
+        "background_tasks": [{"id": "m1", "type": "monitor", "status": "running"}]
+    }))
+    .unwrap();
+    assert_eq!(hanging.kind, EventKind::Completed);
+
+    let ended = codex_hook(&serde_json::json!({
+        "hook_event_name": "SessionEnd",
+        "session_id": "codex-session"
+    }))
+    .unwrap();
+    assert_eq!(ended.kind, EventKind::Closed);
+}
+
+#[test]
+fn codex_hook_falls_back_to_notification_payloads() {
+    let started = codex_hook(&serde_json::json!({
+        "type": "started",
+        "session_id": "codex-notify"
+    }))
+    .unwrap();
+    assert_eq!(started.kind, EventKind::Working);
+    assert_eq!(started.source, "codex");
+}
+
+#[test]
+fn cursor_hook_follows_turn_lifecycle_with_conversation_id() {
+    let opened = cursor_hook(&serde_json::json!({
+        "hook_event_name": "sessionStart",
+        "conversation_id": "cursor-session",
+        "workspace_roots": ["/tmp/workspace"]
+    }))
+    .unwrap();
+    assert_eq!(opened.kind, EventKind::Idle);
+    assert_eq!(opened.source, "cursor");
+    assert_eq!(opened.session_id, "cursor-session");
+    assert_eq!(opened.workspace_root.as_deref(), Some("/tmp/workspace"));
+
+    let prompt = cursor_hook(&serde_json::json!({
+        "hook_event_name": "beforeSubmitPrompt",
+        "conversation_id": "cursor-session"
+    }))
+    .unwrap();
+    assert_eq!(prompt.kind, EventKind::Working);
+
+    let shell = cursor_hook(&serde_json::json!({
+        "hook_event_name": "beforeShellExecution",
+        "conversation_id": "cursor-session"
+    }))
+    .unwrap();
+    assert_eq!(shell.kind, EventKind::Working);
+
+    let thought = cursor_hook(&serde_json::json!({
+        "hook_event_name": "afterAgentThought",
+        "conversation_id": "cursor-session"
+    }))
+    .unwrap();
+    assert_eq!(thought.kind, EventKind::Working);
+
+    let reply = cursor_hook(&serde_json::json!({
+        "hook_event_name": "afterAgentResponse",
+        "conversation_id": "cursor-session"
+    }))
+    .unwrap();
+    assert_eq!(reply.kind, EventKind::Completed);
+
+    let stop = cursor_hook(&serde_json::json!({
+        "hook_event_name": "stop",
+        "conversation_id": "cursor-session",
+        "status": "completed"
+    }))
+    .unwrap();
+    assert_eq!(stop.kind, EventKind::Completed);
+
+    let aborted = cursor_hook(&serde_json::json!({
+        "hook_event_name": "stop",
+        "conversation_id": "cursor-session",
+        "status": "aborted"
+    }))
+    .unwrap();
+    assert_eq!(aborted.kind, EventKind::Cancelled);
+
+    let failed = cursor_hook(&serde_json::json!({
+        "hook_event_name": "stop",
+        "conversation_id": "cursor-session",
+        "status": "error"
+    }))
+    .unwrap();
+    assert_eq!(failed.kind, EventKind::Failed);
+
+    let ended = cursor_hook(&serde_json::json!({
+        "hook_event_name": "sessionEnd",
+        "conversation_id": "cursor-session"
+    }))
+    .unwrap();
+    assert_eq!(ended.kind, EventKind::Closed);
 }

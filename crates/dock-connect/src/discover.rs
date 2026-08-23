@@ -132,6 +132,16 @@ pub fn discover_agents(
             agents.push(discovered_agent("grok", path));
         }
     }
+    if let Some(cursor) = choose_discovered(
+        "cursor",
+        find_all_on_path("cursor-agent", path, excluded_dir),
+    ) {
+        let index = agents
+            .iter()
+            .position(|agent| agent.name.as_str() > "cursor")
+            .unwrap_or(agents.len());
+        agents.insert(index, cursor);
+    }
     agents
 }
 
@@ -163,7 +173,7 @@ fn find_all_on_path(name: &str, path: &OsStr, excluded_dir: Option<&Path>) -> Ve
         })
         .filter(|candidate| {
             excluded_dir
-                .map(|excluded| candidate.parent() != Some(excluded))
+                .map(|excluded| !candidate.starts_with(excluded))
                 .unwrap_or(true)
         })
         .filter(|candidate| {
@@ -356,18 +366,21 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(bin.join("claude.exe"), b"").unwrap();
         std::fs::write(bin.join("codex.cmd"), b"").unwrap();
+        std::fs::write(bin.join("cursor-agent.exe"), b"").unwrap();
         std::fs::write(bin.join("dsh.bat"), b"").unwrap();
         std::fs::write(bin.join("grok.ps1"), b"").unwrap();
         let path = std::env::join_paths([&bin]).unwrap();
         let discovered = super::discover_agents(&path, None, &root.join("missing-grok"));
         let mut names: Vec<_> = discovered.iter().map(|agent| agent.name.as_str()).collect();
         names.sort_unstable();
-        assert_eq!(names, ["claude", "codex", "dsh", "grok"]);
+        assert_eq!(names, ["claude", "codex", "cursor", "dsh", "grok"]);
         assert!(discovered.iter().any(|agent| agent
             .path
             .file_name()
             .and_then(|name| name.to_str())
             == Some("claude.exe")));
+        assert!(discovered.iter().any(|agent| agent.name == "cursor"
+            && agent.path.file_name().and_then(|name| name.to_str()) == Some("cursor-agent.exe")));
         std::fs::remove_dir_all(root).unwrap();
     }
 
