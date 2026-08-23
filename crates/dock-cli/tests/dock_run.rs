@@ -129,6 +129,7 @@ fn dock_run_requires_windows_terminal() {
         .args(["--json", "run", "fakeagent"])
         .env("PATH", bin.display().to_string())
         .env("HOME", root.join("home"))
+        .env("AGENT_ACTIVITY_DOCK_BACKEND", "wsl")
         .env("AGENT_ACTIVITY_DOCK_WSL_DISTRO", "TestDistro")
         .env_remove("AGENT_ACTIVITY_DOCK_WT")
         .env_remove("LOCALAPPDATA")

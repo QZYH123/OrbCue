@@ -101,8 +101,12 @@ enum Command {
         /// After the new tab starts, close this interactive shell tab.
         #[arg(long)]
         close: bool,
+        /// Hidden: Windows dock.exe consumes a WSL-prepared run spec on stdin.
+        #[arg(long, hide = true)]
+        from_wsl: bool,
         /// Agent command, such as grok, claude, or codex.
-        agent: String,
+        #[arg(required_unless_present = "from_wsl")]
+        agent: Option<String>,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -191,9 +195,22 @@ fn main() {
         args,
         profile,
         close,
+        from_wsl,
     } = &cli.command
     {
-        let status = terminal::run_command(agent, args, profile.as_deref(), *close, cli.json);
+        let status = if *from_wsl {
+            terminal::run_from_wsl_stdin(cli.json)
+        } else {
+            let Some(agent) = agent.as_deref() else {
+                eprintln!("dock run: missing agent name");
+                std::process::exit(1);
+            };
+            if should_delegate_run_to_windows() {
+                run_via_windows_terminal(agent, args, profile.as_deref(), *close, cli.json)
+            } else {
+                terminal::run_command(agent, args, profile.as_deref(), *close, cli.json)
+            }
+        };
         if status != 0 {
             std::process::exit(status);
         }
@@ -1270,6 +1287,137 @@ fn trampoline_to_windows() -> i32 {
     }
 }
 
+fn should_delegate_run_to_windows() -> bool {
+    trampoline_to_windows_predicate(
+        cfg!(unix),
+        looks_like_wsl(),
+        hop_token().is_some(),
+        resolve_backend(),
+        false,
+    )
+}
+
+fn run_via_windows_terminal(
+    agent: &str,
+    args: &[String],
+    profile: Option<&str>,
+    close: bool,
+    json_output: bool,
+) -> i32 {
+    let spec = match terminal::prepare_wsl_run(agent, args, profile) {
+        Ok(spec) => spec,
+        Err(error) => {
+            if json_output {
+                println!("{}", serde_json::json!({ "ok": false, "error": error }));
+            } else {
+                eprintln!("dock run: {error}");
+            }
+            return 1;
+        }
+    };
+    match trampoline_from_wsl_run(&spec) {
+        Ok(mut value) => {
+            let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
+            let closed = if ok {
+                terminal::close_launcher_after_spawn(close)
+            } else {
+                false
+            };
+            if json_output {
+                value["closed_launcher"] = Value::Bool(closed);
+                println!("{value}");
+            } else if ok {
+                print!(
+                    "Started {} in Windows Terminal tab {}",
+                    value.get("agent").and_then(Value::as_str).unwrap_or(agent),
+                    value
+                        .get("marker")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&spec.marker)
+                );
+                if closed {
+                    print!("; closing this tab");
+                } else if close {
+                    print!("; current stdin is not a TTY, launcher tab kept");
+                }
+                println!();
+            } else {
+                eprintln!(
+                    "dock run: {}",
+                    value
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Windows dock.exe run failed")
+                );
+            }
+            if ok {
+                0
+            } else {
+                1
+            }
+        }
+        Err(status) => status,
+    }
+}
+
+fn trampoline_from_wsl_run(spec: &terminal::WslRunSpec) -> Result<Value, i32> {
+    let exe = match find_windows_dock() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("dock: {error}");
+            return Err(2);
+        }
+    };
+    let mut command = ProcessCommand::new(&exe);
+    command.args(["--json", "run", "--from-wsl"]);
+    command.stdin(Stdio::piped());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::inherit());
+    apply_windows_hop_env(&mut command);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("dock: cannot trampoline run to {}: {error}", exe.display());
+            return Err(2);
+        }
+    };
+    let Some(mut stdin) = child.stdin.take() else {
+        eprintln!("dock: trampoline run lost stdin");
+        return Err(2);
+    };
+    match serde_json::to_vec(spec) {
+        Ok(mut line) => {
+            line.push(b'\n');
+            if let Err(error) = stdin.write_all(&line) {
+                eprintln!("dock: cannot write run spec: {error}");
+                return Err(2);
+            }
+        }
+        Err(error) => {
+            eprintln!("dock: cannot serialize run spec: {error}");
+            return Err(2);
+        }
+    }
+    drop(stdin);
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(error) => {
+            eprintln!("dock: trampoline run failed: {error}");
+            return Err(2);
+        }
+    };
+    match serde_json::from_slice(&output.stdout) {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            eprintln!(
+                "dock: Windows run did not return JSON ({error}): {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            Err(output.status.code().unwrap_or(2))
+        }
+    }
+}
+
 fn trampoline_emit(event: &DockEvent) -> i32 {
     let exe = match find_windows_dock() {
         Ok(path) => path,
@@ -1778,7 +1926,8 @@ mod tests {
         Command::Run {
             profile: None,
             close: false,
-            agent: "grok".to_owned(),
+            from_wsl: false,
+            agent: Some("grok".to_owned()),
             args: Vec::new(),
         }
     }
@@ -1852,6 +2001,13 @@ mod tests {
             name: "grok".to_owned()
         }));
         assert!(stays_on_agent_os(&run_command()));
+        assert!(trampoline_to_windows_predicate(
+            true,
+            true,
+            false,
+            DockBackend::Local,
+            false,
+        ));
         assert!(!stays_on_agent_os(&Command::Status));
         assert!(!stays_on_agent_os(&Command::Up));
         assert!(!stays_on_agent_os(&Command::Bridge));

@@ -5,10 +5,12 @@
 
 use agent_activity_dock_connect::ConnectionManager;
 use agent_activity_dock_core::{dock_tab_title, dock_terminal_marker, format_dock_marker};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,6 +42,17 @@ pub struct WslInner {
     /// Linux path of the tab bootstrap script. Avoids `;` / quotes on the WT
     /// command line — WT treats `;` as a command separator.
     pub run_script: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WslRunSpec {
+    pub agent: String,
+    pub marker: String,
+    pub profile: Option<String>,
+    pub distro: String,
+    pub shell: String,
+    pub cwd: String,
+    pub run_script: String,
 }
 
 pub struct NativeInner {
@@ -233,7 +246,7 @@ pub fn run_command(
     }
 }
 
-fn close_launcher_after_spawn(requested: bool) -> bool {
+pub fn close_launcher_after_spawn(requested: bool) -> bool {
     if !should_close_launcher(requested, stdin_is_terminal()) {
         return false;
     }
@@ -263,11 +276,11 @@ fn close_launcher_shell() -> bool {
     false
 }
 
-struct StartedTab {
-    agent: String,
-    marker: String,
-    title: String,
-    profile: Option<String>,
+pub struct StartedTab {
+    pub agent: String,
+    pub marker: String,
+    pub title: String,
+    pub profile: Option<String>,
 }
 
 fn run_command_inner(
@@ -303,6 +316,102 @@ fn run_command_inner(
         title: plan.title,
         profile,
     })
+}
+
+pub fn prepare_wsl_run(
+    agent: &str,
+    args: &[String],
+    profile: Option<&str>,
+) -> Result<WslRunSpec, String> {
+    let cwd = env::current_dir().map_err(|error| format!("无法读取当前目录：{error}"))?;
+    let marker = allocate_dock_marker();
+    let profile = resolve_wt_profile(profile)?;
+    let InnerCommand::Wsl(inner) = wsl_inner(agent, args, &cwd, &marker)? else {
+        return Err("WSL dock run produced a native inner command".to_owned());
+    };
+    Ok(WslRunSpec {
+        agent: agent.to_owned(),
+        marker,
+        profile,
+        distro: inner.distro,
+        shell: inner.shell,
+        cwd: inner.cwd.to_string_lossy().into_owned(),
+        run_script: inner.run_script.to_string_lossy().into_owned(),
+    })
+}
+
+pub fn spawn_from_wsl_spec(spec: &WslRunSpec) -> Result<StartedTab, String> {
+    if dock_terminal_marker(&spec.marker).is_none() {
+        return Err(format!("invalid dock marker {}", spec.marker));
+    }
+    let adapter = WindowsTerminalAdapter {
+        wt: find_wt()?,
+        wsl: Some(find_wsl()?),
+    };
+    let request = SpawnRequest {
+        agent: spec.agent.clone(),
+        marker: spec.marker.clone(),
+        profile: spec.profile.clone(),
+        inner: InnerCommand::Wsl(WslInner {
+            distro: spec.distro.clone(),
+            shell: spec.shell.clone(),
+            cwd: PathBuf::from(&spec.cwd),
+            run_script: PathBuf::from(&spec.run_script),
+        }),
+    };
+    let plan = adapter.spawn(&request)?;
+    Ok(StartedTab {
+        agent: spec.agent.clone(),
+        marker: spec.marker.clone(),
+        title: plan.title,
+        profile: spec.profile.clone(),
+    })
+}
+
+pub fn run_from_wsl_stdin(json_output: bool) -> i32 {
+    let mut input = String::new();
+    if let Err(error) = std::io::stdin().read_to_string(&mut input) {
+        eprintln!("dock run: cannot read WSL spec: {error}");
+        return 2;
+    }
+    let spec: WslRunSpec = match serde_json::from_str(input.trim()) {
+        Ok(spec) => spec,
+        Err(error) => {
+            eprintln!("dock run: invalid WSL spec ({error})");
+            return 2;
+        }
+    };
+    match spawn_from_wsl_spec(&spec) {
+        Ok(started) => {
+            if json_output {
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "marker": started.marker,
+                        "title": started.title,
+                        "agent": started.agent,
+                        "profile": started.profile,
+                        "closed_launcher": false,
+                    })
+                );
+            } else {
+                println!(
+                    "Started {} in Windows Terminal tab {}",
+                    started.agent, started.marker
+                );
+            }
+            0
+        }
+        Err(error) => {
+            if json_output {
+                println!("{}", json!({ "ok": false, "error": error }));
+            } else {
+                eprintln!("dock run: {error}");
+            }
+            1
+        }
+    }
 }
 
 fn native_windows_run() -> bool {
@@ -874,6 +983,42 @@ mod tests {
             ["--", r"C:\Users\qingz\AppData\Local\grok.exe", "--foo"]
         );
         assert!(!args.iter().any(|arg| arg.contains(';')));
+    }
+
+    #[test]
+    fn wsl_run_spec_round_trips_into_spawn_plan() {
+        let spec = super::WslRunSpec {
+            agent: "grok".to_owned(),
+            marker: "dock:ab12cd".to_owned(),
+            profile: None,
+            distro: "Ubuntu".to_owned(),
+            shell: "/bin/zsh".to_owned(),
+            cwd: "/home/qingz/app".to_owned(),
+            run_script: "/tmp/aadock-dock-ab12cd.sh".to_owned(),
+        };
+        let encoded = serde_json::to_string(&spec).unwrap();
+        let decoded: super::WslRunSpec = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, spec);
+        let request = SpawnRequest {
+            agent: spec.agent.clone(),
+            marker: spec.marker.clone(),
+            profile: spec.profile.clone(),
+            inner: InnerCommand::Wsl(WslInner {
+                distro: spec.distro,
+                shell: spec.shell,
+                cwd: PathBuf::from(spec.cwd),
+                run_script: PathBuf::from(spec.run_script),
+            }),
+        };
+        let plan = spawn_plan(
+            Path::new("/tmp/wt.exe"),
+            Some(Path::new("/mnt/c/Windows/System32/wsl.exe")),
+            &request,
+        )
+        .unwrap();
+        assert!(plan.args.contains(&"Ubuntu".to_owned()));
+        assert!(plan.args.contains(&"/tmp/aadock-dock-ab12cd.sh".to_owned()));
+        assert!(plan.args.contains(&"wsl.exe".to_owned()));
     }
 
     #[test]

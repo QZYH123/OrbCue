@@ -16,6 +16,7 @@ agent-activity-dock-core = { path = "../dock-core" }
 agent-activity-dock-ipc = { path = "../dock-ipc" }
 agent-activity-dock-service = { path = "../dock-service" }
 clap = { version = "4", features = ["derive"] }
+serde.workspace = true
 serde_json.workspace = true
 time.workspace = true
 
