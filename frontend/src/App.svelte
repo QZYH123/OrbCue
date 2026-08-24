@@ -32,6 +32,15 @@
     presentAuditRows,
     presentSessionSections,
   } from './sessionIdentity';
+  import { barTones, matrixTones } from './glyphMatrix';
+  import {
+    THEMES,
+    THEME_META,
+    initialTheme,
+    persistTheme,
+    subscribeTheme,
+    type DockTheme,
+  } from './theme';
 
   const previewMode = !tauriAvailable();
   let label: string = previewMode ? previewLabel() : 'ball';
@@ -56,6 +65,7 @@
   let highlightedKey = '';
   let autostartEnabled = false;
   let shortcutEnabled = localStorage.getItem('shortcut-enabled') !== 'false';
+  let theme: DockTheme = initialTheme();
   const shortcut = 'CommandOrControl+Shift+Space';
   let unsubscribe: (() => void) | undefined;
   let dragging = false;
@@ -86,6 +96,8 @@
         : snapshot.working_count > 0
           ? 'working'
           : 'idle';
+  $: matrixDots = theme === 'glyph' ? matrixTones(snapshot.working_count, snapshot.tracked_count, ballKind, snapshot.pending_mark) : [];
+  $: heroBar = theme === 'glyph' ? barTones(snapshot.working_count, snapshot.tracked_count, 8) : [];
   $: connectionAgents = [
     ...inventory.discovered,
     ...inventory.connected
@@ -103,12 +115,15 @@
   ];
 
   onMount(() => {
+    const unsubTheme = subscribeTheme((next) => {
+      theme = next;
+    });
     if (previewMode) {
       const pageQ = new URLSearchParams(window.location.search).get('page');
       if (pageQ === 'audit' || pageQ === 'connections' || pageQ === 'settings' || pageQ === 'activity') {
         page = pageQ;
       }
-      return;
+      return unsubTheme;
     }
     label = getCurrentWindow().label;
     let active = true;
@@ -241,6 +256,7 @@
       active = false;
       window.clearTimeout(snapTimer);
       unsubscribe?.();
+      unsubTheme();
     };
   });
 
@@ -524,6 +540,11 @@
     };
   }
 
+  function setTheme(next: DockTheme) {
+    theme = next;
+    persistTheme(next);
+  }
+
   function toggleSound(channel: 'completion' | 'attention' | 'failure') {
     if (channel === 'completion') {
       completionSoundEnabled = !completionSoundEnabled;
@@ -684,27 +705,74 @@
       onpointermove={onBallPointerMove}
       onclick={onBallClick}
     >
-      <span class="ball-core" aria-hidden="true"></span>
-      <span class="ball-ring" aria-hidden="true"></span>
-      <span class="ball-sheen" aria-hidden="true"></span>
-      <span class="count">
-        <span class="count-work">{snapshot.working_count}</span>
-        <span class="count-total">{snapshot.tracked_count}</span>
-      </span>
+      {#if theme === 'glyph'}
+        <span class="matrix" aria-hidden="true">
+          {#each matrixDots as tone, i (i)}<i class="dot {tone}"></i>{/each}
+        </span>
+        <span class="count">
+          <span class="count-work">{snapshot.working_count}</span>
+          <span class="count-sep">/</span>
+          <span class="count-total">{snapshot.tracked_count}</span>
+        </span>
+      {:else if theme === 'braun'}
+        <span class="ball-lcd" aria-hidden="true"></span>
+        <span class="ball-ring" aria-hidden="true"></span>
+        <span class="count">
+          <span class="count-work">{snapshot.working_count}</span>
+          <span class="count-total">{snapshot.tracked_count}</span>
+        </span>
+      {:else if theme === 'glass'}
+        <span class="ball-frost" aria-hidden="true"></span>
+        <span class="ball-rim" aria-hidden="true"></span>
+        <span class="ball-sheen" aria-hidden="true"></span>
+        <span class="ball-arc" aria-hidden="true"></span>
+        <span class="count">
+          <span class="count-work">{snapshot.working_count}</span>
+          <span class="count-sep">/</span>
+          <span class="count-total">{snapshot.tracked_count}</span>
+        </span>
+      {:else if theme === 'fluent'}
+        <span class="count">
+          <span class="count-work">{snapshot.working_count}</span>
+          <span class="count-sep">/</span>
+          <span class="count-total">{snapshot.tracked_count}</span>
+        </span>
+        <span class="ball-bar" aria-hidden="true"></span>
+      {:else}
+        <span class="ball-core" aria-hidden="true"></span>
+        <span class="ball-ring" aria-hidden="true"></span>
+        <span class="ball-sheen" aria-hidden="true"></span>
+        <span class="count">
+          <span class="count-work">{snapshot.working_count}</span>
+          <span class="count-total">{snapshot.tracked_count}</span>
+        </span>
+      {/if}
     </button>
-    {#if snapshot.pending_mark}<span class="badge mark-{markClass(snapshot.pending_mark)}" aria-label={snapshot.pending_mark}>{snapshot.pending_mark}</span>{/if}
+    {#if snapshot.pending_mark && theme !== 'glyph'}<span class="badge mark-{markClass(snapshot.pending_mark)}" aria-label={snapshot.pending_mark}>{snapshot.pending_mark}</span>{/if}
   </main>
 {:else}
   <main class="panel tone-{ballKind}" aria-label="Agent Activity Dock 任务列表">
     <header class="hero">
-      <div class="hero-count" aria-live="polite">
-        <span class="hero-work">{snapshot.working_count}</span>
-        <span class="hero-rest">
-          <span class="hero-track">/{snapshot.tracked_count}</span>
-          <span class="hero-meta">{ballKind === 'fail' ? '有失败' : ballKind === 'wait' ? '需要你' : ballKind === 'working' ? '工作中' : '空闲'}</span>
-        </span>
+      <div class="hero-main">
+        <div class="hero-count lcd" aria-live="polite">
+          <span class="lcd-digits">
+            <span class="hero-work lcd-work">{snapshot.working_count}</span>
+            <span class="hero-slash lcd-slash">/</span>
+            <span class="hero-track lcd-track">{snapshot.tracked_count}</span>
+          </span>
+          <span class="hero-rest">
+            <span class="hero-meta lcd-meta">{ballKind === 'fail' ? '有失败' : ballKind === 'wait' ? '需要你' : ballKind === 'working' ? '工作中' : '空闲'}</span>
+          </span>
+        </div>
+        {#if theme === 'glyph'}
+          <div class="hero-sub">
+            <span class="hero-matrix" aria-hidden="true">
+              {#each heroBar as tone, i (i)}<i class="dot {tone}"></i>{/each}
+            </span>
+          </div>
+        {/if}
       </div>
-      <button class="icon-button" onclick={closePanel} aria-label="关闭">×</button>
+      <button class="icon-button key-round" onclick={closePanel} aria-label="关闭">×</button>
     </header>
     {#if page === 'activity'}
       <nav class="filters" aria-label="筛选任务">
@@ -739,6 +807,7 @@
                   title={session.session_id}
                 >
                   <div class="ticket-rail {session.state}" aria-hidden="true"></div>
+                  <i class="led {session.state}" aria-hidden="true"></i>
                   <div class="session-content">
                     <div class="session-topline">
                       <span class="session-heading">
@@ -787,6 +856,7 @@
           {#each auditRows as row, index (row.entry.source + ':' + row.entry.session_id + ':' + row.entry.occurred_at + ':' + index)}
             <article class="audit-card">
               <div class="ticket-rail {row.entry.state}" aria-hidden="true"></div>
+              <i class="led {row.entry.state}" aria-hidden="true"></i>
               <div class="audit-content" title={`${row.entry.session_id} ${row.entry.occurred_at}`}>
                 <div class="session-topline">
                   <span class="session-heading">
@@ -890,6 +960,14 @@
     {:else}
       <p class="section-intro">默认保持安静，只在任务真正需要你回来时提醒一次。</p>
       <div class="panel-body">
+      <div class="theme-picker" role="radiogroup" aria-label="外观">
+        {#each THEMES as item (item)}
+          <button type="button" role="radio" aria-checked={theme === item} class:active={theme === item} onclick={() => setTheme(item)}>
+            <strong>{THEME_META[item].name}</strong>
+            <small>{THEME_META[item].note}</small>
+          </button>
+        {/each}
+      </div>
       <div class="settings-list">
         <button class="setting-row" aria-pressed={completionSoundEnabled} onclick={() => toggleSound('completion')}>
           <span><strong>完成提示音</strong><small>任务正常完成时播放短音</small></span><span class:enabled={completionSoundEnabled} class="switch"><i></i></span>
@@ -914,10 +992,30 @@
       <div class="privacy-note"><strong>本地与隐私优先</strong><p>Dock 默认不联网，不读取 transcript、prompt、命令或代码；持久化状态也不包含摘要。</p></div>
     {/if}
     <nav class="dock-nav" aria-label="Dock 页面">
-      <button aria-pressed={page === 'activity'} class:active={page === 'activity'} onclick={() => selectPage('activity')}>动态</button>
-      <button aria-pressed={page === 'audit'} class:active={page === 'audit'} onclick={() => selectPage('audit')}>审计</button>
-      <button aria-pressed={page === 'connections'} class:active={page === 'connections'} onclick={() => selectPage('connections')}>连接</button>
-      <button aria-pressed={page === 'settings'} class:active={page === 'settings'} onclick={() => selectPage('settings')}>设置</button>
+      <button aria-pressed={page === 'activity'} class:active={page === 'activity'} onclick={() => selectPage('activity')}>
+        <span class="nav-key" aria-hidden="true">
+          <svg class="nav-icon" viewBox="0 0 16 16"><path d="M1.5 8.5h2.3l1.5-4.2 2.6 8.4L10 8.5h4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        动态
+      </button>
+      <button aria-pressed={page === 'audit'} class:active={page === 'audit'} onclick={() => selectPage('audit')}>
+        <span class="nav-key" aria-hidden="true">
+          <svg class="nav-icon" viewBox="0 0 16 16"><path d="M3.5 4.5h9M3.5 8h9M3.5 11.5h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </span>
+        审计
+      </button>
+      <button aria-pressed={page === 'connections'} class:active={page === 'connections'} onclick={() => selectPage('connections')}>
+        <span class="nav-key" aria-hidden="true">
+          <svg class="nav-icon" viewBox="0 0 16 16"><path d="M6.7 9.3 4.6 11.4a2 2 0 0 0 2.8 2.8l2.1-2.1M9.3 6.7l2.1-2.1a2 2 0 0 0-2.8-2.8L6.5 3.9M6.4 9.6l3.2-3.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </span>
+        连接
+      </button>
+      <button aria-pressed={page === 'settings'} class:active={page === 'settings'} onclick={() => selectPage('settings')}>
+        <span class="nav-key" aria-hidden="true">
+          <svg class="nav-icon" viewBox="0 0 16 16"><path d="M3 4.5h10M3 8h10M3 11.5h10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="6.2" cy="4.5" r="1.45" fill="currentColor"/><circle cx="10.2" cy="8" r="1.45" fill="currentColor"/><circle cx="7.4" cy="11.5" r="1.45" fill="currentColor"/></svg>
+        </span>
+        设置
+      </button>
     </nav>
   </main>
 {/if}
