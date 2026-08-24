@@ -93,6 +93,14 @@ enum Command {
     /// Report whether the given Linux PIDs are still the original processes.
     #[command(hide = true)]
     LivenessCheck,
+    /// Install or remove a short command for `dock run`.
+    Alias {
+        /// Command name. Omit to print the current alias.
+        name: Option<String>,
+        /// Remove the current alias.
+        #[arg(long)]
+        clear: bool,
+    },
     /// Start an Agent in a dedicated Windows Terminal tab.
     Run {
         /// Windows Terminal profile name or GUID. Defaults to the current tab.
@@ -165,6 +173,13 @@ fn main() {
     }
     if should_trampoline_argv(&cli.command) {
         std::process::exit(trampoline_to_windows());
+    }
+    if let Command::Alias { name, clear } = &cli.command {
+        let status = run_alias_command(name.as_deref(), *clear, cli.json);
+        if status != 0 {
+            std::process::exit(status);
+        }
+        return;
     }
     if matches!(
         &cli.command,
@@ -267,6 +282,48 @@ fn main() {
             eprintln!("dock: cannot reach Dock at {}: {error}", endpoint.display());
             eprintln!("Start the daemon from any directory with: dock up");
             std::process::exit(2);
+        }
+    }
+}
+
+fn run_alias_command(name: Option<&str>, clear: bool, json_output: bool) -> i32 {
+    let result = if clear || name.is_some_and(|value| value.trim().is_empty()) {
+        agent_activity_dock_connect::set_run_alias(None)
+    } else if let Some(name) = name {
+        agent_activity_dock_connect::set_run_alias(Some(name))
+    } else {
+        Ok(agent_activity_dock_connect::current_run_alias())
+    };
+    match result {
+        Ok(alias) => {
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string(&agent_activity_dock_connect::run_alias_ok(
+                        alias.clone()
+                    ))
+                    .expect("alias view serializes")
+                );
+            } else if let Some(alias) = alias {
+                println!("{alias} grok 等同 dock run grok");
+            } else {
+                println!("没有启动别名");
+            }
+            0
+        }
+        Err(error) => {
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string(&agent_activity_dock_connect::run_alias_err(
+                        error.clone()
+                    ))
+                    .expect("alias error serializes")
+                );
+            } else {
+                eprintln!("dock alias: {error}");
+            }
+            1
         }
     }
 }
@@ -457,6 +514,7 @@ fn request_for(command: &Command) -> Result<IpcRequest, String> {
         | Command::Up
         | Command::Down
         | Command::Bridge
+        | Command::Alias { .. }
         | Command::Run { .. } => return Err("command is handled before event parsing".to_owned()),
     };
     Ok(request)
@@ -1046,6 +1104,7 @@ fn stays_on_agent_os(command: &Command) -> bool {
         Command::Agents
             | Command::Connect { .. }
             | Command::Disconnect { .. }
+            | Command::Alias { .. }
             | Command::Run { .. }
             | Command::LivenessCheck
     )

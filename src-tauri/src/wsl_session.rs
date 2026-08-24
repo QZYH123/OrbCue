@@ -85,6 +85,37 @@ pub fn disconnect_agent(name: &str) -> Result<bool, String> {
     Ok(wsl_dock_json::<DisconnectJson>(&["disconnect", name, "--json"])?.disconnected)
 }
 
+#[derive(Debug, Deserialize)]
+struct AliasJson {
+    ok: bool,
+    #[serde(default)]
+    alias: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+fn alias_from_json(parsed: AliasJson) -> Result<Option<String>, String> {
+    if parsed.ok {
+        Ok(parsed.alias)
+    } else {
+        Err(parsed
+            .error
+            .unwrap_or_else(|| "无法更新启动别名".to_owned()))
+    }
+}
+
+pub fn run_alias() -> Result<Option<String>, String> {
+    alias_from_json(wsl_dock_json::<AliasJson>(&["alias", "--json"])?)
+}
+
+pub fn set_run_alias(name: Option<&str>) -> Result<Option<String>, String> {
+    let parsed = match name {
+        None => wsl_dock_json::<AliasJson>(&["alias", "--clear", "--json"])?,
+        Some(name) => wsl_dock_json::<AliasJson>(&["alias", name, "--json"])?,
+    };
+    alias_from_json(parsed)
+}
+
 fn subscribe_bridge() -> mpsc::Receiver<SnapshotMessage> {
     let (sender, receiver) = mpsc::channel();
     let _ = thread::Builder::new()

@@ -9,28 +9,54 @@ html, body, #app {
 }
 
 .theme-picker {
-  display: grid;
-  gap: 6px;
-  margin: 0 0 12px;
+  display: flex;
+  gap: 4px;
+  margin: 0 0 10px;
 }
 .theme-picker button {
-  display: grid;
-  justify-items: start;
-  gap: 1px;
-  width: 100%;
-  padding: 8px 10px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 2px;
   border: 1px solid var(--line, rgba(255, 255, 255, .1));
-  border-radius: 10px;
+  border-radius: 8px;
   color: inherit;
   background: var(--card, rgba(255, 255, 255, .04));
-  text-align: left;
+  font-size: 11px;
+  font-weight: 650;
+  text-align: center;
   cursor: pointer;
-}
-.theme-picker button strong { font-size: 13px; font-weight: 650; }
-.theme-picker button small {
-  color: var(--muted, #8d939c);
-  font-size: 10px;
 }
 .theme-picker button.active {
   border-color: var(--working, #5ecf8f);
+  background: var(--card-hover, rgba(255, 255, 255, .08));
 }
+
+.alias-row {
+  cursor: default;
+  align-items: flex-start;
+}
+.alias-row form {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+  align-items: center;
+}
+.alias-row input {
+  width: 88px;
+  padding: 5px 8px;
+  border: 1px solid var(--line, rgba(255, 255, 255, .12));
+  border-radius: 8px;
+  color: inherit;
+  background: var(--card, rgba(255, 255, 255, .06));
+  font: inherit;
+  font-size: 12px;
+}
+.alias-row input:focus {
+  outline: 1px solid var(--working, #5ecf8f);
+}
+.alias-hint {
+  margin: 6px 12px 0;
+  color: var(--muted, #8d939c);
+  font-size: 11px;
+}
+.alias-hint.error { color: var(--fail, #e07a7a); }

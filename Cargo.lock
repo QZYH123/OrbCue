@@ -60,6 +60,7 @@ dependencies = [
 name = "agent-activity-dock-connect"
 version = "0.2.0"
 dependencies = [
+ "agent-activity-dock-ipc",
  "serde",
  "serde_json",
 ]

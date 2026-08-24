@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+agent-activity-dock-ipc = { path = "../dock-ipc" }
 serde.workspace = true
 serde_json.workspace = true
 

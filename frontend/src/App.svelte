@@ -66,6 +66,10 @@
   let autostartEnabled = false;
   let shortcutEnabled = localStorage.getItem('shortcut-enabled') !== 'false';
   let theme: DockTheme = initialTheme();
+  let runAlias = '';
+  let runAliasDraft = '';
+  let runAliasHint = '';
+  let runAliasError = '';
   const shortcut = 'CommandOrControl+Shift+Space';
   let unsubscribe: (() => void) | undefined;
   let dragging = false;
@@ -118,6 +122,7 @@
     const unsubTheme = subscribeTheme((next) => {
       theme = next;
     });
+    void loadRunAlias();
     if (previewMode) {
       const pageQ = new URLSearchParams(window.location.search).get('page');
       if (pageQ === 'audit' || pageQ === 'connections' || pageQ === 'settings' || pageQ === 'activity') {
@@ -545,6 +550,44 @@
     persistTheme(next);
   }
 
+  async function loadRunAlias() {
+    runAliasError = '';
+    if (previewMode) {
+      runAlias = localStorage.getItem('dock-run-alias') || '';
+      runAliasDraft = runAlias;
+      return;
+    }
+    try {
+      const value = await invoke<string | null>('run_alias');
+      runAlias = value || '';
+      runAliasDraft = runAlias;
+    } catch (error) {
+      runAliasError = String(error);
+    }
+  }
+
+  async function saveRunAlias(event: SubmitEvent) {
+    event.preventDefault();
+    const name = runAliasDraft.trim();
+    runAliasError = '';
+    runAliasHint = '';
+    if (previewMode) {
+      if (name) localStorage.setItem('dock-run-alias', name);
+      else localStorage.removeItem('dock-run-alias');
+      runAlias = name;
+      runAliasHint = name ? `预览：${name} grok 等于 dock run grok` : '已清除别名';
+      return;
+    }
+    try {
+      const value = await invoke<string | null>('set_run_alias', { name });
+      runAlias = value || '';
+      runAliasDraft = runAlias;
+      runAliasHint = runAlias ? `之后在新终端输入 ${runAlias} grok` : '已删除别名';
+    } catch (error) {
+      runAliasError = String(error);
+    }
+  }
+
   function toggleSound(channel: 'completion' | 'attention' | 'failure') {
     if (channel === 'completion') {
       completionSoundEnabled = !completionSoundEnabled;
@@ -962,13 +1005,24 @@
       <div class="panel-body">
       <div class="theme-picker" role="radiogroup" aria-label="外观">
         {#each THEMES as item (item)}
-          <button type="button" role="radio" aria-checked={theme === item} class:active={theme === item} onclick={() => setTheme(item)}>
-            <strong>{THEME_META[item].name}</strong>
-            <small>{THEME_META[item].note}</small>
+          <button type="button" role="radio" aria-checked={theme === item} class:active={theme === item} title={THEME_META[item].note} onclick={() => setTheme(item)}>
+            {THEME_META[item].name}
           </button>
         {/each}
       </div>
       <div class="settings-list">
+        <div class="setting-row alias-row">
+          <span>
+            <strong>启动别名</strong>
+            <small>把 dock run 收成短命令，空则删除</small>
+          </span>
+          <form onsubmit={saveRunAlias}>
+            <input bind:value={runAliasDraft} maxlength="24" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="dr" aria-label="启动别名" />
+            <button type="submit" class="secondary-button">应用</button>
+          </form>
+        </div>
+        {#if runAliasError}<p class="alias-hint error">{runAliasError}</p>
+        {:else if runAliasHint}<p class="alias-hint">{runAliasHint}</p>{/if}
         <button class="setting-row" aria-pressed={completionSoundEnabled} onclick={() => toggleSound('completion')}>
           <span><strong>完成提示音</strong><small>任务正常完成时播放短音</small></span><span class:enabled={completionSoundEnabled} class="switch"><i></i></span>
         </button>

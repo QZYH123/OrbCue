@@ -438,6 +438,32 @@ fn connect_agent(
 }
 
 #[tauri::command]
+fn run_alias() -> Result<Option<String>, String> {
+    #[cfg(windows)]
+    {
+        if let Ok(value) = wsl_session::run_alias() {
+            return Ok(value);
+        }
+    }
+    Ok(agent_activity_dock_connect::current_run_alias())
+}
+
+#[tauri::command]
+fn set_run_alias(name: String) -> Result<Option<String>, String> {
+    let parsed = if name.trim().is_empty() {
+        None
+    } else {
+        Some(agent_activity_dock_connect::validate_run_alias(&name)?)
+    };
+    let local = agent_activity_dock_connect::set_run_alias(parsed.as_deref())?;
+    #[cfg(windows)]
+    {
+        wsl_session::set_run_alias(parsed.as_deref())?;
+    }
+    Ok(local)
+}
+
+#[tauri::command]
 fn disconnect_agent(app: AppHandle, name: String, side: String) -> Result<bool, String> {
     match AgentSide::parse(&side)? {
         AgentSide::Wsl => {
@@ -796,7 +822,9 @@ pub fn run() {
             set_notification_enabled,
             preview_notification,
             highlight_session,
-            activate_attention
+            activate_attention,
+            run_alias,
+            set_run_alias
         ])
         .build(tauri::generate_context!())
         .expect("error while building Agent Activity Dock")

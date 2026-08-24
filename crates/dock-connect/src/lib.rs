@@ -4,10 +4,15 @@
 //! user-level wrappers/hooks. It never replaces an Agent executable.
 
 mod discover;
+mod run_alias;
 
 pub use discover::{
     agent_origin, choose_discovered, parse_login_path_output, probe_login_path,
     InventorySnapshotCache, ProbeOutput, LOGIN_PATH_END, LOGIN_PATH_START,
+};
+pub use run_alias::{
+    current as current_run_alias, set as set_run_alias, validate as validate_run_alias,
+    view_err as run_alias_err, view_ok as run_alias_ok, AliasView,
 };
 
 use serde::{Deserialize, Serialize};
