@@ -17,8 +17,9 @@ pub use jump::{
     TERMINAL_PROCESS_NAMES, TERMINAL_WINDOW_CLASSES,
 };
 pub use notify::{
-    dispatch_attention_toast, highlight_key, highlight_target, toast_for_attention,
-    HighlightTarget, NotificationSink, ToastDispatch, ToastSpec,
+    attention_click_followup, attention_jump, dispatch_attention_toast, highlight_key,
+    highlight_target, toast_for_attention, AttentionClickFollowup, AttentionJump, HighlightTarget,
+    NotificationSink, ToastDispatch, ToastSpec,
 };
 
 use serde::{Deserialize, Serialize};

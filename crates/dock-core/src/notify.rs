@@ -79,10 +79,46 @@ pub fn highlight_key(source: &str, session_id: &str) -> String {
     format!("{source}\0{session_id}")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttentionJump {
+    pub source: String,
+    pub session_id: String,
+    pub deep_link: Option<String>,
+    pub terminal_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionClickFollowup {
+    Stay,
+    OpenPanel,
+}
+
+/// Toast click looks up the live session so jump-back can use `dock:` / deep_link.
+/// A vanished session only opens the panel.
+pub fn attention_jump(
+    sessions: &[AttentionJump],
+    source: &str,
+    session_id: &str,
+) -> Option<AttentionJump> {
+    sessions
+        .iter()
+        .find(|session| session.source == source && session.session_id == session_id)
+        .cloned()
+}
+
+pub fn attention_click_followup(focused: bool) -> AttentionClickFollowup {
+    if focused {
+        AttentionClickFollowup::Stay
+    } else {
+        AttentionClickFollowup::OpenPanel
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        dispatch_attention_toast, highlight_target, toast_for_attention, NotificationSink,
+        attention_click_followup, attention_jump, dispatch_attention_toast, highlight_target,
+        toast_for_attention, AttentionClickFollowup, AttentionJump, NotificationSink,
         ToastDispatch, ToastSpec,
     };
     use crate::{Attention, DockEvent, DockState, EventKind, Severity};
@@ -226,5 +262,41 @@ mod tests {
         assert!(highlight_target(Some(""), Some("s1")).is_none());
         assert!(highlight_target(Some("claude"), Some("")).is_none());
         assert!(highlight_target(None, Some("s1")).is_none());
+    }
+
+    fn jump(source: &str, session_id: &str, terminal_id: Option<&str>) -> AttentionJump {
+        AttentionJump {
+            source: source.to_owned(),
+            session_id: session_id.to_owned(),
+            deep_link: None,
+            terminal_id: terminal_id.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn toast_click_jumps_the_matching_session() {
+        let sessions = [
+            jump("codex", "other", None),
+            jump("claude", "s1", Some("dock:ab12cd")),
+        ];
+        assert_eq!(
+            attention_jump(&sessions, "claude", "s1"),
+            Some(jump("claude", "s1", Some("dock:ab12cd")))
+        );
+    }
+
+    #[test]
+    fn toast_click_opens_panel_when_the_session_is_gone() {
+        let sessions = [jump("claude", "s1", Some("dock:ab12cd"))];
+        assert_eq!(attention_jump(&sessions, "claude", "missing"), None);
+    }
+
+    #[test]
+    fn successful_jump_leaves_the_panel_closed() {
+        assert_eq!(attention_click_followup(true), AttentionClickFollowup::Stay);
+        assert_eq!(
+            attention_click_followup(false),
+            AttentionClickFollowup::OpenPanel
+        );
     }
 }

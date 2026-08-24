@@ -7,7 +7,10 @@ mod wsl_session;
 use agent_activity_dock_connect::{
     AgentOrigin, ConnectionManager, ConnectionPreview, ConnectionRecord, DiscoveredAgent,
 };
-use agent_activity_dock_core::{dispatch_attention_toast, highlight_target, ToastDispatch};
+use agent_activity_dock_core::{
+    attention_click_followup, attention_jump, dispatch_attention_toast, highlight_target,
+    AttentionClickFollowup, AttentionJump, ToastDispatch,
+};
 use agent_activity_dock_ipc::{DockBackend, SnapshotView};
 use agent_activity_dock_service::{attach_or_listen, DockSession, SnapshotMessage};
 use focus::FocusResult;
@@ -504,8 +507,53 @@ fn preview_notification(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn highlight_session(source: String, session_id: String, app: AppHandle) {
-    show_panel(&app);
-    if let Some(target) = highlight_target(Some(&source), Some(&session_id)) {
+    open_and_highlight(&app, &source, &session_id);
+}
+
+#[tauri::command]
+fn activate_attention(source: String, session_id: String, app: AppHandle) {
+    activate_attention_session(&app, &source, &session_id);
+}
+
+pub(crate) fn activate_attention_session(app: &AppHandle, source: &str, session_id: &str) {
+    let jump = app.try_state::<AppService>().and_then(|state| {
+        let session = current_session(&state).ok()?;
+        let snapshot = session.snapshot().ok()?;
+        let sessions: Vec<AttentionJump> = snapshot
+            .sessions
+            .iter()
+            .map(|session| AttentionJump {
+                source: session.source.clone(),
+                session_id: session.session_id.clone(),
+                deep_link: session.deep_link.clone(),
+                terminal_id: session.terminal_id.clone(),
+            })
+            .collect();
+        attention_jump(&sessions, source, session_id)
+    });
+    if let Some(jump) = jump {
+        let result = focus::focus_session(
+            &jump.source,
+            &jump.session_id,
+            jump.deep_link,
+            jump.terminal_id,
+            |url| {
+                app.opener()
+                    .open_url(url, None::<&str>)
+                    .map_err(|error| error.to_string())
+            },
+        );
+        if attention_click_followup(result.focused) == AttentionClickFollowup::Stay {
+            hide_panel_window(app);
+            return;
+        }
+    }
+    open_and_highlight(app, source, session_id);
+}
+
+fn open_and_highlight(app: &AppHandle, source: &str, session_id: &str) {
+    show_panel(app);
+    if let Some(target) = highlight_target(Some(source), Some(session_id)) {
         let _ = app.emit("dock:highlight", &target);
     }
 }
@@ -710,7 +758,8 @@ pub fn run() {
             focus_source,
             set_notification_enabled,
             preview_notification,
-            highlight_session
+            highlight_session,
+            activate_attention
         ])
         .build(tauri::generate_context!())
         .expect("error while building Agent Activity Dock")

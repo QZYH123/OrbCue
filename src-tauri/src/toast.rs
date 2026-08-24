@@ -78,13 +78,28 @@ mod windows_toast {
     pub fn show(app: &AppHandle, toast: &ToastSpec) -> Result<(), String> {
         let identifier = app.config().identifier.clone();
         let spec = toast.clone();
-        show_with_fallback(&identifier, |app_id| show_with_app_id(app_id, &spec))
+        let handle = app.clone();
+        show_with_fallback(&identifier, |app_id| {
+            show_with_app_id(app_id, &spec, handle.clone())
+        })
     }
 
-    fn show_with_app_id(app_id: &str, toast: &ToastSpec) -> Result<(), String> {
+    fn show_with_app_id(app_id: &str, toast: &ToastSpec, app: AppHandle) -> Result<(), String> {
+        let source = toast.source.clone();
+        let session_id = toast.session_id.clone();
         tauri_winrt_notification::Toast::new(app_id)
             .title(&toast.title)
             .text1(&toast.body)
+            .on_activated(move |_| {
+                let app = app.clone();
+                let source = source.clone();
+                let session_id = session_id.clone();
+                let dispatched = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    crate::activate_attention_session(&dispatched, &source, &session_id);
+                });
+                Ok(())
+            })
             .show()
             .map_err(|error| error.to_string())
     }
@@ -127,7 +142,10 @@ mod windows_toast {
     fn set_process_aumid(identifier: &str) {
         use windows::core::PCWSTR;
         use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
-        let wide: Vec<u16> = identifier.encode_utf16().chain(std::iter::once(0)).collect();
+        let wide: Vec<u16> = identifier
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         if let Err(error) =
             unsafe { SetCurrentProcessExplicitAppUserModelID(PCWSTR(wide.as_ptr())) }
         {

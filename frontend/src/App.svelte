@@ -15,7 +15,12 @@
   import { ensureNotificationPermission } from './notifications';
   import type { AgentInventory, AgentSide, AuditEntry, ConnectionPreview, DiscoveredAgent, FocusResult, SessionSnapshot, Snapshot, SnapshotMessage } from './types';
   import { emptySnapshot } from './types';
-  import { highlightFromNotificationExtra, sessionHighlightKey } from './highlight';
+  import {
+    highlightFromNotificationExtra,
+    projectGroupKey,
+    revealHighlightedGroup,
+    sessionHighlightKey,
+  } from './highlight';
   import { inventoryHasRows, showDetectingPlaceholder, sideLabel } from './inventory';
   import { clampToWorkArea, shouldHidePanelOnBallDrag } from './placement';
   import { isDockTerminalId, jumpFeedback } from './jumpBack';
@@ -159,6 +164,14 @@
         if (!active || label === 'ball') return;
         page = 'activity';
         highlightedKey = sessionHighlightKey(event.payload.source, event.payload.session_id);
+        const session = snapshot.sessions.find(
+          (item) =>
+            item.source === event.payload.source && item.session_id === event.payload.session_id,
+        );
+        collapsedGroups = revealHighlightedGroup(
+          collapsedGroups,
+          projectGroupKey(session?.project_path),
+        );
       });
       let stopAction: { unregister: () => Promise<void> } = { unregister: async () => {} };
       let stopFocus = () => {};
@@ -167,7 +180,10 @@
           stopAction = await onAction((notification) => {
             const target = highlightFromNotificationExtra(notification.extra);
             if (target) {
-              void invoke('highlight_session', { source: target.source, sessionId: target.session_id });
+              void invoke('activate_attention', {
+                source: target.source,
+                sessionId: target.session_id,
+              });
               return;
             }
             void invoke('open_panel');
