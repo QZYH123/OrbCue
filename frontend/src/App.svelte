@@ -65,12 +65,16 @@
   let highlightedKey = '';
   let autostartEnabled = false;
   let shortcutEnabled = localStorage.getItem('shortcut-enabled') !== 'false';
+  let hideBallBadge = localStorage.getItem('dock-hide-ball-badge') === 'true';
   let theme: DockTheme = initialTheme();
   let runAlias = '';
   let runAliasDraft = '';
   let runAliasHint = '';
   let runAliasError = '';
   const shortcut = 'CommandOrControl+Shift+Space';
+  const BADGE_KEY = 'dock-hide-ball-badge';
+  const BADGE_CHANNEL = 'dock-hide-ball-badge';
+  let badgeChannel: BroadcastChannel | null = null;
   let unsubscribe: (() => void) | undefined;
   let dragging = false;
   let suppressClick = false;
@@ -118,10 +122,23 @@
       })),
   ];
 
+  function listenBadgePref() {
+    if (typeof BroadcastChannel === 'undefined' || badgeChannel) return;
+    badgeChannel = new BroadcastChannel(BADGE_CHANNEL);
+    badgeChannel.onmessage = (event) => {
+      hideBallBadge = event.data === true;
+    };
+    window.addEventListener('storage', (event) => {
+      if (event.key !== BADGE_KEY) return;
+      hideBallBadge = event.newValue === 'true';
+    });
+  }
+
   onMount(() => {
     const unsubTheme = subscribeTheme((next) => {
       theme = next;
     });
+    listenBadgePref();
     void loadRunAlias();
     if (previewMode) {
       const pageQ = new URLSearchParams(window.location.search).get('page');
@@ -550,6 +567,17 @@
     persistTheme(next);
   }
 
+  function toggleHideBallBadge() {
+    hideBallBadge = !hideBallBadge;
+    try {
+      localStorage.setItem(BADGE_KEY, String(hideBallBadge));
+    } catch {
+      /* ignore quota */
+    }
+    listenBadgePref();
+    badgeChannel?.postMessage(hideBallBadge);
+  }
+
   async function loadRunAlias() {
     runAliasError = '';
     if (previewMode) {
@@ -791,7 +819,7 @@
         </span>
       {/if}
     </button>
-    {#if snapshot.pending_mark}<span class="badge mark-{markClass(snapshot.pending_mark)}" aria-label={snapshot.pending_mark}>{snapshot.pending_mark}</span>{/if}
+    {#if snapshot.pending_mark && !hideBallBadge}<span class="badge mark-{markClass(snapshot.pending_mark)}" aria-label={snapshot.pending_mark}>{snapshot.pending_mark}</span>{/if}
   </main>
 {:else}
   <main class="panel tone-{ballKind}" aria-label="Agent Activity Dock 任务列表">
@@ -1023,6 +1051,9 @@
         </div>
         {#if runAliasError}<p class="alias-hint error">{runAliasError}</p>
         {:else if runAliasHint}<p class="alias-hint">{runAliasHint}</p>{/if}
+        <button class="setting-row" aria-pressed={hideBallBadge} onclick={toggleHideBallBadge}>
+          <span><strong>隐藏圆标</strong><small>小球右上角的 ? / ! 不再显示</small></span><span class:enabled={hideBallBadge} class="switch"><i></i></span>
+        </button>
         <button class="setting-row" aria-pressed={completionSoundEnabled} onclick={() => toggleSound('completion')}>
           <span><strong>完成提示音</strong><small>任务正常完成时播放短音</small></span><span class:enabled={completionSoundEnabled} class="switch"><i></i></span>
         </button>
