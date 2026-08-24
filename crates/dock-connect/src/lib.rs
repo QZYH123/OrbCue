@@ -33,6 +33,20 @@ pub enum ConnectionMethod {
     CursorHook,
 }
 
+impl ConnectionMethod {
+    pub fn limitation(self) -> &'static str {
+        match self {
+            Self::Wrapper => "wrapper cannot detect waiting for input",
+            Self::ClaudeHook => "reads Claude structured hook metadata only",
+            Self::GrokHook => "reads Grok Build structured hook metadata only",
+            Self::CodexHook => "reads Codex structured hook metadata only",
+            Self::CursorHook => "Cursor CLI 若漏发 stop，会停在工作中直到进程退出",
+        }
+    }
+}
+
+const NATIVE_NOTIFY_NOTE: &str = "该 Agent 自己也可能弹系统通知；Dock 的通知可在设置里关掉";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectionRecord {
     pub name: String,
@@ -178,7 +192,14 @@ impl ConnectionManager {
     }
 
     pub fn records(&self) -> Vec<ConnectionRecord> {
-        self.load().agents.into_values().collect()
+        self.load()
+            .agents
+            .into_values()
+            .map(|mut record| {
+                record.limitation = record.method.limitation().to_owned();
+                record
+            })
+            .collect()
     }
 
     pub fn preview(&self, name: &str, original: &Path) -> Result<ConnectionPreview, String> {
@@ -258,7 +279,7 @@ impl ConnectionManager {
                     hook_script: None,
                     settings_backup: None,
                     capabilities: vec!["started".into(), "completed".into(), "failed".into()],
-                    limitation: "wrapper cannot detect waiting for input".into(),
+                    limitation: method.limitation().to_owned(),
                     installed_at: now_string(),
                 }
             }
@@ -277,7 +298,7 @@ impl ConnectionManager {
                         "completed".into(),
                         "failed".into(),
                     ],
-                    limitation: "reads Claude structured hook metadata only".into(),
+                    limitation: method.limitation().to_owned(),
                     installed_at: now_string(),
                 }
             }
@@ -297,7 +318,7 @@ impl ConnectionManager {
                         "failed".into(),
                         "cancelled".into(),
                     ],
-                    limitation: "reads Grok Build structured hook metadata only".into(),
+                    limitation: method.limitation().to_owned(),
                     installed_at: now_string(),
                 }
             }
@@ -316,7 +337,7 @@ impl ConnectionManager {
                         "completed".into(),
                         "failed".into(),
                     ],
-                    limitation: "reads Codex structured hook metadata only".into(),
+                    limitation: method.limitation().to_owned(),
                     installed_at: now_string(),
                 }
             }
@@ -336,7 +357,7 @@ impl ConnectionManager {
                         "failed".into(),
                         "cancelled".into(),
                     ],
-                    limitation: "reads Cursor structured hook metadata only".into(),
+                    limitation: method.limitation().to_owned(),
                     installed_at: now_string(),
                 }
             }
@@ -1057,12 +1078,20 @@ fn preview_action(path: &Path) -> PreviewAction {
 
 fn preview_notes(method: ConnectionMethod) -> Vec<String> {
     match method {
-        ConnectionMethod::ClaudeHook => vec!["首次修改前备份 settings.json".to_owned()],
+        ConnectionMethod::ClaudeHook => vec![
+            "首次修改前备份 settings.json".to_owned(),
+            NATIVE_NOTIFY_NOTE.to_owned(),
+        ],
         ConnectionMethod::CodexHook => vec![
             "首次修改前备份 hooks.json".to_owned(),
             "Codex 可能要求在 /hooks 里信任新命令".to_owned(),
+            NATIVE_NOTIFY_NOTE.to_owned(),
         ],
-        ConnectionMethod::CursorHook => vec!["首次修改前备份 hooks.json".to_owned()],
+        ConnectionMethod::CursorHook => vec![
+            "首次修改前备份 hooks.json".to_owned(),
+            ConnectionMethod::CursorHook.limitation().to_owned(),
+            NATIVE_NOTIFY_NOTE.to_owned(),
+        ],
         ConnectionMethod::Wrapper | ConnectionMethod::GrokHook => Vec::new(),
     }
 }

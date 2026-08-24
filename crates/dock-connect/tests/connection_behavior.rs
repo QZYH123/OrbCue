@@ -716,3 +716,70 @@ fn reconnecting_codex_replaces_an_old_wrapper() {
     });
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn cursor_preview_and_listing_admit_missing_stop() {
+    let root = temp_root();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let original = root.join("cursor-agent");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        home,
+        root.join("config"),
+        root.join("data"),
+        root.join("dock"),
+    );
+    let preview = manager.preview("cursor", &original).unwrap();
+    assert!(preview
+        .notes
+        .iter()
+        .any(|note| note.contains("漏发 stop") && note.contains("工作中")));
+    assert!(preview
+        .notes
+        .iter()
+        .any(|note| note.contains("系统通知") && note.contains("设置")));
+    let record = manager.connect("cursor", &original).unwrap();
+    assert!(record.limitation.contains("漏发 stop"));
+    assert_eq!(
+        manager.records()[0].limitation,
+        ConnectionMethod::CursorHook.limitation()
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn claude_and_codex_preview_mention_native_toasts() {
+    let root = temp_root();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let claude = root.join("claude");
+    let codex = root.join("codex");
+    executable(&claude, "#!/bin/sh\nexit 0\n");
+    executable(&codex, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        home,
+        root.join("config"),
+        root.join("data"),
+        root.join("dock"),
+    );
+    let _guard = lock_env();
+    let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
+    std::env::set_var("CLAUDE_CONFIG_DIR", root.join("claude-config"));
+    for (name, original) in [("claude", claude.as_path()), ("codex", codex.as_path())] {
+        let preview = manager.preview(name, original).unwrap();
+        assert!(
+            preview
+                .notes
+                .iter()
+                .any(|note| note.contains("系统通知") && note.contains("设置")),
+            "{name} preview notes: {:?}",
+            preview.notes
+        );
+    }
+    match previous {
+        Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
+        None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+    }
+    fs::remove_dir_all(root).unwrap();
+}
