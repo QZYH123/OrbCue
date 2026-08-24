@@ -1,6 +1,7 @@
 mod focus;
 mod region;
 mod toast;
+mod tray;
 #[cfg(windows)]
 mod wsl_session;
 
@@ -36,6 +37,9 @@ static NOTIFICATIONS_ENABLED: AtomicBool = AtomicBool::new(true);
 static NOTIFICATION_FAIL_LOGGED: AtomicBool = AtomicBool::new(false);
 static INVENTORY_CACHE: Mutex<Option<AgentInventory>> = Mutex::new(None);
 static INVENTORY_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static BALL_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+struct TrayBallItem(tauri::menu::MenuItem<tauri::Wry>);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -604,6 +608,39 @@ fn hide_panel_window(app: &AppHandle) {
     }
 }
 
+fn toggle_ball_visibility(app: &AppHandle) {
+    if BALL_HIDDEN.load(Ordering::Relaxed) {
+        show_ball_window(app);
+    } else {
+        hide_ball_window(app);
+    }
+}
+
+fn hide_ball_window(app: &AppHandle) {
+    BALL_HIDDEN.store(true, Ordering::Relaxed);
+    if let Some(ball) = app.get_webview_window("ball") {
+        let _ = ball.hide();
+    }
+    hide_panel_window(app);
+    refresh_tray_ball_label(app);
+}
+
+fn show_ball_window(app: &AppHandle) {
+    BALL_HIDDEN.store(false, Ordering::Relaxed);
+    if let Some(ball) = app.get_webview_window("ball") {
+        let _ = ball.show();
+    }
+    refresh_tray_ball_label(app);
+}
+
+fn refresh_tray_ball_label(app: &AppHandle) {
+    if let Some(item) = app.try_state::<TrayBallItem>() {
+        let _ = item
+            .0
+            .set_text(tray::ball_toggle_label(BALL_HIDDEN.load(Ordering::Relaxed)));
+    }
+}
+
 fn start_local_session() -> (
     Arc<dyn PresenterSession>,
     mpsc::Receiver<SnapshotMessage>,
@@ -820,6 +857,19 @@ pub fn run() {
 }
 
 fn install_tray(app: &mut tauri::App) {
+    let toggle = match MenuItem::with_id(
+        app,
+        "toggle-ball",
+        tray::ball_toggle_label(false),
+        true,
+        None::<&str>,
+    ) {
+        Ok(item) => item,
+        Err(error) => {
+            eprintln!("Agent Activity Dock tray is unavailable: {error}");
+            return;
+        }
+    };
     let show = match MenuItem::with_id(app, "show", "打开 Dock", true, None::<&str>) {
         Ok(item) => item,
         Err(error) => {
@@ -834,17 +884,19 @@ fn install_tray(app: &mut tauri::App) {
             return;
         }
     };
-    let menu = match Menu::with_items(app, &[&show, &quit]) {
+    let menu = match Menu::with_items(app, &[&toggle, &show, &quit]) {
         Ok(menu) => menu,
         Err(error) => {
             eprintln!("Agent Activity Dock tray is unavailable: {error}");
             return;
         }
     };
+    app.manage(TrayBallItem(toggle));
     let mut builder = TrayIconBuilder::new()
         .menu(&menu)
         .tooltip("Agent Activity Dock")
         .on_menu_event(|app, event| match event.id().as_ref() {
+            "toggle-ball" => toggle_ball_visibility(app),
             "show" => show_panel(app),
             "quit" => app.exit(0),
             _ => {}
