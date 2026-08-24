@@ -59,7 +59,7 @@ pub fn grok_hook(payload: &Value) -> Option<DockEvent> {
         "session_end" => EventKind::Closed,
         "notification" => match notification_type(payload)? {
             "permission_prompt" => EventKind::PermissionRequested,
-            "idle_prompt" | "task_complete" => EventKind::Completed,
+            "idle_prompt" => EventKind::Completed,
             _ => return None,
         },
         _ => return None,
@@ -131,7 +131,7 @@ fn lifecycle_kind(event_name: &str, payload: &Value) -> Option<EventKind> {
         "notification" => match notification_type(payload)? {
             "permission_prompt" | "permission" => Some(EventKind::PermissionRequested),
             "agent_needs_input" => Some(EventKind::WaitingInput),
-            "idle_prompt" | "task_complete" | "agent_completed" => Some(EventKind::Completed),
+            "idle_prompt" => Some(EventKind::Completed),
             _ => None,
         },
         "subagent_stop" => None,

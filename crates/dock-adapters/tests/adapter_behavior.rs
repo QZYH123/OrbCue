@@ -56,6 +56,40 @@ fn claude_adapter_follows_turn_lifecycle() {
     .unwrap();
     assert_eq!(nested.kind, EventKind::Working);
 
+    let running_shell = claude_hook(&serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "claude-session",
+        "background_tasks": [{"id": "t1", "type": "shell", "status": "running"}]
+    }))
+    .unwrap();
+    assert_eq!(running_shell.kind, EventKind::Completed);
+
+    assert!(claude_hook(&serde_json::json!({
+        "hook_event_name": "Notification",
+        "session_id": "claude-session",
+        "notification_type": "task_complete"
+    }))
+    .is_none());
+    assert!(claude_hook(&serde_json::json!({
+        "hook_event_name": "Notification",
+        "session_id": "claude-session",
+        "notification_type": "agent_completed"
+    }))
+    .is_none());
+    assert!(claude_hook(&serde_json::json!({
+        "hook_event_name": "TaskCompleted",
+        "session_id": "claude-session"
+    }))
+    .is_none());
+
+    let idle_prompt = claude_hook(&serde_json::json!({
+        "hook_event_name": "Notification",
+        "session_id": "claude-session",
+        "notification_type": "idle_prompt"
+    }))
+    .unwrap();
+    assert_eq!(idle_prompt.kind, EventKind::Completed);
+
     let ended = claude_hook(&serde_json::json!({
         "hook_event_name": "SessionEnd",
         "session_id": "claude-session"
@@ -185,6 +219,47 @@ fn grok_adapter_keeps_one_record_per_session() {
     }))
     .unwrap();
     assert_eq!(hanging_service.kind, EventKind::Completed);
+
+    let running_shell = grok_hook(&serde_json::json!({
+        "hookEventName": "stop",
+        "sessionId": "grok-session",
+        "reason": "end_turn",
+        "backgroundTasks": [{"id": "t1", "type": "shell", "status": "running"}]
+    }))
+    .unwrap();
+    assert_eq!(running_shell.kind, EventKind::Completed);
+
+    assert!(grok_hook(&serde_json::json!({
+        "hookEventName": "notification",
+        "sessionId": "grok-session",
+        "notificationType": "task_complete"
+    }))
+    .is_none());
+
+    let wake_prompt = grok_hook(&serde_json::json!({
+        "hookEventName": "user_prompt_submit",
+        "sessionId": "grok-session",
+        "promptId": "task-completed-t1"
+    }))
+    .unwrap();
+    assert_eq!(wake_prompt.kind, EventKind::Working);
+
+    let settled = grok_hook(&serde_json::json!({
+        "hookEventName": "notification",
+        "sessionId": "grok-session",
+        "notificationType": "idle_prompt"
+    }))
+    .unwrap();
+    assert_eq!(settled.kind, EventKind::Completed);
+
+    let finished_shell = grok_hook(&serde_json::json!({
+        "hookEventName": "stop",
+        "sessionId": "grok-session",
+        "reason": "end_turn",
+        "backgroundTasks": [{"id": "t1", "type": "shell", "status": "completed"}]
+    }))
+    .unwrap();
+    assert_eq!(finished_shell.kind, EventKind::Completed);
 
     let nested = grok_hook(&serde_json::json!({
         "hookEventName": "stop",
@@ -337,6 +412,14 @@ fn codex_hook_follows_claude_turn_lifecycle() {
     }))
     .unwrap();
     assert_eq!(hanging.kind, EventKind::Completed);
+
+    let running_shell = codex_hook(&serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "codex-session",
+        "background_tasks": [{"id": "t1", "type": "shell", "status": "running"}]
+    }))
+    .unwrap();
+    assert_eq!(running_shell.kind, EventKind::Completed);
 
     let ended = codex_hook(&serde_json::json!({
         "hook_event_name": "SessionEnd",
