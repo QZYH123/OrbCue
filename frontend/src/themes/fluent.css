@@ -44,8 +44,9 @@ html.preview {
 html.preview body { display: grid; place-items: center; }
 html.preview #app { width: 300px; height: 400px; }
 html.preview.preview-ball #app { width: 56px; height: 56px; }
+html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 
-/* 56px window; OS region may still be elliptic. No shadow outside the tile. */
+/* 56px window; OS region is a circle. Keep the tile and badge inside it. */
 .ball-shell {
   position: relative;
   width: 100%;
@@ -59,12 +60,12 @@ html.preview.preview-ball #app { width: 56px; height: 56px; }
   position: relative;
   display: grid;
   place-items: center;
-  width: 50px;
-  height: 50px;
+  width: 48px;
+  height: 48px;
   padding: 0;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, .08);
-  border-radius: 18px;
+  border-radius: 16px;
   color: #fff;
   background:
     linear-gradient(180deg, rgba(120, 158, 196, .14), transparent 44%),
@@ -151,18 +152,18 @@ html.preview.preview-ball #app { width: 56px; height: 56px; }
 
 .badge {
   position: absolute;
-  right: 3px;
-  top: 3px;
+  right: 9px;
+  top: 9px;
   z-index: 2;
-  width: 14px;
-  height: 14px;
+  width: 11px;
+  height: 11px;
   display: grid;
   place-items: center;
   border: 1px solid rgba(32, 32, 32, .7);
-  border-radius: 4px;
+  border-radius: 3px;
   color: #1a1200;
   background: var(--wait);
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 600;
   line-height: 1;
   pointer-events: none;

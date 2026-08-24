@@ -43,8 +43,8 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 }
 .ball {
   position: relative;
-  width: 56px;
-  height: 56px;
+  width: 52px;
+  height: 52px;
   padding: 0;
   overflow: hidden;
   display: grid;
@@ -53,6 +53,8 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   border-radius: 50%;
   color: #fff;
   background: #000;
+  -webkit-mask-image: radial-gradient(circle closest-side at 50% 50%, #000 96%, transparent 100%);
+          mask-image: radial-gradient(circle closest-side at 50% 50%, #000 96%, transparent 100%);
   cursor: grab;
   touch-action: none;
 }
