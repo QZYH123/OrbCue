@@ -200,10 +200,10 @@ fn grok_connect_writes_a_revocable_hook_file() {
     let document = fs::read_to_string(&hooks).unwrap();
     assert!(document.contains("SessionStart"));
     assert!(document.contains("UserPromptSubmit"));
-    assert!(document.contains("PreToolUse"));
-    assert!(document.contains("PostToolUse"));
-    assert!(document.contains("PostToolUseFailure"));
+    assert!(document.contains("\"Stop\""));
     assert!(document.contains("SessionEnd"));
+    assert!(!document.contains("PreToolUse"));
+    assert!(!document.contains("PostToolUse"));
     assert!(document.contains("agent-activity-dock"));
     assert!(document.contains("grok-hook"));
     let script = fs::read_to_string(
@@ -429,9 +429,9 @@ fn claude_preview_notes_backup_and_disconnect_keeps_other_hooks() {
     let connected = fs::read_to_string(&settings).unwrap();
     assert!(connected.contains("SessionStart"));
     assert!(connected.contains("UserPromptSubmit"));
-    assert!(connected.contains("PreToolUse"));
-    assert!(connected.contains("PostToolUse"));
     assert!(connected.contains("\"Stop\""));
+    assert!(!connected.contains("PreToolUse"));
+    assert!(!connected.contains("PostToolUse"));
     assert!(connected.contains("user-hook"));
     fs::write(
         &settings,
@@ -586,9 +586,9 @@ fn codex_connect_merges_hooks_json_and_keeps_other_hooks() {
     let connected = fs::read_to_string(&hooks).unwrap();
     assert!(connected.contains("SessionStart"));
     assert!(connected.contains("UserPromptSubmit"));
-    assert!(connected.contains("PreToolUse"));
     assert!(connected.contains("\"Stop\""));
     assert!(connected.contains("SessionEnd"));
+    assert!(!connected.contains("PreToolUse"));
     assert!(connected.contains("user-hook"));
     assert!(connected.contains("codex-hook"));
     let script = fs::read_to_string(
@@ -637,7 +637,7 @@ fn cursor_connect_writes_camelcase_hooks_and_keeps_other_hooks() {
     assert!(connected.contains("\"version\": 1") || connected.contains("\"version\":1"));
     assert!(connected.contains("sessionStart"));
     assert!(connected.contains("beforeSubmitPrompt"));
-    assert!(connected.contains("preToolUse"));
+    assert!(!connected.contains("preToolUse"));
     assert!(connected.contains("afterAgentResponse"));
     assert!(connected.contains("\"stop\""));
     assert!(connected.contains("sessionEnd"));

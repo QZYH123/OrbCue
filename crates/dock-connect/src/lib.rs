@@ -890,6 +890,7 @@ fn install_nested_hooks_at(
             }]
         }));
     }
+    strip_unwanted_dock_hooks(hooks, events, hook);
     let backup = existing.map(|bytes| {
         let backup = settings_path.with_file_name(backup_name);
         (backup, bytes)
@@ -979,6 +980,7 @@ fn install_cursor_hooks_at(hooks_path: &Path, hook: &Path) -> Result<Option<Path
         }
         entries.push(Value::Object(entry));
     }
+    strip_unwanted_dock_hooks(hooks, &cursor_hook_events(), hook);
     let backup = existing.map(|bytes| {
         let backup = hooks_path.with_file_name("hooks.json.agent-activity-dock.bak");
         (backup, bytes)
@@ -1065,6 +1067,25 @@ fn preview_notes(method: ConnectionMethod) -> Vec<String> {
     }
 }
 
+fn strip_unwanted_dock_hooks(
+    hooks: &mut serde_json::Map<String, Value>,
+    wanted: &[String],
+    hook: &Path,
+) {
+    for (name, entries) in hooks.iter_mut() {
+        if wanted.iter().any(|event| event == name) {
+            continue;
+        }
+        if let Some(entries) = entries.as_array_mut() {
+            entries.retain(|entry| !is_dock_managed_hook(entry, hook));
+        }
+    }
+    hooks.retain(|_, value| match value.as_array() {
+        Some(entries) => !entries.is_empty(),
+        None => true,
+    });
+}
+
 fn is_dock_managed_hook(entry: &Value, hook: &Path) -> bool {
     let text = entry.to_string();
     let hook = hook.to_string_lossy();
@@ -1089,9 +1110,6 @@ fn claude_hook_events() -> Vec<String> {
     [
         "SessionStart",
         "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "PostToolUseFailure",
         "PermissionRequest",
         "Notification",
         "Stop",
@@ -1107,9 +1125,6 @@ fn grok_hook_events() -> Vec<String> {
     [
         "SessionStart",
         "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "PostToolUseFailure",
         "Notification",
         "Stop",
         "StopFailure",
@@ -1125,8 +1140,6 @@ fn codex_hook_events() -> Vec<String> {
     [
         "SessionStart",
         "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
         "PermissionRequest",
         "Stop",
         "SessionEnd",
@@ -1140,13 +1153,6 @@ fn cursor_hook_events() -> Vec<String> {
     [
         "sessionStart",
         "beforeSubmitPrompt",
-        "preToolUse",
-        "postToolUse",
-        "beforeShellExecution",
-        "afterShellExecution",
-        "beforeMCPExecution",
-        "afterMCPExecution",
-        "afterAgentThought",
         "afterAgentResponse",
         "stop",
         "sessionEnd",
@@ -1411,6 +1417,32 @@ mod tests {
 
         uninstall_claude_settings_at(&settings, &hook).unwrap();
         assert!(!String::from_utf8_lossy(&fs::read(&settings).unwrap()).contains("claude-hook.sh"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reconnect_drops_legacy_tool_hooks() {
+        let root = temp_root();
+        let settings = root.join("settings.json");
+        let hook = root.join("claude-hook.sh");
+        fs::write(
+            &settings,
+            br#"{
+              "hooks": {
+                "PreToolUse": [{"hooks":[{"type":"command","command":"/tmp/claude-hook.sh"}]}],
+                "PostToolUse": [{"hooks":[{"type":"command","command":"user-hook"}]}],
+                "UserPromptSubmit": [{"hooks":[{"type":"command","command":"user-hook"}]}]
+              }
+            }"#,
+        )
+        .unwrap();
+        install_claude_settings_at(&settings, &hook).unwrap();
+        let connected = fs::read_to_string(&settings).unwrap();
+        assert!(!connected.contains("PreToolUse"));
+        assert!(connected.contains("PostToolUse"));
+        assert!(connected.contains("UserPromptSubmit"));
+        assert!(connected.contains("user-hook"));
+        assert!(connected.contains("claude-hook.sh"));
         fs::remove_dir_all(root).unwrap();
     }
 

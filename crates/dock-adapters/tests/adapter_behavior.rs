@@ -34,13 +34,12 @@ fn claude_adapter_follows_turn_lifecycle() {
     .unwrap();
     assert_eq!(prompt.kind, EventKind::Working);
 
-    let tool = claude_hook(&serde_json::json!({
+    assert!(claude_hook(&serde_json::json!({
         "hook_event_name": "PostToolUse",
         "session_id": "claude-session",
         "tool_name": "Read"
     }))
-    .unwrap();
-    assert_eq!(tool.kind, EventKind::Working);
+    .is_none());
 
     let stop = claude_hook(&serde_json::json!({
         "hook_event_name": "Stop",
@@ -94,7 +93,7 @@ fn claude_subagent_clues_fill_parent_when_present() {
 #[test]
 fn claude_unknown_subagent_shape_stays_a_main_session() {
     let event = claude_hook(&serde_json::json!({
-        "hook_event_name": "PreToolUse",
+        "hook_event_name": "UserPromptSubmit",
         "session_id": "main-1",
         "subagentType": "explore"
     }))
@@ -160,14 +159,13 @@ fn grok_adapter_keeps_one_record_per_session() {
     assert_eq!(permission.kind, EventKind::PermissionRequested);
     assert_eq!(permission.session_id, "grok-session");
 
-    let tool = grok_hook(&serde_json::json!({
+    assert!(grok_hook(&serde_json::json!({
         "hookEventName": "pre_tool_use",
         "sessionId": "grok-session",
         "promptId": "turn-1",
         "toolName": "read_file"
     }))
-    .unwrap();
-    assert_eq!(tool.kind, EventKind::Working);
+    .is_none());
 
     let idle = grok_hook(&serde_json::json!({
         "hookEventName": "stop",
@@ -206,12 +204,11 @@ fn grok_adapter_keeps_one_record_per_session() {
     .unwrap();
     assert_eq!(finished_subagent.kind, EventKind::Completed);
 
-    let tool_failed = grok_hook(&serde_json::json!({
+    assert!(grok_hook(&serde_json::json!({
         "hookEventName": "PostToolUseFailure",
         "sessionId": "grok-session"
     }))
-    .unwrap();
-    assert_eq!(tool_failed.kind, EventKind::Working);
+    .is_none());
 
     let ended = grok_hook(&serde_json::json!({
         "hookEventName": "session_end",
@@ -312,12 +309,11 @@ fn codex_hook_follows_claude_turn_lifecycle() {
     .unwrap();
     assert_eq!(prompt.kind, EventKind::Working);
 
-    let tool = codex_hook(&serde_json::json!({
+    assert!(codex_hook(&serde_json::json!({
         "hook_event_name": "PreToolUse",
         "session_id": "codex-session"
     }))
-    .unwrap();
-    assert_eq!(tool.kind, EventKind::Working);
+    .is_none());
 
     let stop = codex_hook(&serde_json::json!({
         "hook_event_name": "Stop",
@@ -381,19 +377,17 @@ fn cursor_hook_follows_turn_lifecycle_with_conversation_id() {
     .unwrap();
     assert_eq!(prompt.kind, EventKind::Working);
 
-    let shell = cursor_hook(&serde_json::json!({
+    assert!(cursor_hook(&serde_json::json!({
         "hook_event_name": "beforeShellExecution",
         "conversation_id": "cursor-session"
     }))
-    .unwrap();
-    assert_eq!(shell.kind, EventKind::Working);
+    .is_none());
 
-    let thought = cursor_hook(&serde_json::json!({
+    assert!(cursor_hook(&serde_json::json!({
         "hook_event_name": "afterAgentThought",
         "conversation_id": "cursor-session"
     }))
-    .unwrap();
-    assert_eq!(thought.kind, EventKind::Working);
+    .is_none());
 
     let reply = cursor_hook(&serde_json::json!({
         "hook_event_name": "afterAgentResponse",

@@ -135,10 +135,10 @@ dock reset --source claude --session-id session-123
 
 | source | 输入 | 能力 |
 | --- | --- | --- |
-| Claude | 结构化 hook payload | idle、working、permission、waiting、completed、failed、closed；`UserPromptSubmit`/`PreToolUse`/`PostToolUse` 标工作中；`Stop` 在仍有 background subagent 时保持 working，否则已完成；`SessionEnd` 为关闭（不是已完成）；带 parent 线索的子代理 permission/failed 可折叠，否则丢弃。hook 是观察者，投递失败必须 exit 0 |
-| Codex | 结构化 hook payload，notification 仅作回退 | 与 Claude 同一套回合生命周期；`SessionStart`→idle，`UserPromptSubmit`/`PreToolUse`/`PostToolUse`→working，`Stop` 在仍有 background subagent 时保持 working，否则已完成，`SessionEnd`→closed。无 `hook_event_name` 时仍接受旧 notification。hook 是观察者，投递失败必须 exit 0 |
-| Cursor | 结构化 hook payload（`conversation_id` 可当 session） | 与 Claude 同一套回合生命周期；`sessionStart`→idle，`beforeSubmitPrompt`/工具事件/`afterAgentThought`→working，`afterAgentResponse`/`stop`→已完成（`status=error`→failed，`aborted`→cancelled），`sessionEnd`→closed。Cursor CLI 若漏发 stop，会话会停在 working 直到进程被 liveness 回收。hook 是观察者，投递失败必须 exit 0 |
+| Claude | 结构化 hook payload | idle、working、permission、waiting、completed、failed、closed；`UserPromptSubmit` 标工作中；`Stop` 在仍有 background subagent 时保持 working，否则已完成；`SessionEnd` 为关闭（不是已完成）；带 parent 线索的子代理 permission/failed 可折叠，否则丢弃。不订阅 Pre/Post tool。hook 是观察者，投递失败必须 exit 0 |
+| Codex | 结构化 hook payload，notification 仅作回退 | 与 Claude 同一套回合生命周期；`SessionStart`→idle，`UserPromptSubmit`→working，`Stop` 在仍有 background subagent 时保持 working，否则已完成，`SessionEnd`→closed。无 `hook_event_name` 时仍接受旧 notification。不订阅 Pre/Post tool。hook 是观察者，投递失败必须 exit 0 |
+| Cursor | 结构化 hook payload（`conversation_id` 可当 session） | 与 Claude 同一套回合生命周期；`sessionStart`→idle，`beforeSubmitPrompt`→working，`afterAgentResponse`/`stop`→已完成（`status=error`→failed，`aborted`→cancelled），`sessionEnd`→closed。不订阅 tool/shell/MCP/thought。Cursor CLI 若漏发 stop，会话会停在 working 直到进程被 liveness 回收。hook 是观察者，投递失败必须 exit 0 |
 | DSH | `session.*` projection payload | working、waiting、completed、failed、cancelled；payload 带 parent 线索时填 `parent_session_id` |
-| Grok | 结构化 hook payload | idle、working、permission、completed、failed、closed；`PreToolUse`/`PostToolUse`/`PostToolUseFailure` 标回工作中；`Stop end_turn` 仅在仍有 **status 为 running 的** background subagent 时保持 working，shell/monitor 挂起、已结束的 subagent 与空任务视为已完成；`Notification idle_prompt`/`task_complete` 同样已完成；带 `subagentType` 的 payload 仍丢弃。hook 是观察者：投递失败必须 exit 0，不得把 Grok `Stop` 变成闸门。生成的 hook 脚本必须 `exec dock`，否则 liveness 会把短命 hook 壳当成 agent，约 15s 后误发 `session.closed` |
+| Grok | 结构化 hook payload | idle、working、permission、completed、failed、closed；`UserPromptSubmit` 标工作中；`Stop end_turn` 仅在仍有 **status 为 running 的** background subagent 时保持 working，shell/monitor 挂起、已结束的 subagent 与空任务视为已完成；`Notification idle_prompt`/`task_complete` 同样已完成；带 `subagentType` 的 payload 仍丢弃。不订阅 Pre/Post tool。hook 是观察者：投递失败必须 exit 0，不得把 Grok `Stop` 变成闸门。生成的 hook 脚本必须 `exec dock`，否则 liveness 会把短命 hook 壳当成 agent，约 15s 后误发 `session.closed` |
 
 适配器只读取结构化 stdin。即使 payload 含有 `transcript_path`，也不会打开、保存或转发该路径。

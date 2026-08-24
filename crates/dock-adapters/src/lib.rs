@@ -47,9 +47,7 @@ pub fn grok_hook(payload: &Value) -> Option<DockEvent> {
         .map(normalize_hook_event)?;
     let kind = match event_name.as_str() {
         "session_start" => EventKind::Idle,
-        "user_prompt_submit" | "pre_tool_use" | "post_tool_use" | "post_tool_use_failure" => {
-            EventKind::Working
-        }
+        "user_prompt_submit" => EventKind::Working,
         "stop" => match payload.get("reason").and_then(Value::as_str).unwrap_or("") {
             "channel_closed" | "shutdown" => EventKind::Closed,
             "end_turn" | "" if stop_has_active_subagent(payload) => EventKind::Working,
@@ -123,17 +121,9 @@ fn extract_session_id(payload: &Value) -> Option<&str> {
 fn lifecycle_kind(event_name: &str, payload: &Value) -> Option<EventKind> {
     match event_name {
         "session_start" => Some(EventKind::Idle),
-        "user_prompt_submit"
-        | "before_submit_prompt"
-        | "pre_tool_use"
-        | "post_tool_use"
-        | "post_tool_use_failure"
-        | "subagent_start"
-        | "before_shell_execution"
-        | "after_shell_execution"
-        | "before_mcp_execution"
-        | "after_mcp_execution"
-        | "after_agent_thought" => Some(EventKind::Working),
+        "user_prompt_submit" | "before_submit_prompt" | "subagent_start" => {
+            Some(EventKind::Working)
+        }
         "permission_request" => Some(EventKind::PermissionRequested),
         "stop" | "after_agent_response" => Some(stop_kind(payload)),
         "stop_failure" => Some(EventKind::Failed),
