@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CONNECTIONS_INTRO,
+  EMPTY_TRACKING_HINT,
   isDockTerminalId,
   JUMP_WINDOW_LEVEL,
   JUMP_WINDOW_MISSING,
@@ -42,5 +44,13 @@ describe('jumpFeedback', () => {
     expect(
       jumpFeedback({ focused: false, precise: false, reason: '该标签已关闭' }),
     ).toEqual({ kind: 'error', text: '该标签已关闭' });
+  });
+});
+
+describe('dock run copy', () => {
+  it('recommends dock run on empty activity and the connections page', () => {
+    expect(EMPTY_TRACKING_HINT).toContain('dock run');
+    expect(CONNECTIONS_INTRO).toContain('dock run');
+    expect(JUMP_WINDOW_MISSING).toContain('dock run');
   });
 });

@@ -23,7 +23,7 @@
   } from './highlight';
   import { inventoryHasRows, showDetectingPlaceholder, sideLabel } from './inventory';
   import { clampToWorkArea, shouldHidePanelOnBallDrag } from './placement';
-  import { isDockTerminalId, jumpFeedback } from './jumpBack';
+  import { CONNECTIONS_INTRO, EMPTY_TRACKING_HINT, isDockTerminalId, jumpFeedback } from './jumpBack';
   import { applyPreviewDocument, demoInventory, demoSnapshot, previewLabel, tauriAvailable } from './preview';
   import {
     auditProjectLabel,
@@ -715,7 +715,7 @@
       <div class="panel-body">
       <div class="sessions">
         {#if visibleSessions.length === 0}
-          <div class="empty"><span>✓</span><p>{filter === 'all' ? '还没有追踪中的任务' : '没有符合条件的任务'}</p><small>Agent 发出事件后会显示在这里</small></div>
+          <div class="empty"><span>✓</span><p>{filter === 'all' ? '还没有追踪中的任务' : '没有符合条件的任务'}</p><small>{EMPTY_TRACKING_HINT}</small></div>
         {:else}
           {#each sessionGroups as group (group.key)}
             <section class="project-group">
@@ -805,7 +805,7 @@
       </div>
       </div>
     {:else if page === 'connections'}
-      <p class="section-intro">只连接本机已有的 Agent。Dock 不会下载、替换或读取它们的工作内容。</p>
+      <p class="section-intro">{CONNECTIONS_INTRO}</p>
       {#if !onboardingComplete}
         <div class="onboarding-banner">
           <strong>先连接一个已有的 Agent</strong>
