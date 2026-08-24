@@ -53,8 +53,6 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   border-radius: 50%;
   color: #fff;
   background: #000;
-  -webkit-mask-image: radial-gradient(circle closest-side at 50% 50%, #000 96%, transparent 100%);
-          mask-image: radial-gradient(circle closest-side at 50% 50%, #000 96%, transparent 100%);
   cursor: grab;
   touch-action: none;
 }
@@ -119,6 +117,30 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   pointer-events: none;
 }
 .ball .count-work { font-size: 15px; font-weight: 600; letter-spacing: -.04em; }
+
+.badge {
+  position: absolute;
+  right: 7px;
+  top: 7px;
+  z-index: 2;
+  width: 12px;
+  height: 12px;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid #000;
+  border-radius: 99px;
+  color: #1a1200;
+  background: var(--wait);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+.badge.mark-idle,
+.badge.mark-cancel { color: #eee; background: #555; }
+.badge.mark-done { color: #000; background: #fff; }
+.badge.mark-wait { color: #1a1200; background: var(--wait); }
+.badge.mark-fail { color: #fff; background: var(--fail); }
 .ball .count-sep { color: rgba(255, 255, 255, .4); font-size: 11px; }
 .ball .count-total { color: rgba(255, 255, 255, .62); font-size: 11px; font-weight: 500; }
 

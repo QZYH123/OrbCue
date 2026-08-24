@@ -60,12 +60,12 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   position: relative;
   display: grid;
   place-items: center;
-  width: 48px;
-  height: 48px;
+  width: 46px;
+  height: 46px;
   padding: 0;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, .08);
-  border-radius: 16px;
+  border-radius: 15px;
   color: #fff;
   background:
     linear-gradient(180deg, rgba(120, 158, 196, .14), transparent 44%),
@@ -152,15 +152,15 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 
 .badge {
   position: absolute;
-  right: 9px;
-  top: 9px;
+  right: 7px;
+  top: 7px;
   z-index: 2;
-  width: 11px;
-  height: 11px;
+  width: 12px;
+  height: 12px;
   display: grid;
   place-items: center;
   border: 1px solid rgba(32, 32, 32, .7);
-  border-radius: 3px;
+  border-radius: 99px;
   color: #1a1200;
   background: var(--wait);
   font-size: 8px;

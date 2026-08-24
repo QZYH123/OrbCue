@@ -100,7 +100,7 @@
         : snapshot.working_count > 0
           ? 'working'
           : 'idle';
-  $: matrixDots = theme === 'glyph' ? matrixTones(snapshot.working_count, snapshot.tracked_count, ballKind, snapshot.pending_mark) : [];
+  $: matrixDots = theme === 'glyph' ? matrixTones(snapshot.working_count, snapshot.tracked_count, ballKind, '') : [];
   $: heroBar = theme === 'glyph' ? barTones(snapshot.working_count, snapshot.tracked_count, 8) : [];
   $: connectionAgents = [
     ...inventory.discovered,
@@ -791,7 +791,7 @@
         </span>
       {/if}
     </button>
-    {#if snapshot.pending_mark && theme !== 'glyph'}<span class="badge mark-{markClass(snapshot.pending_mark)}" aria-label={snapshot.pending_mark}>{snapshot.pending_mark}</span>{/if}
+    {#if snapshot.pending_mark}<span class="badge mark-{markClass(snapshot.pending_mark)}" aria-label={snapshot.pending_mark}>{snapshot.pending_mark}</span>{/if}
   </main>
 {:else}
   <main class="panel tone-{ballKind}" aria-label="Agent Activity Dock 任务列表">

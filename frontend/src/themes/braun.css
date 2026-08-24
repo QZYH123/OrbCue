@@ -46,8 +46,8 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 }
 .ball {
   position: relative;
-  width: 56px;
-  height: 56px;
+  width: 52px;
+  height: 52px;
   padding: 0;
   overflow: hidden;
   border: 0;
@@ -126,18 +126,17 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 .badge {
   position: absolute;
   right: 7px;
-  top: auto;
-  bottom: 14px;
+  top: 7px;
   z-index: 2;
-  width: 9px;
-  height: 9px;
+  width: 12px;
+  height: 12px;
   display: grid;
   place-items: center;
   border: 0;
-  border-radius: 50%;
+  border-radius: 99px;
   color: var(--text);
   background: var(--key);
-  font-size: 6.5px;
+  font-size: 8px;
   font-weight: 700;
   line-height: 1;
   pointer-events: none;

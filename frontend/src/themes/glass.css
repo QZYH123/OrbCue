@@ -60,8 +60,8 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 }
 .ball {
   position: relative;
-  width: 56px;
-  height: 56px;
+  width: 52px;
+  height: 52px;
   padding: 0;
   overflow: hidden;
   border: 0;
@@ -183,12 +183,12 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 
 .badge {
   position: absolute;
-  right: 4px;
-  top: 4px;
+  right: 7px;
+  top: 7px;
   z-index: 2;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
+  width: 12px;
+  height: 12px;
+  padding: 0;
   display: grid;
   place-items: center;
   border: 0.5px solid rgba(255, 255, 255, .8);
@@ -196,12 +196,10 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   color: #3a2200;
   background: rgba(255, 159, 10, .92);
   box-shadow: 0 1px 2px rgba(40, 30, 10, .18);
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 600;
   line-height: 1;
   pointer-events: none;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 .badge.mark-idle { color: #fff; background: rgba(142, 142, 147, .92); }
 .badge.mark-done { color: #043016; background: rgba(52, 199, 89, .92); }
