@@ -27,9 +27,8 @@ fn a_session_lifecycle_updates_the_aggregate_and_notifies_once() {
         completed.snapshot.sessions[0].state,
         SessionState::Completed
     );
-    assert_eq!(completed.snapshot.audit.len(), 2);
-    assert_eq!(completed.snapshot.audit[0].state, SessionState::Working);
-    assert_eq!(completed.snapshot.audit[1].state, SessionState::Completed);
+    assert_eq!(completed.snapshot.audit.len(), 1);
+    assert_eq!(completed.snapshot.audit[0].state, SessionState::Completed);
     assert_eq!(completed.attention.as_ref().unwrap().reason, "completed");
 
     let duplicate = state.apply(event("e3", EventKind::Completed, "s1"));
@@ -721,7 +720,7 @@ fn terminal_replacement_is_recorded_in_audit() {
         .audit
         .iter()
         .any(|entry| { entry.session_id == "old" && entry.state == SessionState::Closed }));
-    assert!(replaced
+    assert!(!replaced
         .snapshot
         .audit
         .iter()
@@ -770,6 +769,20 @@ fn missing_terminal_id_in_old_state_json_defaults_to_none() {
 }
 
 #[test]
+fn working_and_idle_do_not_fill_audit() {
+    let mut state = DockState::new();
+    state.apply(event("e1", EventKind::Idle, "s1"));
+    state.apply(event("e2", EventKind::Working, "s1"));
+    assert!(state.snapshot().audit.is_empty());
+    state.apply(event("e3", EventKind::WaitingInput, "s1"));
+    assert_eq!(state.snapshot().audit.len(), 1);
+    assert_eq!(
+        state.snapshot().audit[0].state,
+        SessionState::NeedsAttention
+    );
+}
+
+#[test]
 fn audit_stream_is_bounded_and_contains_no_event_content() {
     let mut state = DockState::new();
     for index in 0..140 {
@@ -779,6 +792,12 @@ fn audit_stream_is_bounded_and_contains_no_event_content() {
             DockEvent::new(&event_id, EventKind::Started, "claude", &session_id)
                 .with_summary("private content must stay out of audit"),
         );
+        state.apply(DockEvent::new(
+            &format!("{event_id}-done"),
+            EventKind::Completed,
+            "claude",
+            &session_id,
+        ));
     }
 
     let snapshot = state.snapshot();

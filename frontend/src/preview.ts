@@ -110,7 +110,7 @@ export const demoSnapshot: Snapshot = {
     {
       source: 'claude',
       session_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
-      state: 'working',
+      state: 'completed',
       attention_reason: null,
       occurred_at: '2026-08-22T10:00:00Z',
       project_path: '/home/qingz/projects/agent-activity-dock',

@@ -7,6 +7,8 @@ import {
   folderName,
   filterSessionSections,
   formatAuditTime,
+  isAuditVisible,
+  presentAuditRows,
   presentSessionSections,
   sessionDetail,
   shortSessionId,
@@ -61,12 +63,62 @@ describe('auditAttentionNote', () => {
 });
 
 describe('formatAuditTime', () => {
-  it('uses a compact local timestamp instead of a locale long form', () => {
-    expect(formatAuditTime('2026-08-22T10:04:00.000Z')).toMatch(
-      /^\d{1,2}\/\d{1,2} \d{2}:\d{2}:\d{2}$/,
-    );
-    expect(formatAuditTime('2026-08-22T10:04:00.000Z')).not.toMatch(/,/);
+  it('uses a compact local timestamp without seconds', () => {
+    expect(formatAuditTime('2026-08-22T10:04:00')).toMatch(/^\d{1,2}\/\d{1,2} \d{2}:\d{2}$/);
+    expect(formatAuditTime('2026-08-22T10:04:00')).not.toMatch(/,/);
     expect(formatAuditTime('not-a-date')).toBe('not-a-date');
+  });
+});
+
+describe('presentAuditRows', () => {
+  it('hides working and idle, and reuses live agent numbers', () => {
+    const rows = presentAuditRows(
+      [
+        {
+          source: 'claude',
+          session_id: 'live-1',
+          state: 'working',
+          attention_reason: null,
+          occurred_at: '2026-08-24T10:00:00Z',
+          project_path: '/proj/dock',
+        },
+        {
+          source: 'claude',
+          session_id: 'live-1',
+          state: 'completed',
+          attention_reason: null,
+          occurred_at: '2026-08-24T10:01:00Z',
+          project_path: '/proj/dock',
+        },
+        {
+          source: 'grok',
+          session_id: 'gone',
+          state: 'closed',
+          attention_reason: null,
+          occurred_at: '2026-08-24T10:02:00Z',
+          project_path: '/proj/dock',
+        },
+      ],
+      [
+        {
+          source: 'claude',
+          session_id: 'live-1',
+          project_path: '/proj/dock',
+        },
+      ],
+    );
+    expect(rows.map((row) => `${row.title} ${row.index ?? '—'} ${row.entry.state}`)).toEqual([
+      'Grok — closed',
+      'Claude 01 completed',
+    ]);
+    expect(rows[0]?.project).toBe('dock');
+  });
+
+  it('treats working and idle as not visible', () => {
+    expect(isAuditVisible('working')).toBe(false);
+    expect(isAuditVisible('idle')).toBe(false);
+    expect(isAuditVisible('completed')).toBe(true);
+    expect(isAuditVisible('failed')).toBe(true);
   });
 });
 

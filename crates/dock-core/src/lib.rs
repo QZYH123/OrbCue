@@ -94,6 +94,10 @@ impl SessionState {
         true
     }
 
+    pub fn is_audit_event(self) -> bool {
+        !matches!(self, Self::Working | Self::Idle)
+    }
+
     pub fn mark(self) -> &'static str {
         match self {
             Self::Working => "",
@@ -852,6 +856,9 @@ impl DockState {
     }
 
     fn remember_audit(&mut self, record: &SessionRecord) {
+        if !record.state.is_audit_event() {
+            return;
+        }
         self.audit.push_back(AuditEntry {
             source: record.source.clone(),
             session_id: record.session_id.clone(),

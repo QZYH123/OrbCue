@@ -341,7 +341,8 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 .ticket-rail.failed { background: var(--fail); }
 .ticket-rail.completed { background: rgba(94, 207, 143, .45); }
 .ticket-rail.idle,
-.ticket-rail.cancelled { background: #5d6670; }
+.ticket-rail.cancelled,
+.ticket-rail.closed { background: #5d6670; }
 
 .state-mark {
   width: 7px;
@@ -448,22 +449,15 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 .session-actions button { font-size: 10px; }
 .session-actions button:hover, .text-button:hover { color: var(--text); }
 
-.audit-card { align-items: flex-start; overflow: hidden; }
-.audit-content .session-topline strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audit-card { overflow: hidden; }
 .audit-content time { flex: 0 0 auto; color: var(--faint); font-size: 10px; white-space: nowrap; }
-.audit-meta { display: flex; gap: 8px; margin-top: 4px; min-width: 0; color: var(--muted); font-size: 10px; }
+.audit-meta { display: flex; gap: 8px; margin-top: 4px; min-width: 0; color: var(--muted); font-size: 11px; }
 .audit-meta span + span { padding-left: 8px; border-left: 1px solid var(--line); }
-.audit-project,
-.audit-id {
+.audit-project {
   overflow: hidden;
   min-width: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.audit-id {
-  flex: 0 1 auto;
-  color: var(--faint);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .empty {

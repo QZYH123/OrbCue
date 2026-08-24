@@ -26,12 +26,11 @@
   import { CONNECTIONS_INTRO, EMPTY_TRACKING_HINT, isDockTerminalId, jumpFeedback } from './jumpBack';
   import { applyPreviewDocument, demoInventory, demoSnapshot, previewLabel, tauriAvailable } from './preview';
   import {
-    auditProjectLabel,
     displayAgent,
     filterSessionSections,
     formatAuditTime,
+    presentAuditRows,
     presentSessionSections,
-    shortSessionId,
   } from './sessionIdentity';
 
   const previewMode = !tauriAvailable();
@@ -77,6 +76,7 @@
     return true;
   });
   $: sessionGroups = filterSessionSections(presentSessionSections(snapshot.sessions), visibleSessions);
+  $: auditRows = presentAuditRows(snapshot.audit, snapshot.sessions);
   $: ringRatio = snapshot.tracked_count <= 0 ? 0 : snapshot.working_count / snapshot.tracked_count;
   $: ballKind =
     snapshot.pending_mark === '!'
@@ -778,25 +778,26 @@
         <button class="text-button danger" onclick={() => resetSession('*', '*')} disabled={snapshot.tracked_count === 0}>清除全部</button>
       </footer>
     {:else if page === 'audit'}
-      <p class="section-intro">只记状态变更：谁、哪次会话、变成了什么、何时。</p>
+      <p class="section-intro">完成、失败、等待和关闭。</p>
       <div class="panel-body">
       <div class="audit-list">
-        {#if snapshot.audit.length === 0}
-          <div class="empty compact"><span>✓</span><p>还没有审计记录</p><small>任务状态发生变化后会显示在这里</small></div>
+        {#if auditRows.length === 0}
+          <div class="empty compact"><span>✓</span><p>还没有审计记录</p><small>完成、失败、等待或关闭后会显示在这里</small></div>
         {:else}
-          {#each [...snapshot.audit].reverse() as entry, index (entry.source + ':' + entry.session_id + ':' + entry.occurred_at + ':' + index)}
-            {@const projectLabel = auditProjectLabel(entry)}
+          {#each auditRows as row, index (row.entry.source + ':' + row.entry.session_id + ':' + row.entry.occurred_at + ':' + index)}
             <article class="audit-card">
-              <div class="state-mark {entry.state}" aria-hidden="true"></div>
-              <div class="audit-content">
+              <div class="ticket-rail {row.entry.state}" aria-hidden="true"></div>
+              <div class="audit-content" title={`${row.entry.session_id} ${row.entry.occurred_at}`}>
                 <div class="session-topline">
-                  <strong>{displayAgent(entry.source)}</strong>
-                  <time datetime={entry.occurred_at}>{formatAuditTime(entry.occurred_at)}</time>
+                  <span class="session-heading">
+                    <strong>{row.title}</strong>
+                    {#if row.index}<span class="session-index">{row.index}</span>{/if}
+                  </span>
+                  <time datetime={row.entry.occurred_at}>{formatAuditTime(row.entry.occurred_at)}</time>
                 </div>
                 <div class="audit-meta">
-                  <span>{auditStateLabel(entry)}</span>
-                  {#if projectLabel}<span class="audit-project" title={entry.project_path}>{projectLabel}</span>{/if}
-                  <span class="audit-id" title={entry.session_id}>{shortSessionId(entry.session_id)}</span>
+                  <span>{auditStateLabel(row.entry)}</span>
+                  {#if row.project}<span class="audit-project" title={row.entry.project_path}>{row.project}</span>{/if}
                 </div>
               </div>
             </article>

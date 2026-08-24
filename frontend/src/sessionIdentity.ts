@@ -1,5 +1,5 @@
 import { groupSessionsByProject, shortenProjectPath } from './projectPath';
-import type { AuditEntry } from './types';
+import type { AuditEntry, SessionState } from './types';
 
 export interface SessionLike {
   source: string;
@@ -77,15 +77,51 @@ export function auditAttentionNote(entry: Pick<AuditEntry, 'state' | 'attention_
   return entry.attention_reason === 'permission' ? '授权请求' : '需要输入';
 }
 
+export function isAuditVisible(state: SessionState): boolean {
+  return state !== 'working' && state !== 'idle';
+}
+
 export function formatAuditTime(value: string): string {
   const time = new Date(value);
   if (Number.isNaN(time.getTime())) return value;
-  const month = time.getMonth() + 1;
-  const day = time.getDate();
   const hours = String(time.getHours()).padStart(2, '0');
   const minutes = String(time.getMinutes()).padStart(2, '0');
-  const seconds = String(time.getSeconds()).padStart(2, '0');
-  return `${month}/${day} ${hours}:${minutes}:${seconds}`;
+  return `${time.getMonth() + 1}/${time.getDate()} ${hours}:${minutes}`;
+}
+
+export interface AuditRow {
+  entry: AuditEntry;
+  title: string;
+  index: string | null;
+  project: string | null;
+}
+
+export function presentAuditRows(
+  audit: AuditEntry[],
+  sessions: SessionLike[],
+  home?: string,
+): AuditRow[] {
+  const identity = new Map<string, { title: string; index: string }>();
+  for (const section of presentSessionSections(sessions, home)) {
+    for (const row of section.rows) {
+      identity.set(`${row.session.source}\0${row.session.session_id}`, {
+        title: row.title,
+        index: row.index,
+      });
+    }
+  }
+  return [...audit]
+    .filter((entry) => isAuditVisible(entry.state))
+    .reverse()
+    .map((entry) => {
+      const live = identity.get(`${entry.source}\0${entry.session_id}`);
+      return {
+        entry,
+        title: live?.title ?? displayAgent(entry.source),
+        index: live?.index ?? null,
+        project: auditProjectLabel(entry),
+      };
+    });
 }
 
 export function auditProjectLabel(entry: Pick<AuditEntry, 'project_path'>): string | null {
