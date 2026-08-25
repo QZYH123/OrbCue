@@ -154,13 +154,20 @@ fn select_agent(name: &str, candidates: Vec<PathBuf>) -> Option<DiscoveredAgent>
     Some(discovered_agent(name, path))
 }
 
+pub fn agent_is_connectable(origin: AgentOrigin) -> bool {
+    match origin {
+        AgentOrigin::Windows => cfg!(windows),
+        AgentOrigin::Wsl => cfg!(not(windows)),
+    }
+}
+
 fn discovered_agent(name: &str, path: PathBuf) -> DiscoveredAgent {
     let origin = agent_origin(&path);
     DiscoveredAgent {
         name: name.to_owned(),
         path,
         origin,
-        connectable: origin == AgentOrigin::Wsl,
+        connectable: agent_is_connectable(origin),
     }
 }
 
@@ -397,7 +404,19 @@ mod tests {
         let only = super::choose_discovered("claude", vec![windows.clone()]).unwrap();
         assert_eq!(only.path, windows);
         assert_eq!(only.origin, AgentOrigin::Windows);
-        assert!(!only.connectable);
+        assert_eq!(only.connectable, cfg!(windows));
+    }
+
+    #[test]
+    fn connectable_follows_the_os_that_owns_the_binary() {
+        assert_eq!(
+            super::agent_is_connectable(AgentOrigin::Windows),
+            cfg!(windows)
+        );
+        assert_eq!(
+            super::agent_is_connectable(AgentOrigin::Wsl),
+            cfg!(not(windows))
+        );
     }
 
     #[test]

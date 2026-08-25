@@ -962,7 +962,7 @@
       {#if showDetectingPlaceholder(inventory, inventoryRefreshing)}
         <div class="empty compact"><span>…</span><p>正在检测本机 Agent</p></div>
       {:else if connectionAgents.length === 0}
-        <div class="empty compact"><span>○</span><p>PATH 中没有检测到支持的 Agent</p><small>目前支持 Claude、Grok Build、Codex、Cursor 和 DSH</small></div>
+        <div class="empty compact"><span>○</span><p>PATH 中没有检测到支持的 Agent</p><small>目前支持 Claude、Grok Build、Codex、Cursor 和 DSH。没有 WSL 也可以只连 Windows 上的工具</small></div>
       {:else}
         <div class="panel-body">
         <div class="connection-list">

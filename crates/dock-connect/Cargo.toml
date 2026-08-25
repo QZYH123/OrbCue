@@ -10,3 +10,6 @@ agent-activity-dock-ipc = { path = "../dock-ipc" }
 serde.workspace = true
 serde_json.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.5"
+

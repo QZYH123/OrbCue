@@ -6,7 +6,7 @@ export const JUMP_WINDOW_LEVEL = '已回到最近交互的窗口';
 export const EMPTY_TRACKING_HINT =
   'Agent 发出事件后会显示在这里。想精确跳回终端时用 dock run 启动';
 export const CONNECTIONS_INTRO =
-  '只连接本机已有的 Agent。Dock 不会下载、替换或读取它们的工作内容。想精确跳回终端时，用 dock run 启动。';
+  '只连接本机已有的 Agent。没有 WSL 也可以只用 Windows 上的工具。Dock 不会下载、替换或读取它们的工作内容。想精确跳回终端时，用 dock run 启动。';
 
 export interface JumpResult {
   focused: boolean;

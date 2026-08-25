@@ -62,8 +62,13 @@ struct DisconnectJson {
 }
 
 pub fn raw_inventory() -> Result<(Vec<DiscoveredAgent>, Vec<ConnectionRecord>), String> {
-    let inventory = wsl_dock_json::<InventoryJson>(&["agents", "--json"])?;
-    Ok((inventory.discovered, inventory.connected))
+    match wsl_dock_json::<InventoryJson>(&["agents", "--json"]) {
+        Ok(inventory) => Ok((inventory.discovered, inventory.connected)),
+        Err(error) if agent_activity_dock_connect::wsl_side_is_absent(&error) => {
+            Ok((Vec::new(), Vec::new()))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn preview_connect(name: &str, original: &str) -> Result<ConnectionPreview, String> {
@@ -216,7 +221,7 @@ fn wsl_dock_json<T: for<'de> Deserialize<'de>>(args: &[&str]) -> Result<T, Strin
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     if !output.status.success() {
-        return Err(bridge_failure(format!(" ({})", output.status), &stderr));
+        return Err(bridge_failure(format_exit_status(output.status), &stderr));
     }
     parse_wsl_json(&stdout)
 }
@@ -327,8 +332,15 @@ fn split_command_line(input: &str) -> Vec<String> {
 fn wait_bridge_detail(child: &mut Child) -> String {
     match child.wait() {
         Ok(status) if status.success() => String::new(),
-        Ok(status) => format!(" ({status})"),
+        Ok(status) => format_exit_status(status),
         Err(error) => format!(" ({error})"),
+    }
+}
+
+fn format_exit_status(status: std::process::ExitStatus) -> String {
+    match status.code() {
+        Some(code) => format!(" (exit status: {code})"),
+        None => format!(" ({status})"),
     }
 }
 
@@ -347,7 +359,7 @@ fn missing_wsl_or_dock(error: std::io::Error) -> String {
 fn bridge_failure(status: String, stderr: &str) -> String {
     let stderr = stderr.trim();
     if stderr.is_empty() {
-        format!("WSL dock bridge failed{status}. Is `$HOME/.local/bin/dock` installed inside WSL?")
+        format!("WSL dock bridge failed{status}")
     } else {
         format!("WSL dock bridge failed{status}: {stderr}")
     }

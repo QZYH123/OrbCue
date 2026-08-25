@@ -53,4 +53,8 @@ describe('dock run copy', () => {
     expect(CONNECTIONS_INTRO).toContain('dock run');
     expect(JUMP_WINDOW_MISSING).toContain('dock run');
   });
+
+  it('says Windows-only users can connect without WSL', () => {
+    expect(CONNECTIONS_INTRO).toContain('没有 WSL');
+  });
 });

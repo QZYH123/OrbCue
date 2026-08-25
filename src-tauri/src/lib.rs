@@ -156,20 +156,8 @@ fn install_windows_trampoline_cli(app: &AppHandle) {
         if !source.is_file() {
             return;
         }
-        let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) else {
-            return;
-        };
-        let dest_dir = std::path::PathBuf::from(local).join("Agent Activity Dock");
-        if let Err(error) = std::fs::create_dir_all(&dest_dir) {
-            eprintln!("Agent Activity Dock: cannot create trampoline dir: {error}");
-            return;
-        }
-        let dest = dest_dir.join("dock.exe");
-        if let Err(error) = std::fs::copy(&source, &dest) {
-            eprintln!(
-                "Agent Activity Dock: cannot install trampoline {}: {error}",
-                dest.display()
-            );
+        if let Err(error) = agent_activity_dock_connect::install_windows_cli(&source) {
+            eprintln!("Agent Activity Dock: cannot install dock CLI: {error}");
         }
     }
     let _ = app;
@@ -439,13 +427,18 @@ fn connect_agent(
 
 #[tauri::command]
 fn run_alias() -> Result<Option<String>, String> {
-    #[cfg(windows)]
-    {
-        if let Ok(value) = wsl_session::run_alias() {
-            return Ok(value);
+    let local = agent_activity_dock_connect::current_run_alias();
+    let remote = {
+        #[cfg(windows)]
+        {
+            wsl_session::run_alias()
         }
-    }
-    Ok(agent_activity_dock_connect::current_run_alias())
+        #[cfg(not(windows))]
+        {
+            Err("wsl unavailable".to_owned())
+        }
+    };
+    Ok(agent_activity_dock_connect::preferred_run_alias(local, remote))
 }
 
 #[tauri::command]
@@ -458,7 +451,11 @@ fn set_run_alias(name: String) -> Result<Option<String>, String> {
     let local = agent_activity_dock_connect::set_run_alias(parsed.as_deref())?;
     #[cfg(windows)]
     {
-        wsl_session::set_run_alias(parsed.as_deref())?;
+        if let Err(error) = wsl_session::set_run_alias(parsed.as_deref()) {
+            if !agent_activity_dock_connect::wsl_side_is_absent(&error) {
+                eprintln!("Agent Activity Dock: WSL 启动别名未更新: {error}");
+            }
+        }
     }
     Ok(local)
 }

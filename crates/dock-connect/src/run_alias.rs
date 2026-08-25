@@ -100,6 +100,53 @@ pub fn view_err(error: String) -> AliasView {
     }
 }
 
+pub fn preferred(local: Option<String>, remote: Result<Option<String>, String>) -> Option<String> {
+    local.or_else(|| remote.ok().flatten())
+}
+
+pub fn wsl_side_is_absent(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    wsl_runtime_missing(&error) || wsl_dock_cli_missing(&error)
+}
+
+fn wsl_runtime_missing(error: &str) -> bool {
+    [
+        "no installed distributions",
+        "there are no installed distributions",
+        "0x80040326",
+        "the system cannot find the file",
+        "系统找不到指定的文件",
+        "wsl.exe is not recognized",
+        "cannot start wsl dock via wsl.exe",
+    ]
+    .iter()
+    .any(|needle| error.contains(needle))
+}
+
+fn wsl_dock_cli_missing(error: &str) -> bool {
+    has_exit_code(error, 127)
+        || error.contains("command not found")
+        || error.contains("no such file or directory")
+        || (error.contains("sh:") && error.contains(": not found"))
+}
+
+fn has_exit_code(error: &str, code: i32) -> bool {
+    ["exit status: ", "exit code: "]
+        .into_iter()
+        .any(|label| contains_bare_exit_code(error, label, code))
+}
+
+fn contains_bare_exit_code(error: &str, label: &str, code: i32) -> bool {
+    let needle = format!("{label}{code}");
+    error.match_indices(&needle).any(|(idx, _)| {
+        !error
+            .as_bytes()
+            .get(idx + needle.len())
+            .copied()
+            .is_some_and(|byte| byte.is_ascii_digit())
+    })
+}
+
 fn state_path() -> PathBuf {
     default_state_path()
         .parent()
@@ -211,5 +258,63 @@ mod tests {
         assert!(validate("dock run").is_err());
         assert!(validate("../x").is_err());
         assert!(validate("").is_err());
+    }
+
+    #[test]
+    fn windows_alias_wins_when_wsl_is_missing() {
+        assert_eq!(
+            super::preferred(Some("dr".into()), Err("cannot start WSL dock".into())),
+            Some("dr".into())
+        );
+        assert_eq!(
+            super::preferred(None, Err("cannot start WSL dock".into())),
+            None
+        );
+        assert_eq!(
+            super::preferred(None, Ok(Some("dr".into()))),
+            Some("dr".into())
+        );
+        assert_eq!(
+            super::preferred(Some("dr".into()), Ok(Some("other".into()))),
+            Some("dr".into())
+        );
+    }
+
+    #[test]
+    fn missing_wsl_or_dock_is_treated_as_absent_not_fatal() {
+        assert!(super::wsl_side_is_absent(
+            "cannot start WSL dock via wsl.exe (os error 2)"
+        ));
+        assert!(super::wsl_side_is_absent(
+            "There is no distribution with the supplied name. Error code: 0x80040326"
+        ));
+        assert!(super::wsl_side_is_absent(
+            "sh: /home/u/.local/bin/dock: not found"
+        ));
+        assert!(super::wsl_side_is_absent(
+            "WSL dock bridge failed (exit status: 127): sh: /home/u/.local/bin/dock: not found"
+        ));
+        assert!(super::wsl_side_is_absent(
+            "WSL dock bridge failed (exit status: 127)"
+        ));
+        assert!(super::wsl_side_is_absent(
+            "/home/u/.local/bin/dock: command not found"
+        ));
+        assert!(super::wsl_side_is_absent(
+            "bash: /home/u/.local/bin/dock: No such file or directory"
+        ));
+        assert!(!super::wsl_side_is_absent("invalid dock bridge response"));
+    }
+
+    #[test]
+    fn real_wsl_dock_failures_are_not_treated_as_absent() {
+        assert!(!super::wsl_side_is_absent(
+            "WSL dock bridge failed (exit status: 1). Is `$HOME/.local/bin/dock` installed inside WSL?"
+        ));
+        assert!(!super::wsl_side_is_absent("session not found"));
+        assert!(!super::wsl_side_is_absent("profile not found"));
+        assert!(!super::wsl_side_is_absent(
+            "failed to read config (os error 2)"
+        ));
     }
 }

@@ -63,6 +63,7 @@ dependencies = [
  "agent-activity-dock-ipc",
  "serde",
  "serde_json",
+ "windows-registry",
 ]
 
 [[package]]

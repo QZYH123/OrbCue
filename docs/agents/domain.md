@@ -22,4 +22,4 @@
 - 不把声音、窗口和 Agent adapter 的失败传播回事件发送方；
 - 不把摘要或原始 payload 写入默认持久化；
 - 修改 Claude `settings.json`、Codex `~/.codex/hooks.json`、Cursor `~/.cursor/hooks.json` 前保留一次用户可恢复的备份，断开时只清理 Dock 自己的 Hook；
-- 不让两个 `dockd` 同时服务同一用户。Presenter 在 GUI OS 上 `attach_or_listen`；仅当 Agent 跑在另一 OS（WSL）时由该 OS 的 `dock` trampoline 把事件送到这个 daemon。`AGENT_ACTIVITY_DOCK_BACKEND=wsl` 可显式回滚。禁止在 WSL-canonical 与 GUI-OS-canonical 之间静默探测切换。
+- 不让两个 `dockd` 同时服务同一用户。Presenter 在 GUI OS 上 `attach_or_listen`；没有 WSL 时也是这条路径。仅当 Agent 跑在另一 OS（WSL）时由该 OS 的 `dock` trampoline 把事件送到这个 daemon。`AGENT_ACTIVITY_DOCK_BACKEND=wsl` 可显式回滚。禁止在 WSL-canonical 与 GUI-OS-canonical 之间静默探测切换。

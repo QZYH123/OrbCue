@@ -5,14 +5,19 @@
 
 mod discover;
 mod run_alias;
+mod user_path;
 
 pub use discover::{
-    agent_origin, choose_discovered, parse_login_path_output, probe_login_path,
-    InventorySnapshotCache, ProbeOutput, LOGIN_PATH_END, LOGIN_PATH_START,
+    agent_is_connectable, agent_origin, choose_discovered, parse_login_path_output,
+    probe_login_path, InventorySnapshotCache, ProbeOutput, LOGIN_PATH_END, LOGIN_PATH_START,
 };
 pub use run_alias::{
-    current as current_run_alias, set as set_run_alias, validate as validate_run_alias,
-    view_err as run_alias_err, view_ok as run_alias_ok, AliasView,
+    current as current_run_alias, preferred as preferred_run_alias, set as set_run_alias,
+    validate as validate_run_alias, view_err as run_alias_err, view_ok as run_alias_ok,
+    wsl_side_is_absent, AliasView,
+};
+pub use user_path::{
+    default_windows_cli_dir, ensure_dir_on_user_path, install_windows_cli, merge_path_entries,
 };
 
 use serde::{Deserialize, Serialize};
@@ -672,6 +677,12 @@ impl ConnectionManager {
     }
 
     fn ensure_path_snippet(&self) -> Result<(), String> {
+        if let Err(error) = crate::ensure_dir_on_user_path(&self.data_dir) {
+            eprintln!(
+                "Agent Activity Dock: could not add {} to user PATH: {error}",
+                self.data_dir.display()
+            );
+        }
         for profile in self.profile_targets() {
             let old = fs::read_to_string(&profile).unwrap_or_default();
             if old.contains(PATH_START) {

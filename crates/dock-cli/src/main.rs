@@ -22,6 +22,7 @@ use agent_activity_dock_service::attach_or_listen;
 use agent_activity_dock_service::connect_or_spawn_detached;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::Read;
@@ -622,6 +623,51 @@ fn attach_liveness(event: &mut DockEvent) {
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_short_lived_windows_hook_parent(exe: &str) -> bool {
+    let name = exe.rsplit(['/', '\\']).next().unwrap_or(exe).trim();
+    let stem = strip_ascii_suffix_ignore_case(name, ".exe");
+    matches!(
+        stem.to_ascii_lowercase().as_str(),
+        "cmd" | "conhost" | "cmd.com"
+    )
+}
+
+fn strip_ascii_suffix_ignore_case<'a>(value: &'a str, suffix: &str) -> &'a str {
+    let start = value.len().saturating_sub(suffix.len());
+    if value
+        .get(start..)
+        .is_some_and(|end| end.eq_ignore_ascii_case(suffix))
+    {
+        &value[..start]
+    } else {
+        value
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn resolve_windows_liveness_pid(current: u32, processes: &[(u32, u32, &str)]) -> Option<u32> {
+    let mut by_pid = HashMap::with_capacity(processes.len());
+    for (pid, parent, name) in processes {
+        by_pid.insert(*pid, (*parent, *name));
+    }
+    let mut pid = by_pid.get(&current)?.0;
+    if pid == 0 {
+        return None;
+    }
+    for _ in 0..8 {
+        let (parent, name) = *by_pid.get(&pid)?;
+        if !is_short_lived_windows_hook_parent(name) {
+            return Some(pid);
+        }
+        if parent == 0 || parent == pid {
+            return None;
+        }
+        pid = parent;
+    }
+    None
+}
+
 #[cfg(windows)]
 fn windows_parent_liveness() -> Option<(u32, u64)> {
     windows_parent_liveness_inner()
@@ -671,23 +717,29 @@ fn windows_parent_liveness_inner() -> Option<(u32, u64)> {
         }
         let mut entry: ProcessEntry32W = zeroed();
         entry.dw_size = size_of::<ProcessEntry32W>() as u32;
-        let mut parent = 0;
+        let mut processes = Vec::new();
+        let mut names = Vec::new();
         if Process32FirstW(snapshot, &mut entry) != 0 {
             loop {
-                if entry.th32_process_id == current {
-                    parent = entry.th32_parent_process_id;
-                    break;
-                }
+                let name = utf16_z(&entry.sz_exe_file);
+                names.push(name);
+                processes.push((
+                    entry.th32_process_id,
+                    entry.th32_parent_process_id,
+                    names.len() - 1,
+                ));
                 if Process32NextW(snapshot, &mut entry) == 0 {
                     break;
                 }
             }
         }
         CloseHandle(snapshot);
-        if parent == 0 {
-            return None;
-        }
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, parent);
+        let named: Vec<(u32, u32, &str)> = processes
+            .iter()
+            .map(|(pid, parent, index)| (*pid, *parent, names[*index].as_str()))
+            .collect();
+        let pid = resolve_windows_liveness_pid(current, &named)?;
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle == 0 {
             let _ = GetLastError();
             return None;
@@ -701,8 +753,14 @@ fn windows_parent_liveness_inner() -> Option<(u32, u64)> {
         if ok == 0 {
             return None;
         }
-        Some((parent, creation))
+        Some((pid, creation))
     }
+}
+
+#[cfg(windows)]
+fn utf16_z(buf: &[u16]) -> String {
+    let end = buf.iter().position(|&unit| unit == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..end])
 }
 
 fn linux_pid_is_dead(pid: u32, starttime: u64) -> Option<bool> {
@@ -1967,8 +2025,9 @@ fn runtime_state_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        forward_to_wsl_predicate, is_forwardable_command, looks_like_windows_pipe,
-        stays_on_agent_os, trampoline_to_windows_predicate, Command,
+        forward_to_wsl_predicate, is_forwardable_command, is_short_lived_windows_hook_parent,
+        looks_like_windows_pipe, resolve_windows_liveness_pid, stays_on_agent_os,
+        trampoline_to_windows_predicate, Command,
     };
     use agent_activity_dock_core::{DockEvent, EventKind};
     use agent_activity_dock_ipc::DockBackend;
@@ -2006,6 +2065,34 @@ mod tests {
         assert!(!is_forwardable_command(&Command::Agents));
         assert!(!is_forwardable_command(&Command::Up));
         assert!(!is_forwardable_command(&Command::Down));
+    }
+
+    #[test]
+    fn windows_hook_skips_cmd_wrapper_and_keeps_the_agent() {
+        assert!(is_short_lived_windows_hook_parent("cmd.exe"));
+        assert!(is_short_lived_windows_hook_parent("Cmd.EXE"));
+        assert!(is_short_lived_windows_hook_parent(
+            r"C:\Windows\System32\cmd.exe"
+        ));
+        assert!(is_short_lived_windows_hook_parent("conhost"));
+        assert!(is_short_lived_windows_hook_parent("Conhost.exe"));
+        assert!(!is_short_lived_windows_hook_parent("claude.exe"));
+        assert!(!is_short_lived_windows_hook_parent("powershell.exe"));
+        assert!(!is_short_lived_windows_hook_parent("WindowsTerminal.exe"));
+
+        let tree = [
+            (10, 9, "dock.exe"),
+            (9, 8, "cmd.exe"),
+            (8, 1, "claude.exe"),
+            (1, 0, "WindowsTerminal.exe"),
+        ];
+        assert_eq!(resolve_windows_liveness_pid(10, &tree), Some(8));
+
+        let direct = [(10, 8, "dock.exe"), (8, 1, "cursor-agent.exe")];
+        assert_eq!(resolve_windows_liveness_pid(10, &direct), Some(8));
+
+        let only_cmd = [(10, 9, "dock.exe"), (9, 0, "cmd.exe")];
+        assert_eq!(resolve_windows_liveness_pid(10, &only_cmd), None);
     }
 
     #[test]
