@@ -21,7 +21,7 @@
     revealHighlightedGroup,
     sessionHighlightKey,
   } from './highlight';
-  import { inventoryHasRows, showDetectingPlaceholder, sideLabel } from './inventory';
+  import { connectSuccessNotice, inventoryHasRows, showDetectingPlaceholder, sideLabel, wslDockErrorBanner } from './inventory';
   import { clampToWorkArea, shouldHidePanelOnBallDrag } from './placement';
   import { CONNECTIONS_INTRO, EMPTY_TRACKING_HINT, isDockTerminalId, jumpFeedback } from './jumpBack';
   import { applyPreviewDocument, demoInventory, demoSnapshot, previewLabel, tauriAvailable } from './preview';
@@ -64,6 +64,9 @@
   let notificationsEnabled = localStorage.getItem('notifications-enabled') !== 'false';
   let highlightedKey = '';
   let autostartEnabled = false;
+  let autostartChecked = false;
+  let autostartHintDismissed = localStorage.getItem('autostart-hint-dismissed') === 'true';
+  let connectSuccess = '';
   let shortcutEnabled = localStorage.getItem('shortcut-enabled') !== 'false';
   let hideBallBadge = localStorage.getItem('dock-hide-ball-badge') === 'true';
   let theme: DockTheme = initialTheme();
@@ -106,6 +109,8 @@
           : 'idle';
   $: matrixDots = theme === 'glyph' ? matrixTones(snapshot.working_count, snapshot.tracked_count, ballKind, '') : [];
   $: heroBar = theme === 'glyph' ? barTones(snapshot.working_count, snapshot.tracked_count, 8) : [];
+  $: showAutostartHint =
+    !previewMode && label === 'panel' && autostartChecked && !autostartEnabled && !autostartHintDismissed;
   $: connectionAgents = [
     ...inventory.discovered,
     ...inventory.connected
@@ -153,6 +158,7 @@
       await refreshSnapshot();
       try {
         autostartEnabled = await isAutostartEnabled();
+        autostartChecked = true;
         // Both windows mount this component. Register the process-wide
         // shortcut from the persistent ball window only; the panel can still
         // toggle it explicitly from Settings.
@@ -402,6 +408,7 @@
   }
 
   function selectPage(next: typeof page) {
+    if (next !== 'connections') connectSuccess = '';
     page = next;
     if (next === 'connections' && !previewMode) void loadAgentsCached();
   }
@@ -433,6 +440,16 @@
     }
   }
 
+  async function addFromFolder() {
+    if (previewMode) return;
+    connectionError = '';
+    try {
+      inventory = await invoke<AgentInventory>('add_agent_folder');
+    } catch (error) {
+      connectionError = String(error);
+    }
+  }
+
   function connected(name: string, side: AgentSide) {
     return inventory.connected.find((record) => record.name === name && record.side === side);
   }
@@ -440,6 +457,7 @@
   async function connectAgent(agent: DiscoveredAgent) {
     pendingAgent = agent;
     connectionError = '';
+    connectSuccess = '';
     connectionPreview = null;
     previewError = '';
     previewLoading = true;
@@ -465,14 +483,16 @@
 
   async function confirmConnect() {
     if (!pendingAgent || !connectionPreview) return;
+    const agent = pendingAgent;
     connectionError = '';
     try {
       await invoke('connect_agent', {
-        name: pendingAgent.name,
-        original: pendingAgent.path,
-        side: pendingAgent.side,
+        name: agent.name,
+        original: agent.path,
+        side: agent.side,
       });
       closeConnectDialog();
+      connectSuccess = connectSuccessNotice(agent.name, agent.side);
       await refreshAgents();
       if (inventory.connected.length > 0) {
         onboardingComplete = true;
@@ -495,6 +515,7 @@
 
   async function disconnectAgent(name: string, side: AgentSide) {
     connectionError = '';
+    connectSuccess = '';
     try {
       await invoke('disconnect_agent', { name, side });
       await refreshAgents();
@@ -511,6 +532,16 @@
     } catch (error) {
       console.warn('Could not update autostart', error);
     }
+  }
+
+  function dismissAutostartHint() {
+    autostartHintDismissed = true;
+    localStorage.setItem('autostart-hint-dismissed', 'true');
+  }
+
+  async function acceptAutostartHint() {
+    if (!autostartEnabled) await toggleAutostart();
+    dismissAutostartHint();
   }
 
   async function toggleShortcut() {
@@ -852,6 +883,15 @@
         <button aria-pressed={filter === 'attention'} class:active={filter === 'attention'} onclick={() => (filter = 'attention')}>未工作 <span>{snapshot.pending_count}</span></button>
       </nav>
       <div class="panel-body">
+      {#if showAutostartHint}
+        <div class="hint-banner" role="note">
+          <p><strong>建议开启开机自启</strong><small>Dock 保持运行才能收到任务状态；开启后登录 Windows 即自动待命</small></p>
+          <div class="hint-actions">
+            <button class="primary-button" onclick={() => void acceptAutostartHint()}>开启</button>
+            <button class="text-button" onclick={dismissAutostartHint}>不再提示</button>
+          </div>
+        </div>
+      {/if}
       <div class="sessions">
         {#if visibleSessions.length === 0}
           <div class="empty"><span>✓</span><p>{filter === 'all' ? '还没有追踪中的任务' : '没有符合条件的任务'}</p><small>{EMPTY_TRACKING_HINT}</small></div>
@@ -898,8 +938,8 @@
                     class="jump-btn"
                     class:precise={isDockTerminalId(session.terminal_id)}
                     onclick={() => jumpBack(session)}
-                    aria-label="回去"
-                    title={isDockTerminalId(session.terminal_id) ? '精确跳回' : '回去'}
+                    aria-label={isDockTerminalId(session.terminal_id) ? '精确跳回' : '回到最近交互的窗口'}
+                    title={isDockTerminalId(session.terminal_id) ? '精确跳回' : '回到最近交互的窗口（不保证精确）'}
                   >
                     <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
                       <path d="M5.5 4.5 2 8l3.5 3.5M2.5 8H9a4 4 0 0 0 4-4V3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
@@ -957,12 +997,24 @@
       {/if}
       <div class="connections-toolbar">
         <button class="text-button" onclick={() => void refreshAgents()} disabled={inventoryRefreshing}>刷新</button>
+        <button class="text-button" onclick={() => void addFromFolder()} disabled={inventoryRefreshing}>从文件夹添加</button>
         {#if inventoryRefreshing}<span class="refresh-hint" aria-live="polite">正在检测</span>{/if}
       </div>
+      {#if wslDockErrorBanner(inventory)}
+        <p class="error-message">{wslDockErrorBanner(inventory)}</p>
+      {/if}
+      {#if connectSuccess}
+        <div class="hint-banner" role="status">
+          <p>{connectSuccess}</p>
+          <div class="hint-actions">
+            <button class="text-button" onclick={() => (connectSuccess = '')} aria-label="关闭提示">×</button>
+          </div>
+        </div>
+      {/if}
       {#if showDetectingPlaceholder(inventory, inventoryRefreshing)}
         <div class="empty compact"><span>…</span><p>正在检测本机 Agent</p></div>
       {:else if connectionAgents.length === 0}
-        <div class="empty compact"><span>○</span><p>PATH 中没有检测到支持的 Agent</p><small>目前支持 Claude、Grok Build、Codex、Cursor 和 DSH。没有 WSL 也可以只连 Windows 上的工具</small></div>
+        <div class="empty compact"><span>○</span><p>没有检测到支持的工具</p><small>目前支持 Claude、Grok Build、Codex、Cursor 和 DSH。可点「从文件夹添加」。没有 WSL 也可以只连 Windows 上的工具</small></div>
       {:else}
         <div class="panel-body">
         <div class="connection-list">
@@ -975,7 +1027,7 @@
                   <span class="side-badge side-{agent.side}">{sideLabel(agent.side)}</span>
                 </div>
                 <div class="connection-path" title={agent.path}>{agent.path}</div>
-                {#if record}<p class="connection-note">{record.limitation}</p>{/if}
+                {#if record?.limitation}<p class="connection-note">{record.limitation}</p>{/if}
               </div>
               <div class="connection-aside">
                 <span class:connected={!!record} class="connection-state">{record ? '已连接' : '可连接'}</span>
@@ -1016,6 +1068,9 @@
                 <ul class="preview-will-not">
                   {#each connectionPreview.will_not as line (line)}<li>{line}</li>{/each}
                 </ul>
+                {#each connectionPreview.warnings ?? [] as warning (warning)}
+                  <p class="dialog-warning">{warning}</p>
+                {/each}
                 {#each connectionPreview.notes as note (note)}
                   <p class="dialog-note">{note}</p>
                 {/each}

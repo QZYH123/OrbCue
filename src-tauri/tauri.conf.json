@@ -51,6 +51,9 @@
     "targets": "all",
     "createUpdaterArtifacts": false,
     "externalBin": ["binaries/dock"],
+    "resources": {
+      "resources/dock-wsl": "dock-wsl"
+    },
     "icon": ["icons/icon.png", "icons/icon.ico"]
   }
 }

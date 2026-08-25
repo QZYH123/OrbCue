@@ -466,6 +466,8 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 .jump-btn:hover,
 .jump-btn.precise:hover { color: var(--text); background: var(--control-hover); }
 .jump-btn.precise { color: var(--text); }
+.jump-btn:not(.precise) { opacity: .6; }
+.jump-btn:not(.precise):hover { opacity: 1; }
 .session-actions button, .text-button {
   padding: 0;
   border: 0;
@@ -605,6 +607,29 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   border-radius: 4px;
   color: #ffb3b3;
   background: rgba(196, 43, 28, .28);
+  font-size: 10px;
+}
+.hint-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--control);
+  font-size: 10px;
+}
+.hint-banner p { display: flex; flex-direction: column; gap: 2px; margin: 0; min-width: 0; }
+.hint-banner small { color: var(--muted); }
+.hint-banner .hint-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.dialog-warning {
+  margin: 8px 0 0;
+  padding: 9px 11px;
+  border-radius: 4px;
+  color: #ffd8a0;
+  background: rgba(174, 105, 25, .28);
   font-size: 10px;
 }
 .modal-backdrop {

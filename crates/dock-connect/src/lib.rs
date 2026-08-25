@@ -1,23 +1,36 @@
 //! Revocable, zero-reinstall Agent connections.
 //!
-//! This crate only discovers commands already present on PATH and writes
-//! user-level wrappers/hooks. It never replaces an Agent executable.
+//! This crate discovers commands already present on PATH, in common install
+//! directories, and in folders the user adds. It writes user-level wrappers/hooks
+//! and never replaces an Agent executable.
 
 mod discover;
+mod grok_compat;
 mod run_alias;
 mod user_path;
+mod wsl_cli;
 
 pub use discover::{
-    agent_is_connectable, agent_origin, choose_discovered, parse_login_path_output,
-    probe_login_path, InventorySnapshotCache, ProbeOutput, LOGIN_PATH_END, LOGIN_PATH_START,
+    agent_is_connectable, agent_origin, agents_in_dir, choose_discovered, discover_agents,
+    discover_agents_with_extras, merge_search_path, parse_login_path_output, probe_login_path,
+    InventorySnapshotCache, ProbeOutput, LOGIN_PATH_END, LOGIN_PATH_START,
+};
+pub use grok_compat::{
+    connection_warnings, grok_compat_cursor_hooks_enabled, GROK_COMPAT_CURSOR_HOOKS_WARNING,
 };
 pub use run_alias::{
     current as current_run_alias, preferred as preferred_run_alias, set as set_run_alias,
     validate as validate_run_alias, view_err as run_alias_err, view_ok as run_alias_ok,
-    wsl_side_is_absent, AliasView,
+    wsl_dock_cli_is_missing, wsl_runtime_is_absent, wsl_side_is_absent, AliasView,
 };
 pub use user_path::{
     default_windows_cli_dir, ensure_dir_on_user_path, install_windows_cli, merge_path_entries,
+};
+pub use wsl_cli::{
+    choose_packaged_linux_dock, decode_console_output, dock_version_matches,
+    is_infrastructure_wsl_distro, looks_like_linux_dock, packaged_linux_dock_candidates,
+    packaged_linux_dock_is_usable, parse_dock_version_output, parse_installable_wsl_distros,
+    parse_wsl_distro_list, wsl_dock_install_shell, PACKAGED_LINUX_DOCK_NAME,
 };
 
 use serde::{Deserialize, Serialize};
@@ -46,11 +59,13 @@ pub enum ConnectionMethod {
 impl ConnectionMethod {
     pub fn limitation(self) -> &'static str {
         match self {
-            Self::Wrapper => "wrapper cannot detect waiting for input",
-            Self::ClaudeHook => "reads Claude structured hook metadata only",
-            Self::GrokHook => "reads Grok Build structured hook metadata only",
-            Self::CodexHook => "reads Codex structured hook metadata only",
-            Self::CursorHook => "Cursor CLI 若漏发 stop，会停在工作中直到进程退出",
+            Self::Wrapper => "看不到「正在等你输入」",
+            Self::ClaudeHook => "",
+            Self::GrokHook => "",
+            Self::CodexHook => {
+                "用 Esc 或 Ctrl+C 打断时不会离开「工作中」，对话报错也不会显示为失败；可用「清除」，或退出 Codex 后任务会消失"
+            }
+            Self::CursorHook => "偶尔不会通知已经结束，任务会停在「工作中」，直到进程退出",
         }
     }
 }
@@ -116,12 +131,16 @@ pub struct ConnectionPreview {
     pub files: Vec<PreviewFile>,
     pub will_not: Vec<String>,
     pub notes: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct ConnectionFile {
     version: u16,
     agents: std::collections::BTreeMap<String, ConnectionRecord>,
+    #[serde(default)]
+    extra_dirs: Vec<PathBuf>,
 }
 
 pub struct ConnectionManager {
@@ -198,7 +217,36 @@ impl ConnectionManager {
     }
 
     pub fn discover_from_path(&self, path: &OsStr) -> Vec<DiscoveredAgent> {
-        discover::discover_agents(path, Some(&self.data_dir), &self.grok_home)
+        discover::discover_agents_with_extras(path, &self.scan_dirs(), Some(&self.data_dir))
+    }
+
+    pub fn add_scan_dir(&self, dir: &Path) -> Result<Vec<DiscoveredAgent>, String> {
+        if !dir.is_dir() {
+            return Err("请选择一个文件夹".to_owned());
+        }
+        let found = discover::agents_in_dir(dir);
+        if found.is_empty() {
+            return Err(
+                "这个文件夹里没有支持的工具（Claude、Grok、Codex、Cursor 或 DSH）".to_owned(),
+            );
+        }
+        let mut file = self.load();
+        if !file.extra_dirs.iter().any(|existing| existing == dir) {
+            file.extra_dirs.push(dir.to_path_buf());
+            self.save(&file)?;
+        }
+        Ok(found)
+    }
+
+    fn scan_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![
+            self.home.join(".local").join("bin"),
+            self.grok_home.join("bin"),
+            self.home.join("AppData").join("Local").join("cursor-agent"),
+            self.home.join("AppData").join("Roaming").join("npm"),
+        ];
+        dirs.extend(self.load().extra_dirs);
+        dirs
     }
 
     pub fn records(&self) -> Vec<ConnectionRecord> {
@@ -237,7 +285,12 @@ impl ConnectionManager {
                 "不读取 transcript / prompt / 命令 / 代码".to_owned(),
             ],
             notes: preview_notes(method),
+            warnings: self.connect_warnings(name),
         })
+    }
+
+    pub fn connect_warnings(&self, name: &str) -> Vec<String> {
+        connection_warnings(name, &self.grok_home)
     }
 
     pub fn connect(&self, name: &str, original: &Path) -> Result<ConnectionRecord, String> {
@@ -341,12 +394,7 @@ impl ConnectionManager {
                     wrapper: None,
                     hook_script: Some(hook),
                     settings_backup,
-                    capabilities: vec![
-                        "started".into(),
-                        "waiting".into(),
-                        "completed".into(),
-                        "failed".into(),
-                    ],
+                    capabilities: vec!["started".into(), "waiting".into(), "completed".into()],
                     limitation: method.limitation().to_owned(),
                     installed_at: now_string(),
                 }
@@ -823,6 +871,7 @@ impl ConnectionManager {
             .unwrap_or_else(|| ConnectionFile {
                 version: 1,
                 agents: Default::default(),
+                extra_dirs: Vec::new(),
             })
     }
 
@@ -1100,6 +1149,7 @@ fn preview_notes(method: ConnectionMethod) -> Vec<String> {
         ],
         ConnectionMethod::CodexHook => vec![
             "首次修改前备份 hooks.json".to_owned(),
+            ConnectionMethod::CodexHook.limitation().to_owned(),
             "Codex 可能要求在 /hooks 里信任新命令".to_owned(),
             NATIVE_NOTIFY_NOTE.to_owned(),
         ],
@@ -1219,13 +1269,6 @@ fn connection_method_for(name: &str) -> ConnectionMethod {
         "cursor" => ConnectionMethod::CursorHook,
         _ => ConnectionMethod::Wrapper,
     }
-}
-
-pub(crate) fn grok_binary_in_home(grok_home: &Path) -> Option<PathBuf> {
-    candidate_names("grok")
-        .into_iter()
-        .map(|name| grok_home.join("bin").join(name))
-        .find(|path| path.is_file())
 }
 
 fn hook_path(config_dir: &Path, name: &str) -> PathBuf {
@@ -1489,6 +1532,23 @@ mod tests {
         assert!(connected.contains("user-hook"));
         assert!(connected.contains("claude-hook.sh"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn connection_preview_warnings_default_when_absent() {
+        let preview: ConnectionPreview = serde_json::from_str(
+            r#"{
+                "name":"cursor",
+                "original":"/bin/cursor-agent",
+                "method":"CursorHook",
+                "dry_run":true,
+                "files":[],
+                "will_not":[],
+                "notes":[]
+            }"#,
+        )
+        .unwrap();
+        assert!(preview.warnings.is_empty());
     }
 
     #[test]

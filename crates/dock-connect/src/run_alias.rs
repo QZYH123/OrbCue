@@ -105,8 +105,15 @@ pub fn preferred(local: Option<String>, remote: Result<Option<String>, String>) 
 }
 
 pub fn wsl_side_is_absent(error: &str) -> bool {
-    let error = error.to_ascii_lowercase();
-    wsl_runtime_missing(&error) || wsl_dock_cli_missing(&error)
+    wsl_runtime_is_absent(error) || wsl_dock_cli_is_missing(error)
+}
+
+pub fn wsl_runtime_is_absent(error: &str) -> bool {
+    wsl_runtime_missing(&error.to_ascii_lowercase())
+}
+
+pub fn wsl_dock_cli_is_missing(error: &str) -> bool {
+    wsl_dock_cli_missing(&error.to_ascii_lowercase())
 }
 
 fn wsl_runtime_missing(error: &str) -> bool {

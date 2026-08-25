@@ -555,6 +555,82 @@ fn discover_from_path_names_cursor_agent_cursor() {
 }
 
 #[test]
+fn discover_from_path_finds_well_known_install_dirs_without_path() {
+    let root = temp_root();
+    let home = root.join("home");
+    let claude = home.join(".local").join("bin").join("claude");
+    let grok = home.join(".grok").join("bin").join("grok");
+    let cursor = home
+        .join("AppData")
+        .join("Local")
+        .join("cursor-agent")
+        .join("agent.cmd");
+    fs::create_dir_all(claude.parent().unwrap()).unwrap();
+    fs::create_dir_all(grok.parent().unwrap()).unwrap();
+    fs::create_dir_all(cursor.parent().unwrap()).unwrap();
+    executable(&claude, "#!/bin/sh\nexit 0\n");
+    executable(&grok, "#!/bin/sh\nexit 0\n");
+    fs::write(&cursor, b"@echo off\r\n").unwrap();
+    let manager = ConnectionManager::new(
+        home,
+        root.join("config"),
+        root.join("data"),
+        root.join("dock"),
+    );
+    let discovered = manager.discover_from_path(std::ffi::OsStr::new(""));
+    let mut names: Vec<_> = discovered.iter().map(|agent| agent.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["claude", "cursor", "grok"]);
+    assert!(discovered.iter().any(|agent| agent.path == claude));
+    assert!(discovered.iter().any(|agent| agent.path == grok));
+    assert!(discovered.iter().any(|agent| agent.path == cursor));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn add_scan_dir_persists_and_discovers_later() {
+    let root = temp_root();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let custom = root.join("my-tools");
+    fs::create_dir_all(&custom).unwrap();
+    let claude = custom.join("claude");
+    executable(&claude, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        home,
+        root.join("config"),
+        root.join("data"),
+        root.join("dock"),
+    );
+    let found = manager.add_scan_dir(&custom).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].path, claude);
+    let empty = std::ffi::OsString::new();
+    let discovered = manager.discover_from_path(&empty);
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(discovered[0].path, claude);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn add_scan_dir_rejects_folder_without_supported_tools() {
+    let root = temp_root();
+    let home = root.join("home");
+    let empty = root.join("empty");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&empty).unwrap();
+    let manager = ConnectionManager::new(
+        home,
+        root.join("config"),
+        root.join("data"),
+        root.join("dock"),
+    );
+    let error = manager.add_scan_dir(&empty).unwrap_err();
+    assert!(error.contains("没有支持的工具"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn codex_connect_merges_hooks_json_and_keeps_other_hooks() {
     let root = temp_root();
     let home = root.join("home");
@@ -734,16 +810,45 @@ fn cursor_preview_and_listing_admit_missing_stop() {
     assert!(preview
         .notes
         .iter()
-        .any(|note| note.contains("漏发 stop") && note.contains("工作中")));
+        .any(|note| note.contains("不会通知已经结束") && note.contains("工作中")));
     assert!(preview
         .notes
         .iter()
         .any(|note| note.contains("系统通知") && note.contains("设置")));
     let record = manager.connect("cursor", &original).unwrap();
-    assert!(record.limitation.contains("漏发 stop"));
+    assert!(record.limitation.contains("不会通知已经结束"));
     assert_eq!(
         manager.records()[0].limitation,
         ConnectionMethod::CursorHook.limitation()
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn codex_preview_and_listing_admit_interrupt_and_error_gaps() {
+    let root = temp_root();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let original = root.join("codex");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        home,
+        root.join("config"),
+        root.join("data"),
+        root.join("dock"),
+    );
+    let preview = manager.preview("codex", &original).unwrap();
+    assert!(preview
+        .notes
+        .iter()
+        .any(|note| note.contains("Esc") && note.contains("工作中") && note.contains("报错")));
+    let record = manager.connect("codex", &original).unwrap();
+    assert!(record.limitation.contains("Esc"));
+    assert!(record.limitation.contains("报错"));
+    assert!(!record.capabilities.iter().any(|item| item == "failed"));
+    assert_eq!(
+        manager.records()[0].limitation,
+        ConnectionMethod::CodexHook.limitation()
     );
     fs::remove_dir_all(root).unwrap();
 }
@@ -781,5 +886,48 @@ fn claude_and_codex_preview_mention_native_toasts() {
         Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
         None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
     }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cursor_and_grok_preview_warn_when_grok_compat_hooks_are_on() {
+    use agent_activity_dock_connect::GROK_COMPAT_CURSOR_HOOKS_WARNING;
+
+    let root = temp_root();
+    let home = root.join("home");
+    let grok_home = home.join(".grok");
+    fs::create_dir_all(&grok_home).unwrap();
+    let cursor = root.join("cursor-agent");
+    let grok = root.join("grok");
+    executable(&cursor, "#!/bin/sh\nexit 0\n");
+    executable(&grok, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        home,
+        root.join("config"),
+        root.join("data"),
+        root.join("dock"),
+    );
+
+    let quiet_cursor = manager.preview("cursor", &cursor).unwrap();
+    assert!(quiet_cursor.warnings.is_empty());
+    fs::write(grok_home.join("settings.json"), b"{not-json").unwrap();
+    let invalid = manager.preview("grok", &grok).unwrap();
+    assert!(invalid.warnings.is_empty());
+
+    fs::write(
+        grok_home.join("settings.json"),
+        br#"{"compat":{"cursor":{"hooks":true}}}"#,
+    )
+    .unwrap();
+    let warned_cursor = manager.preview("cursor", &cursor).unwrap();
+    let warned_grok = manager.preview("grok", &grok).unwrap();
+    assert_eq!(
+        warned_cursor.warnings,
+        vec![GROK_COMPAT_CURSOR_HOOKS_WARNING.to_owned()]
+    );
+    assert_eq!(
+        warned_grok.warnings,
+        vec![GROK_COMPAT_CURSOR_HOOKS_WARNING.to_owned()]
+    );
     fs::remove_dir_all(root).unwrap();
 }

@@ -99,6 +99,18 @@ fn replace_locked_exe(source: &Path, dest: &Path, original: std::io::Error) -> R
     }
 }
 
+#[cfg(windows)]
+pub fn read_user_path() -> Option<String> {
+    let key = windows_registry::CURRENT_USER.open("Environment").ok()?;
+    let value = key.get_string("Path").ok()?;
+    let value = value.trim().to_owned();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
 pub fn ensure_dir_on_user_path(dir: &Path) -> Result<bool, String> {
     #[cfg(windows)]
     {

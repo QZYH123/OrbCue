@@ -3,6 +3,8 @@ mod region;
 mod toast;
 mod tray;
 #[cfg(windows)]
+mod wsl_cli_install;
+#[cfg(windows)]
 mod wsl_session;
 
 use agent_activity_dock_connect::{
@@ -28,6 +30,7 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WebviewWindow,
 };
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use toast::{prepare_windows_notifications, preview_attention_toast, PresenterToastSink};
 
@@ -76,6 +79,8 @@ pub(crate) struct InventoryConnection {
 pub(crate) struct AgentInventory {
     discovered: Vec<InventoryAgent>,
     connected: Vec<InventoryConnection>,
+    #[serde(default)]
+    wsl_error: Option<String>,
 }
 
 pub(crate) trait PresenterSession: Send + Sync {
@@ -270,9 +275,12 @@ fn publish_inventory(app: &AppHandle, inventory: AgentInventory) {
 fn load_fresh_inventory(app: &AppHandle) -> AgentInventory {
     let mut discovered = Vec::new();
     let mut connected = Vec::new();
+    #[allow(unused_mut)]
+    let mut wsl_error = None;
 
     #[cfg(windows)]
     {
+        let install_error = wsl_cli_install::ensure_installed(app);
         let manager = connection_manager(app);
         discovered.extend(
             manager
@@ -300,7 +308,13 @@ fn load_fresh_inventory(app: &AppHandle) -> AgentInventory {
                         .map(|record| sided_connection(record, AgentSide::Wsl)),
                 );
             }
-            Err(error) => eprintln!("Agent Activity Dock: {error}"),
+            Err(error) => {
+                eprintln!("Agent Activity Dock: {error}");
+                wsl_error = Some(error);
+            }
+        }
+        if wsl_error.is_none() {
+            wsl_error = install_error;
         }
     }
 
@@ -325,6 +339,7 @@ fn load_fresh_inventory(app: &AppHandle) -> AgentInventory {
     AgentInventory {
         discovered,
         connected,
+        wsl_error,
     }
 }
 
@@ -365,6 +380,18 @@ fn refresh_agents(app: AppHandle) -> AgentInventory {
     let inventory = load_fresh_inventory(&app);
     publish_inventory(&app, inventory.clone());
     inventory
+}
+
+#[tauri::command]
+fn add_agent_folder(app: AppHandle) -> Result<AgentInventory, String> {
+    let Some(folder) = app.dialog().file().blocking_pick_folder() else {
+        return Ok(cached_inventory());
+    };
+    let dir = folder.into_path().map_err(|error| error.to_string())?;
+    connection_manager(&app).add_scan_dir(&dir)?;
+    let inventory = load_fresh_inventory(&app);
+    publish_inventory(&app, inventory.clone());
+    Ok(inventory)
 }
 
 #[tauri::command]
@@ -438,7 +465,9 @@ fn run_alias() -> Result<Option<String>, String> {
             Err("wsl unavailable".to_owned())
         }
     };
-    Ok(agent_activity_dock_connect::preferred_run_alias(local, remote))
+    Ok(agent_activity_dock_connect::preferred_run_alias(
+        local, remote,
+    ))
 }
 
 #[tauri::command]
@@ -757,6 +786,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppService(Mutex::new(Some(Arc::clone(&session)))))
         .setup(move |app| {
@@ -764,6 +794,8 @@ pub fn run() {
             configure_windows(&app_handle);
             prepare_windows_notifications(&app_handle);
             install_windows_trampoline_cli(&app_handle);
+            #[cfg(windows)]
+            wsl_cli_install::spawn(app_handle.clone());
             position_ball(&app_handle);
             region::apply_ball_region_for(&app_handle);
             install_tray(app);
@@ -809,6 +841,7 @@ pub fn run() {
             reset,
             agent_inventory,
             refresh_agents,
+            add_agent_folder,
             preview_connect,
             connect_agent,
             disconnect_agent,

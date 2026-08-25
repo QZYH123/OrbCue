@@ -99,11 +99,13 @@ export interface ConnectionPreview {
   files: PreviewFile[];
   will_not: string[];
   notes: string[];
+  warnings?: string[];
 }
 
 export interface AgentInventory {
   discovered: DiscoveredAgent[];
   connected: ConnectionRecord[];
+  wsl_error?: string | null;
 }
 
 export const emptySnapshot: Snapshot = {

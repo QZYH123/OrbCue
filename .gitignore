@@ -17,6 +17,7 @@ htmlcov/
 /target/
 **/target/
 /src-tauri/binaries/
+/src-tauri/resources/dock-wsl
 
 # Svelte / Vite
 /node_modules/

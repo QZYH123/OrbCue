@@ -218,8 +218,8 @@ fn wsl_dock_json<T: for<'de> Deserialize<'de>>(args: &[&str]) -> Result<T, Strin
     let output = wsl_dock_command(args)?
         .output()
         .map_err(|error| missing_wsl_or_dock(error))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let stdout = agent_activity_dock_connect::decode_console_output(&output.stdout);
+    let stderr = agent_activity_dock_connect::decode_console_output(&output.stderr);
     if !output.status.success() {
         return Err(bridge_failure(format_exit_status(output.status), &stderr));
     }
@@ -268,13 +268,35 @@ fn bridge_command() -> Result<Command, String> {
     wsl_dock_command(&["bridge"])
 }
 
-fn wsl_dock_command(args: &[&str]) -> Result<Command, String> {
-    let mut command = Command::new("wsl.exe");
+pub(crate) fn wsl_base_command() -> Command {
     if let Ok(distro) = env::var("AGENT_ACTIVITY_DOCK_WSL_DISTRO") {
         if !distro.is_empty() {
-            command.args(["-d", &distro]);
+            return wsl_command_for_distro(&distro);
         }
     }
+    let mut command = Command::new("wsl.exe");
+    hide_console(&mut command);
+    command
+}
+
+pub(crate) fn wsl_command_for_distro(distro: &str) -> Command {
+    let mut command = Command::new("wsl.exe");
+    if !distro.is_empty() {
+        command.args(["-d", distro]);
+    }
+    hide_console(&mut command);
+    command
+}
+
+pub(crate) fn wsl_list_command() -> Command {
+    let mut command = Command::new("wsl.exe");
+    command.args(["-l", "-q"]);
+    hide_console(&mut command);
+    command
+}
+
+fn wsl_dock_command(args: &[&str]) -> Result<Command, String> {
+    let mut command = wsl_base_command();
     command.args([
         "-e",
         "sh",
@@ -298,7 +320,6 @@ fn wsl_dock_command(args: &[&str]) -> Result<Command, String> {
             command.env("WSLENV", extra);
         }
     }
-    hide_console(&mut command);
     Ok(command)
 }
 
@@ -345,9 +366,9 @@ fn format_exit_status(status: std::process::ExitStatus) -> String {
 }
 
 fn read_utf8(reader: &mut impl Read) -> String {
-    let mut text = String::new();
-    let _ = reader.read_to_string(&mut text);
-    text
+    let mut bytes = Vec::new();
+    let _ = reader.read_to_end(&mut bytes);
+    agent_activity_dock_connect::decode_console_output(&bytes)
 }
 
 fn missing_wsl_or_dock(error: std::io::Error) -> String {

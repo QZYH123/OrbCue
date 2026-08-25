@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  linux-cli:
+    name: Linux musl CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Install musl tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - run: cargo build -p agent-activity-dock-cli --release --target x86_64-unknown-linux-musl
+      - name: Stage dock-wsl artifact
+        run: |
+          mkdir -p src-tauri/resources
+          cp target/x86_64-unknown-linux-musl/release/dock src-tauri/resources/dock-wsl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dock-wsl
+          path: src-tauri/resources/dock-wsl
+          if-no-files-found: error
+
+  package-windows:
+    name: Windows installer
+    runs-on: windows-latest
+    needs: [linux-cli]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: dock-wsl
+          path: src-tauri/resources
+      - run: npm ci --prefix frontend
+      - run: npm run tauri -- build --bundles nsis
+        env:
+          AGENT_ACTIVITY_DOCK_SKIP_WSL_DOCK_BUILD: "1"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-activity-dock-windows-nsis
+          path: target/release/bundle/nsis/
+          if-no-files-found: error
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/bundle/nsis/*
+          fail_on_unmatched_files: true

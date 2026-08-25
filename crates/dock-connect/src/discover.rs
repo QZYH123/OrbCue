@@ -83,13 +83,37 @@ pub fn cached_login_path() -> Result<String, String> {
 }
 
 pub fn discovery_path() -> OsString {
-    if cfg!(windows) {
-        return env::var_os("PATH").unwrap_or_default();
+    #[cfg(windows)]
+    {
+        let process = env::var_os("PATH").unwrap_or_default();
+        if let Some(user) = crate::user_path::read_user_path() {
+            return merge_search_path(process, OsString::from(user));
+        }
+        process
     }
-    match cached_login_path() {
-        Ok(path) => OsString::from(path),
-        Err(_) => env::var_os("PATH").unwrap_or_default(),
+    #[cfg(not(windows))]
+    {
+        match cached_login_path() {
+            Ok(path) => OsString::from(path),
+            Err(_) => env::var_os("PATH").unwrap_or_default(),
+        }
     }
+}
+
+pub fn merge_search_path(primary: OsString, extra: OsString) -> OsString {
+    if extra.is_empty() {
+        return primary;
+    }
+    if primary.is_empty() {
+        return extra;
+    }
+    let mut dirs: Vec<PathBuf> = env::split_paths(&primary).collect();
+    for dir in env::split_paths(&extra) {
+        if !dirs.iter().any(|existing| existing == &dir) {
+            dirs.push(dir);
+        }
+    }
+    env::join_paths(dirs).unwrap_or(primary)
 }
 
 pub fn agent_origin(path: &Path) -> AgentOrigin {
@@ -123,19 +147,23 @@ pub fn discover_agents(
     excluded_dir: Option<&Path>,
     grok_home: &Path,
 ) -> Vec<DiscoveredAgent> {
+    discover_agents_with_extras(path, &[grok_home.join("bin")], excluded_dir)
+}
+
+pub fn discover_agents_with_extras(
+    path: &OsStr,
+    extra_dirs: &[PathBuf],
+    excluded_dir: Option<&Path>,
+) -> Vec<DiscoveredAgent> {
     let mut agents: Vec<DiscoveredAgent> = ["claude", "codex", "dsh", "grok"]
         .into_iter()
-        .filter_map(|name| choose_discovered(name, find_all_on_path(name, path, excluded_dir)))
+        .filter_map(|name| {
+            choose_discovered(name, collect_named(name, path, extra_dirs, excluded_dir))
+        })
         .collect();
-    if !agents.iter().any(|agent| agent.name == "grok") {
-        if let Some(path) = crate::grok_binary_in_home(grok_home) {
-            agents.push(discovered_agent("grok", path));
-        }
-    }
-    if let Some(cursor) = choose_discovered(
-        "cursor",
-        find_all_on_path("cursor-agent", path, excluded_dir),
-    ) {
+    if let Some(cursor) =
+        choose_discovered("cursor", collect_cursor(path, extra_dirs, excluded_dir))
+    {
         let index = agents
             .iter()
             .position(|agent| agent.name.as_str() > "cursor")
@@ -143,6 +171,80 @@ pub fn discover_agents(
         agents.insert(index, cursor);
     }
     agents
+}
+
+pub fn agents_in_dir(dir: &Path) -> Vec<DiscoveredAgent> {
+    discover_agents_with_extras(OsStr::new(""), &[dir.to_path_buf()], None)
+}
+
+fn collect_named(
+    name: &str,
+    path: &OsStr,
+    extra_dirs: &[PathBuf],
+    excluded_dir: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut candidates = find_all_on_path(name, path, excluded_dir);
+    for dir in extra_dirs {
+        for found in find_named_in_dir(name, dir, excluded_dir) {
+            if !candidates.contains(&found) {
+                candidates.push(found);
+            }
+        }
+    }
+    candidates
+}
+
+fn collect_cursor(
+    path: &OsStr,
+    extra_dirs: &[PathBuf],
+    excluded_dir: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut candidates = find_all_on_path("cursor-agent", path, excluded_dir);
+    for dir in extra_dirs {
+        for found in cursor_files_in_dir(dir, excluded_dir) {
+            if !candidates.contains(&found) {
+                candidates.push(found);
+            }
+        }
+    }
+    candidates
+}
+
+fn cursor_files_in_dir(dir: &Path, excluded_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut found = find_named_in_dir("cursor-agent", dir, excluded_dir);
+    if found.is_empty() && dir_looks_like_cursor_install(dir) {
+        found.extend(find_named_in_dir("agent", dir, excluded_dir));
+        let ps1 = dir.join("agent.ps1");
+        if usable_file(&ps1, excluded_dir) && !found.contains(&ps1) {
+            found.push(ps1);
+        }
+    }
+    found
+}
+
+fn dir_looks_like_cursor_install(dir: &Path) -> bool {
+    dir.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("cursor-agent"))
+}
+
+fn find_named_in_dir(name: &str, dir: &Path, excluded_dir: Option<&Path>) -> Vec<PathBuf> {
+    crate::candidate_names(name)
+        .into_iter()
+        .map(|candidate| dir.join(candidate))
+        .filter(|candidate| usable_file(candidate, excluded_dir))
+        .collect()
+}
+
+fn usable_file(candidate: &Path, excluded_dir: Option<&Path>) -> bool {
+    if excluded_dir.is_some_and(|excluded| candidate.starts_with(excluded)) {
+        return false;
+    }
+    let text = candidate.to_string_lossy().replace('\\', "/");
+    if is_windows_interop_path(&text) {
+        return false;
+    }
+    candidate.is_file()
 }
 
 fn select_agent(name: &str, candidates: Vec<PathBuf>) -> Option<DiscoveredAgent> {
@@ -463,6 +565,100 @@ mod tests {
             serde_json::from_str(r#"{"name":"claude","path":"/usr/bin/claude"}"#).unwrap();
         assert_eq!(agent.origin, AgentOrigin::Wsl);
         assert!(agent.connectable);
+    }
+
+    #[test]
+    fn extra_dirs_find_claude_when_not_on_path() {
+        let root = std::env::temp_dir().join(format!(
+            "aadock-extra-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock is after epoch")
+                .as_nanos()
+        ));
+        let bin = root.join(".local").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("claude"), b"").unwrap();
+        let discovered =
+            super::discover_agents_with_extras(std::ffi::OsStr::new(""), &[bin.clone()], None);
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].name, "claude");
+        assert_eq!(discovered[0].path, bin.join("claude"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cursor_install_dir_agent_cmd_is_discovered_as_cursor() {
+        let root = std::env::temp_dir().join(format!(
+            "aadock-cursor-dir-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock is after epoch")
+                .as_nanos()
+        ));
+        let dir = root.join("cursor-agent");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("agent.cmd"), b"").unwrap();
+        let discovered =
+            super::discover_agents_with_extras(std::ffi::OsStr::new(""), &[dir.clone()], None);
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].name, "cursor");
+        assert_eq!(discovered[0].path, dir.join("agent.cmd"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn grok_bin_agent_is_not_treated_as_cursor() {
+        let root = std::env::temp_dir().join(format!(
+            "aadock-grok-agent-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock is after epoch")
+                .as_nanos()
+        ));
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("grok"), b"").unwrap();
+        std::fs::write(bin.join("agent"), b"").unwrap();
+        let discovered =
+            super::discover_agents_with_extras(std::ffi::OsStr::new(""), &[bin.clone()], None);
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].name, "grok");
+        assert_eq!(discovered[0].path, bin.join("grok"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn path_wins_over_extra_dir_for_the_same_agent() {
+        let root = std::env::temp_dir().join(format!(
+            "aadock-path-wins-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock is after epoch")
+                .as_nanos()
+        ));
+        let on_path = root.join("path-bin");
+        let extra = root.join("extra-bin");
+        std::fs::create_dir_all(&on_path).unwrap();
+        std::fs::create_dir_all(&extra).unwrap();
+        std::fs::write(on_path.join("claude"), b"").unwrap();
+        std::fs::write(extra.join("claude"), b"").unwrap();
+        let path = std::env::join_paths([&on_path]).unwrap();
+        let discovered = super::discover_agents_with_extras(&path, &[extra], None);
+        assert_eq!(discovered[0].path, on_path.join("claude"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn merge_search_path_appends_new_dirs() {
+        let merged = super::merge_search_path(
+            std::env::join_paths(["/usr/bin"]).unwrap(),
+            std::env::join_paths(["/home/u/.local/bin", "/usr/bin"]).unwrap(),
+        );
+        let dirs: Vec<_> = std::env::split_paths(&merged).collect();
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs[0], PathBuf::from("/usr/bin"));
+        assert_eq!(dirs[1], PathBuf::from("/home/u/.local/bin"));
     }
 
     #[test]

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -644,33 +645,65 @@ fn next_marker_suffix() -> u32 {
     (nanos ^ ((std::process::id() as u64) << 16) ^ seq.wrapping_mul(0x9E37_79B9)) as u32
 }
 
+const CURSOR_EDITOR_ON_PATH: &str = "cursor 在 PATH 上是 Cursor 编辑器，不是命令行工具。Dock 需要 cursor-agent；先安装 Cursor CLI 再运行 dock run cursor。";
+
 fn resolve_agent(name: &str) -> Result<String, String> {
     if !valid_run_agent_name(name) {
         return Err("agent 名只能包含字母、数字、'.'、'_' 或 '-'".to_owned());
     }
     let dock_binary = env::current_exe().unwrap_or_else(|_| PathBuf::from("dock"));
     let manager = ConnectionManager::from_environment(dock_binary);
-    if let Some(path) = look_on_path(name) {
-        return Ok(path.to_string_lossy().into_owned());
+    resolve_agent_with(name, env::var_os("PATH").as_deref(), &manager)
+}
+
+fn resolve_agent_with(
+    name: &str,
+    path: Option<&OsStr>,
+    manager: &ConnectionManager,
+) -> Result<String, String> {
+    let binary_name = run_binary_name(name);
+    if let Some(found) = look_on_path_in(binary_name, path) {
+        return Ok(found.to_string_lossy().into_owned());
     }
     if let Some(agent) = manager
-        .discover()
+        .discover_from_path(path.unwrap_or(OsStr::new("")))
         .into_iter()
         .find(|agent| agent.name == name)
     {
-        return Ok(agent.path.to_string_lossy().into_owned());
+        if !name.eq_ignore_ascii_case("cursor") || is_cursor_cli_binary(&agent.path) {
+            return Ok(agent.path.to_string_lossy().into_owned());
+        }
     }
     if let Some(record) = manager
         .records()
         .into_iter()
         .find(|record| record.name == name)
     {
-        let path = record.wrapper.unwrap_or(record.original);
-        return Ok(path.to_string_lossy().into_owned());
+        let resolved = record.wrapper.unwrap_or(record.original);
+        if !name.eq_ignore_ascii_case("cursor") || is_cursor_cli_binary(&resolved) {
+            return Ok(resolved.to_string_lossy().into_owned());
+        }
+    }
+    if name.eq_ignore_ascii_case("cursor") && look_on_path_in("cursor", path).is_some() {
+        return Err(CURSOR_EDITOR_ON_PATH.to_owned());
     }
     Err(format!(
         "`{name}` 未连接，也不在 PATH 上。先执行 `dock connect {name}`，或确认该命令可用。"
     ))
+}
+
+fn run_binary_name(name: &str) -> &str {
+    if name.eq_ignore_ascii_case("cursor") {
+        "cursor-agent"
+    } else {
+        name
+    }
+}
+
+fn is_cursor_cli_binary(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("cursor-agent"))
 }
 
 fn resolve_wt_profile(explicit: Option<&str>) -> Result<Option<String>, String> {
@@ -802,8 +835,12 @@ fn windows_apps_wt() -> Option<PathBuf> {
 }
 
 fn look_on_path(name: &str) -> Option<PathBuf> {
-    let path = env::var_os("PATH")?;
-    env::split_paths(&path).find_map(|dir| {
+    look_on_path_in(name, env::var_os("PATH").as_deref())
+}
+
+fn look_on_path_in(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+    let path = path?;
+    env::split_paths(path).find_map(|dir| {
         existing_path(dir.join(name)).or_else(|| {
             if cfg!(windows) || name.ends_with(".exe") {
                 None
@@ -826,12 +863,16 @@ pub fn posix_single_quote(value: &str) -> String {
 mod tests {
     use super::{
         allocate_dock_marker, choose_wt_profile, inner_script, native_inner_args,
-        posix_single_quote, should_close_launcher, spawn_plan, windows_quote,
+        posix_single_quote, resolve_agent_with, should_close_launcher, spawn_plan, windows_quote,
         wt_windows_command_line, InnerCommand, NativeInner, SpawnRequest, WslInner,
+        CURSOR_EDITOR_ON_PATH,
     };
+    use agent_activity_dock_connect::ConnectionManager;
     use agent_activity_dock_core::{dock_terminal_marker, DOCK_MARKER_HEX_LEN};
     use std::collections::HashSet;
+    use std::fs;
     use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn request() -> SpawnRequest {
         SpawnRequest {
@@ -1059,5 +1100,48 @@ mod tests {
             assert_eq!(dock_terminal_marker(&marker), Some(marker.as_str()));
             assert!(seen.insert(marker), "marker should not repeat in-process");
         }
+    }
+
+    fn temp_resolve_root() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("aadock-resolve-{nonce}"));
+        fs::create_dir_all(root.join("home")).unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        root
+    }
+
+    fn isolated_manager(root: &Path) -> ConnectionManager {
+        ConnectionManager::new(
+            root.join("home"),
+            root.join("config"),
+            root.join("data"),
+            root.join("dock"),
+        )
+    }
+
+    #[test]
+    fn resolve_agent_rejects_cursor_editor_on_path() {
+        let root = temp_resolve_root();
+        let bin = root.join("bin");
+        fs::write(bin.join("cursor"), b"").unwrap();
+        let manager = isolated_manager(&root);
+        let error = resolve_agent_with("cursor", Some(bin.as_os_str()), &manager).unwrap_err();
+        assert_eq!(error, CURSOR_EDITOR_ON_PATH);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resolve_agent_prefers_cursor_agent_on_path() {
+        let root = temp_resolve_root();
+        let bin = root.join("bin");
+        fs::write(bin.join("cursor"), b"").unwrap();
+        fs::write(bin.join("cursor-agent"), b"").unwrap();
+        let manager = isolated_manager(&root);
+        let resolved = resolve_agent_with("cursor", Some(bin.as_os_str()), &manager).unwrap();
+        assert_eq!(Path::new(&resolved), bin.join("cursor-agent"));
+        fs::remove_dir_all(root).unwrap();
     }
 }

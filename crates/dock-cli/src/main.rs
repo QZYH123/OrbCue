@@ -399,15 +399,20 @@ fn run_connection_command(command: &Command, json_output: bool) -> i32 {
                 return 0;
             }
             match manager.connect(name, &path) {
-                Ok(record) if json_output => println!(
-                    "{}",
-                    serde_json::to_string_pretty(&record).expect("connection record serializes")
-                ),
+                Ok(record) if json_output => {
+                    print_connect_warnings(&manager.connect_warnings(name));
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&record)
+                            .expect("connection record serializes")
+                    );
+                }
                 Ok(record) => {
                     println!("Connected {} via {:?}.", record.name, record.method);
                     if !record.limitation.is_empty() {
                         println!("Limitation: {}", record.limitation);
                     }
+                    print_connect_warnings(&manager.connect_warnings(name));
                 }
                 Err(error) => {
                     eprintln!("dock connect: {error}");
@@ -1623,7 +1628,49 @@ fn discover_windows_dock() -> Option<PathBuf> {
     if let Some(local) = agent_activity_dock_ipc::windows_app_data_dir() {
         candidates.push(local.join("Agent Activity Dock").join("dock.exe"));
     }
-    candidates.into_iter().find(|path| path.is_file())
+    if let Some(found) = candidates.into_iter().find(|path| path.is_file()) {
+        return Some(found);
+    }
+    newest_windows_dock_under_mnt(Path::new("/mnt"))
+}
+
+fn newest_windows_dock_under_mnt(mnt_root: &Path) -> Option<PathBuf> {
+    let mut hits = Vec::new();
+    let mounts = fs::read_dir(mnt_root).ok()?;
+    for mount in mounts.flatten() {
+        let name = mount.file_name();
+        let Some(letter) = name.to_str() else {
+            continue;
+        };
+        if letter.len() != 1
+            || !letter
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_alphabetic())
+        {
+            continue;
+        }
+        let users = mount.path().join("Users");
+        let Ok(entries) = fs::read_dir(users) else {
+            continue;
+        };
+        for user in entries.flatten() {
+            let dock = user
+                .path()
+                .join("AppData")
+                .join("Local")
+                .join("Agent Activity Dock")
+                .join("dock.exe");
+            if !dock.is_file() {
+                continue;
+            }
+            let mtime = fs::metadata(&dock).and_then(|meta| meta.modified()).ok();
+            hits.push((mtime, dock));
+        }
+    }
+    hits.into_iter()
+        .max_by_key(|(mtime, _)| *mtime)
+        .map(|(_, path)| path)
 }
 
 fn run_emit(endpoint: &Path, json_output: bool) -> i32 {
@@ -1745,6 +1792,18 @@ fn print_connect_preview(preview: &ConnectionPreview) {
         for note in &preview.notes {
             println!("  - {note}");
         }
+    }
+    if !preview.warnings.is_empty() {
+        println!("Warnings:");
+        for warning in &preview.warnings {
+            println!("  - {warning}");
+        }
+    }
+}
+
+fn print_connect_warnings(warnings: &[String]) {
+    for warning in warnings {
+        eprintln!("dock connect: {warning}");
     }
 }
 
@@ -2026,13 +2085,16 @@ fn runtime_state_dir() -> PathBuf {
 mod tests {
     use super::{
         forward_to_wsl_predicate, is_forwardable_command, is_short_lived_windows_hook_parent,
-        looks_like_windows_pipe, resolve_windows_liveness_pid, stays_on_agent_os,
-        trampoline_to_windows_predicate, Command,
+        looks_like_windows_pipe, newest_windows_dock_under_mnt, resolve_windows_liveness_pid,
+        stays_on_agent_os, trampoline_to_windows_predicate, Command,
     };
     use agent_activity_dock_core::{DockEvent, EventKind};
     use agent_activity_dock_ipc::DockBackend;
     use std::ffi::OsString;
+    use std::fs;
+    use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -2434,6 +2496,55 @@ mod tests {
         );
         let spaced = "12 (my (weird) name) R 99 12 12 0 12 0 0 0 0 0 0 0 0 0 0 0 0 0 4242";
         assert_eq!(super::parse_proc_stat(spaced), Some((99, 0, 4242)));
+    }
+
+    fn write_dock_exe(path: &Path, modified: SystemTime) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"dock").unwrap();
+        fs::File::open(path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+    }
+
+    fn temp_mnt_root() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("aadock-mnt-dock-{nonce}"));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn dock_under_user(mnt: &Path, drive: &str, user: &str) -> PathBuf {
+        mnt.join(drive)
+            .join("Users")
+            .join(user)
+            .join("AppData")
+            .join("Local")
+            .join("Agent Activity Dock")
+            .join("dock.exe")
+    }
+
+    #[test]
+    fn enumerates_newest_windows_dock_under_mnt() {
+        let root = temp_mnt_root();
+        let older = dock_under_user(&root, "c", "Alice");
+        let newer = dock_under_user(&root, "c", "Bob");
+        let now = SystemTime::now();
+        write_dock_exe(&older, now - Duration::from_secs(120));
+        write_dock_exe(&newer, now);
+        assert_eq!(newest_windows_dock_under_mnt(&root), Some(newer));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn enumerates_windows_dock_under_mnt_returns_none_without_hits() {
+        let root = temp_mnt_root();
+        fs::create_dir_all(root.join("c").join("Users").join("Alice")).unwrap();
+        assert_eq!(newest_windows_dock_under_mnt(&root), None);
+        fs::remove_dir_all(root).unwrap();
     }
 }
 

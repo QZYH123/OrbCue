@@ -555,6 +555,8 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 .jump-btn:hover,
 .jump-btn.precise:hover { background: rgba(255, 255, 255, .9); }
 .jump-btn.precise { color: var(--accent); }
+.jump-btn:not(.precise) { opacity: .6; }
+.jump-btn:not(.precise):hover { opacity: 1; }
 .session-actions button, .text-button {
   padding: 0;
   border: 0;
@@ -688,6 +690,30 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   border-radius: 12px;
   color: #d70015;
   background: rgba(255, 69, 58, .12);
+  font-size: 11px;
+}
+.hint-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 8px;
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .55);
+  box-shadow: inset 0 1px 0 #fff, 0 1px 2px rgba(40, 50, 80, .08);
+  font-size: 11px;
+}
+.hint-banner p { display: flex; flex-direction: column; gap: 2px; margin: 0; min-width: 0; }
+.hint-banner small { color: rgba(60, 60, 67, .65); }
+.hint-banner .hint-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.dialog-warning {
+  margin: 8px 0 0;
+  padding: 8px 11px;
+  border-radius: 12px;
+  color: #a05a00;
+  background: rgba(255, 170, 51, .16);
   font-size: 11px;
 }
 .modal-backdrop {
