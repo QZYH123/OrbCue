@@ -62,8 +62,16 @@ pub enum IpcRequest {
     Event(DockEvent),
     Snapshot,
     Subscribe,
-    Acknowledge { source: String, session_id: String },
-    Reset { source: String, session_id: String },
+    Acknowledge {
+        source: String,
+        session_id: String,
+        terminal_id: Option<String>,
+    },
+    Reset {
+        source: String,
+        session_id: String,
+        terminal_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -150,6 +158,15 @@ impl WireResponse {
     }
 }
 
+fn optional_query_terminal(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("terminal_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "*")
+        .map(str::to_owned)
+}
+
 pub fn parse_request(frame: &[u8]) -> Result<IpcRequest, FrameError> {
     if frame.len() > MAX_FRAME_BYTES {
         return Err(FrameError::MessageTooLarge);
@@ -178,7 +195,11 @@ pub fn parse_request(frame: &[u8]) -> Result<IpcRequest, FrameError> {
                 if source.is_empty() || session_id.is_empty() {
                     Err(FrameError::InvalidRequest)
                 } else {
-                    Ok(IpcRequest::Acknowledge { source, session_id })
+                    Ok(IpcRequest::Acknowledge {
+                        source,
+                        session_id,
+                        terminal_id: optional_query_terminal(&value),
+                    })
                 }
             }
             "reset" => {
@@ -196,7 +217,11 @@ pub fn parse_request(frame: &[u8]) -> Result<IpcRequest, FrameError> {
                 if source.is_empty() || session_id.is_empty() {
                     Err(FrameError::InvalidRequest)
                 } else {
-                    Ok(IpcRequest::Reset { source, session_id })
+                    Ok(IpcRequest::Reset {
+                        source,
+                        session_id,
+                        terminal_id: optional_query_terminal(&value),
+                    })
                 }
             }
             _ => Err(FrameError::UnknownQuery),
@@ -218,15 +243,25 @@ pub fn encode_request(request: &IpcRequest) -> Result<Vec<u8>, serde_json::Error
         IpcRequest::Event(event) => encode_line(event),
         IpcRequest::Snapshot => Ok(b"{\"query\":\"snapshot\"}\n".to_vec()),
         IpcRequest::Subscribe => Ok(b"{\"query\":\"subscribe\"}\n".to_vec()),
-        IpcRequest::Acknowledge { source, session_id } => encode_line(&serde_json::json!({
+        IpcRequest::Acknowledge {
+            source,
+            session_id,
+            terminal_id,
+        } => encode_line(&serde_json::json!({
             "query": "acknowledge",
             "source": source,
-            "session_id": session_id
+            "session_id": session_id,
+            "terminal_id": terminal_id,
         })),
-        IpcRequest::Reset { source, session_id } => encode_line(&serde_json::json!({
+        IpcRequest::Reset {
+            source,
+            session_id,
+            terminal_id,
+        } => encode_line(&serde_json::json!({
             "query": "reset",
             "source": source,
-            "session_id": session_id
+            "session_id": session_id,
+            "terminal_id": terminal_id,
         })),
     }
 }

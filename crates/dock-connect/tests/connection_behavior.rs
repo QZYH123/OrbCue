@@ -202,8 +202,16 @@ fn grok_connect_writes_a_revocable_hook_file() {
     assert!(document.contains("UserPromptSubmit"));
     assert!(document.contains("\"Stop\""));
     assert!(document.contains("SessionEnd"));
-    assert!(!document.contains("PreToolUse"));
-    assert!(!document.contains("PostToolUse"));
+    assert!(document.contains("\"PreToolUse\""));
+    assert!(document.contains("\"PostToolUse\""));
+    assert!(document.contains("\"PostToolUseFailure\""));
+    assert!(document.contains("\"ask_user_question\""));
+    let parsed: serde_json::Value = serde_json::from_str(&document).unwrap();
+    let pre = parsed["hooks"]["PreToolUse"][0].as_object().unwrap();
+    assert_eq!(pre["matcher"], "ask_user_question");
+    let post = parsed["hooks"]["PostToolUse"][0].as_object().unwrap();
+    assert_eq!(post["matcher"], "ask_user_question");
+    assert_eq!(parsed["hooks"]["SessionStart"][0].get("matcher"), None);
     assert!(document.contains("agent-activity-dock"));
     assert!(document.contains("grok-hook"));
     let script = fs::read_to_string(
@@ -430,8 +438,15 @@ fn claude_preview_notes_backup_and_disconnect_keeps_other_hooks() {
     assert!(connected.contains("SessionStart"));
     assert!(connected.contains("UserPromptSubmit"));
     assert!(connected.contains("\"Stop\""));
-    assert!(!connected.contains("PreToolUse"));
-    assert!(!connected.contains("PostToolUse"));
+    assert!(connected.contains("\"PreToolUse\""));
+    assert!(connected.contains("\"PostToolUse\""));
+    assert!(connected.contains("AskUserQuestion"));
+    let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
+    assert_eq!(
+        parsed["hooks"]["PreToolUse"][0]["matcher"],
+        "AskUserQuestion"
+    );
+    assert_eq!(parsed["hooks"]["SessionStart"][0].get("matcher"), None);
     assert!(connected.contains("user-hook"));
     fs::write(
         &settings,
@@ -664,7 +679,13 @@ fn codex_connect_merges_hooks_json_and_keeps_other_hooks() {
     assert!(connected.contains("UserPromptSubmit"));
     assert!(connected.contains("\"Stop\""));
     assert!(connected.contains("SessionEnd"));
-    assert!(!connected.contains("PreToolUse"));
+    assert!(connected.contains("\"PreToolUse\""));
+    assert!(connected.contains("AskUserQuestion"));
+    let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
+    assert_eq!(
+        parsed["hooks"]["PreToolUse"][0]["matcher"],
+        "AskUserQuestion|ask_user_question"
+    );
     assert!(connected.contains("user-hook"));
     assert!(connected.contains("codex-hook"));
     let script = fs::read_to_string(
@@ -714,6 +735,7 @@ fn cursor_connect_writes_camelcase_hooks_and_keeps_other_hooks() {
     assert!(connected.contains("sessionStart"));
     assert!(connected.contains("beforeSubmitPrompt"));
     assert!(!connected.contains("preToolUse"));
+    assert!(!connected.contains("AskQuestion"));
     assert!(connected.contains("afterAgentResponse"));
     assert!(connected.contains("\"stop\""));
     assert!(connected.contains("sessionEnd"));

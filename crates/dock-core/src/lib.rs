@@ -360,7 +360,12 @@ impl DockState {
                 item.agent_starttime,
                 item.agent_wsl_distro.clone(),
             );
-            let key = session_key(&item.source, &item.session_id);
+            let key = persist_instance_key(
+                &state,
+                &item.source,
+                &item.session_id,
+                terminal_id.as_deref(),
+            );
             state.sessions.insert(
                 key,
                 SessionRecord {
@@ -510,13 +515,13 @@ impl DockState {
             return self.apply_child_event(event, parent_id);
         }
 
-        let key = session_key(&event.source, &event.session_id);
         let kind = event.kind;
-        if matches!(
+        let creating = matches!(
             kind,
             EventKind::Started | EventKind::Working | EventKind::Idle
-        ) && !self.sessions.contains_key(&key)
-        {
+        );
+        let key = self.resolve_session_key(&event, creating);
+        if creating && !self.sessions.contains_key(&key) {
             if let Some(terminal_id) = normalize_optional(&event.terminal_id).map(str::to_owned) {
                 if self.ignore_nested_start_on_running_terminal(&terminal_id, &event) {
                     self.remember_event(&event.event_id);
@@ -575,26 +580,38 @@ impl DockState {
         }
     }
 
-    pub fn acknowledge(&mut self, source: &str, session_id: &str) -> DockSnapshot {
+    pub fn acknowledge(
+        &mut self,
+        source: &str,
+        session_id: &str,
+        terminal_id: Option<&str>,
+    ) -> DockSnapshot {
         if source == "*" && session_id == "*" {
             for record in self.sessions.values_mut() {
                 record.acknowledged = true;
             }
-        } else if let Some(record) = self.sessions.get_mut(&session_key(source, session_id)) {
-            record.acknowledged = true;
+        } else {
+            for record in self.sessions.values_mut() {
+                if instance_matches(record, source, session_id, terminal_id) {
+                    record.acknowledged = true;
+                }
+            }
         }
         self.snapshot()
     }
 
-    pub fn reset(&mut self, source: &str, session_id: &str) -> DockSnapshot {
+    pub fn reset(
+        &mut self,
+        source: &str,
+        session_id: &str,
+        terminal_id: Option<&str>,
+    ) -> DockSnapshot {
         if source == "*" && session_id == "*" {
             self.clear();
             return self.snapshot();
         }
-        self.sessions.retain(|_, record| {
-            !(source_matches(source, &record.source)
-                && session_matches(session_id, &record.session_id))
-        });
+        self.sessions
+            .retain(|_, record| !instance_matches(record, source, session_id, terminal_id));
         self.snapshot()
     }
 
@@ -690,12 +707,18 @@ impl DockState {
     }
 
     fn apply_child_event(&mut self, event: DockEvent, parent_id: String) -> ApplyResult {
-        let parent_key = session_key(&event.source, &parent_id);
         let foldable = matches!(
             event.kind,
             EventKind::WaitingInput | EventKind::PermissionRequested | EventKind::Failed
         );
-        if !foldable || !self.sessions.contains_key(&parent_key) {
+        if !foldable {
+            self.remember_event(&event.event_id);
+            return self.accepted(None);
+        }
+        let mut parent_probe = event.clone();
+        parent_probe.session_id = parent_id.clone();
+        let parent_key = self.resolve_session_key(&parent_probe, false);
+        if !self.sessions.contains_key(&parent_key) {
             self.remember_event(&event.event_id);
             return self.accepted(None);
         }
@@ -737,6 +760,58 @@ impl DockState {
                     .unwrap_or_else(|| "invalid_transition".to_owned()),
             )
         }
+    }
+
+    fn resolve_session_key(&self, event: &DockEvent, for_create: bool) -> String {
+        let base = session_key(&event.source, &event.session_id);
+        if let Some(live) = liveness_from_event(event) {
+            if let Some(key) = self.sessions.iter().find_map(|(key, record)| {
+                (record.source == event.source
+                    && record.session_id == event.session_id
+                    && record
+                        .liveness
+                        .as_ref()
+                        .is_some_and(|existing| same_liveness(existing, &live)))
+                .then(|| key.clone())
+            }) {
+                return key;
+            }
+        }
+        if let Some(terminal_id) = normalize_optional(&event.terminal_id) {
+            if let Some((key, record)) = self.sessions.iter().find(|(_, record)| {
+                record.source == event.source
+                    && record.session_id == event.session_id
+                    && record.terminal_id.as_deref() == Some(terminal_id)
+            }) {
+                if for_create && should_fork_resume(record, event) {
+                    return fork_resume_key(event, &base);
+                }
+                return key.clone();
+            }
+        }
+        let matches: Vec<(&String, &SessionRecord)> = self
+            .sessions
+            .iter()
+            .filter(|(_, record)| {
+                record.source == event.source && record.session_id == event.session_id
+            })
+            .collect();
+        if matches.len() == 1 {
+            if for_create && should_fork_resume(matches[0].1, event) {
+                return fork_resume_key(event, &base);
+            }
+            if !for_create && !event_fits_instance(matches[0].1, event) {
+                return String::new();
+            }
+            return matches[0].0.clone();
+        }
+        if for_create && !matches.is_empty() {
+            return fork_resume_key(event, &base);
+        }
+        if !for_create {
+            return String::new();
+        }
+        base
     }
 
     fn ignore_nested_start_on_running_terminal(
@@ -1107,12 +1182,93 @@ fn session_key(source: &str, session_id: &str) -> String {
     format!("{source}\0{session_id}")
 }
 
+fn persist_instance_key(
+    state: &DockState,
+    source: &str,
+    session_id: &str,
+    terminal_id: Option<&str>,
+) -> String {
+    let base = session_key(source, session_id);
+    match terminal_id {
+        Some(terminal_id) if state.sessions.contains_key(&base) => {
+            format!("{base}\0{terminal_id}")
+        }
+        _ => base,
+    }
+}
+
+fn fork_resume_key(event: &DockEvent, base: &str) -> String {
+    if let Some(terminal_id) = normalize_optional(&event.terminal_id) {
+        return format!("{base}\0{terminal_id}");
+    }
+    if let Some(live) = liveness_from_event(event) {
+        return format!("{base}\0{}:{}", live.pid, live.starttime);
+    }
+    base.to_owned()
+}
+
+fn should_fork_resume(existing: &SessionRecord, incoming: &DockEvent) -> bool {
+    let Some(existing_live) = existing.liveness.as_ref() else {
+        return false;
+    };
+    let Some(incoming_live) = liveness_from_event(incoming) else {
+        return false;
+    };
+    !same_liveness(existing_live, &incoming_live)
+}
+
+fn event_fits_instance(record: &SessionRecord, event: &DockEvent) -> bool {
+    if let Some(live) = liveness_from_event(event) {
+        if record
+            .liveness
+            .as_ref()
+            .is_some_and(|existing| !same_liveness(existing, &live))
+        {
+            return false;
+        }
+    }
+    if let Some(terminal_id) = normalize_optional(&event.terminal_id) {
+        if record
+            .terminal_id
+            .as_deref()
+            .is_some_and(|existing| existing != terminal_id)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn same_liveness(existing: &AgentLiveness, incoming: &AgentLiveness) -> bool {
+    existing.os == incoming.os
+        && existing.pid == incoming.pid
+        && existing.starttime == incoming.starttime
+}
+
 fn source_matches(pattern: &str, source: &str) -> bool {
     pattern == "*" || pattern == source
 }
 
 fn session_matches(pattern: &str, session_id: &str) -> bool {
     pattern == "*" || pattern == session_id
+}
+
+fn instance_matches(
+    record: &SessionRecord,
+    source: &str,
+    session_id: &str,
+    terminal_id: Option<&str>,
+) -> bool {
+    if !source_matches(source, &record.source) || !session_matches(session_id, &record.session_id) {
+        return false;
+    }
+    match terminal_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "*")
+    {
+        Some(terminal_id) => record.terminal_id.as_deref() == Some(terminal_id),
+        None => true,
+    }
 }
 
 fn session_priority(session: &SessionSnapshot) -> u8 {

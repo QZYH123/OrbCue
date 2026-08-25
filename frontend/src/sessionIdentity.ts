@@ -128,6 +128,10 @@ export function auditProjectLabel(entry: Pick<AuditEntry, 'project_path'>): stri
   return folderName(entry.project_path);
 }
 
+export function sessionDomKey(session: SessionLike): string {
+  return `${session.source}\0${session.session_id}\0${session.terminal_id ?? ''}`;
+}
+
 export function sessionDetail(session: SessionLike): string {
   const terminal = session.terminal_id?.trim() ?? '';
   const dock = /^dock:([0-9a-fA-F]{6})$/.exec(terminal);

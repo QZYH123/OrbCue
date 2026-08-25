@@ -23,18 +23,30 @@ impl PresenterSession for WslSession {
         Ok(query_bridge(&IpcRequest::Snapshot)?.snapshot)
     }
 
-    fn acknowledge(&self, source: &str, session_id: &str) -> Result<SnapshotView, String> {
+    fn acknowledge(
+        &self,
+        source: &str,
+        session_id: &str,
+        terminal_id: Option<&str>,
+    ) -> Result<SnapshotView, String> {
         Ok(query_bridge(&IpcRequest::Acknowledge {
             source: source.to_owned(),
             session_id: session_id.to_owned(),
+            terminal_id: terminal_id.map(str::to_owned),
         })?
         .snapshot)
     }
 
-    fn reset(&self, source: &str, session_id: &str) -> Result<SnapshotView, String> {
+    fn reset(
+        &self,
+        source: &str,
+        session_id: &str,
+        terminal_id: Option<&str>,
+    ) -> Result<SnapshotView, String> {
         Ok(query_bridge(&IpcRequest::Reset {
             source: source.to_owned(),
             session_id: session_id.to_owned(),
+            terminal_id: terminal_id.map(str::to_owned),
         })?
         .snapshot)
     }

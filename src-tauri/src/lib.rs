@@ -85,8 +85,18 @@ pub(crate) struct AgentInventory {
 
 pub(crate) trait PresenterSession: Send + Sync {
     fn snapshot(&self) -> Result<SnapshotView, String>;
-    fn acknowledge(&self, source: &str, session_id: &str) -> Result<SnapshotView, String>;
-    fn reset(&self, source: &str, session_id: &str) -> Result<SnapshotView, String>;
+    fn acknowledge(
+        &self,
+        source: &str,
+        session_id: &str,
+        terminal_id: Option<&str>,
+    ) -> Result<SnapshotView, String>;
+    fn reset(
+        &self,
+        source: &str,
+        session_id: &str,
+        terminal_id: Option<&str>,
+    ) -> Result<SnapshotView, String>;
     fn subscribe(&self) -> mpsc::Receiver<SnapshotMessage>;
     fn request_shutdown(&self);
     fn wait_for_shutdown(&self);
@@ -97,12 +107,22 @@ impl PresenterSession for DockSession {
         DockSession::snapshot(self)
     }
 
-    fn acknowledge(&self, source: &str, session_id: &str) -> Result<SnapshotView, String> {
-        DockSession::acknowledge(self, source, session_id)
+    fn acknowledge(
+        &self,
+        source: &str,
+        session_id: &str,
+        terminal_id: Option<&str>,
+    ) -> Result<SnapshotView, String> {
+        DockSession::acknowledge(self, source, session_id, terminal_id)
     }
 
-    fn reset(&self, source: &str, session_id: &str) -> Result<SnapshotView, String> {
-        DockSession::reset(self, source, session_id)
+    fn reset(
+        &self,
+        source: &str,
+        session_id: &str,
+        terminal_id: Option<&str>,
+    ) -> Result<SnapshotView, String> {
+        DockSession::reset(self, source, session_id, terminal_id)
     }
 
     fn subscribe(&self) -> mpsc::Receiver<SnapshotMessage> {
@@ -522,18 +542,20 @@ fn snapshot(state: State<'_, AppService>) -> Result<SnapshotView, String> {
 fn acknowledge(
     source: String,
     session_id: String,
+    terminal_id: Option<String>,
     state: State<'_, AppService>,
 ) -> Result<SnapshotView, String> {
-    current_session(&state)?.acknowledge(&source, &session_id)
+    current_session(&state)?.acknowledge(&source, &session_id, terminal_id.as_deref())
 }
 
 #[tauri::command]
 fn reset(
     source: String,
     session_id: String,
+    terminal_id: Option<String>,
     state: State<'_, AppService>,
 ) -> Result<SnapshotView, String> {
-    current_session(&state)?.reset(&source, &session_id)
+    current_session(&state)?.reset(&source, &session_id, terminal_id.as_deref())
 }
 
 #[tauri::command]

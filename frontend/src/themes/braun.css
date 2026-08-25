@@ -342,8 +342,8 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 .project-heading.collapsed .chevron { transform: rotate(-45deg); }
 
 .session-card,
-.audit-row,
-.connection-row,
+.audit-card,
+.connection-card,
 .setting-row {
   position: relative;
   display: flex;
@@ -355,12 +355,12 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   background: transparent;
 }
 .session-card,
-.audit-row {
+.audit-card {
   align-items: flex-start;
   padding: 6px 0 5px;
 }
 .session-card:hover,
-.connection-row:hover,
+.connection-card:hover,
 .setting-row:hover { background: rgba(40, 35, 25, .04); }
 .session-card.unread.needs_attention { box-shadow: inset 2px 0 0 var(--wait); }
 .session-card.unread.failed { box-shadow: inset 2px 0 0 var(--fail); }
@@ -386,9 +386,20 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   min-width: 0;
   font-size: 13px;
 }
+.session-heading {
+  display: flex;
+  flex: 1 1 0;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
 .session-card strong,
-.audit-row strong,
-.connection-title strong {
+.audit-card strong,
+.connection-title strong,
+.session-heading strong {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   font-weight: 500;
   text-overflow: ellipsis;
@@ -468,7 +479,7 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 .session-actions button { font-size: 10px; }
 .session-actions button:hover, .text-button:hover { color: var(--text); }
 
-.audit-row .state-chip { margin-right: 2px; }
+.audit-card .state-chip { margin-right: 2px; }
 .audit-content time { flex: 0 0 auto; color: var(--faint); font-size: 10px; white-space: nowrap; }
 .audit-meta { display: flex; gap: 8px; margin-top: 3px; min-width: 0; color: var(--muted); font-size: 11px; }
 .audit-meta span + span { padding-left: 8px; border-left: 1px solid var(--line); }
@@ -532,7 +543,7 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   white-space: nowrap;
 }
 .confirm-dialog h2 .side-badge { margin-left: 8px; vertical-align: 2px; }
-.connection-row {
+.connection-card {
   align-items: center;
   gap: 10px;
   padding: 9px 0;

@@ -54,7 +54,7 @@
 
 浏览器窗口不参与。捕获决策本身不变：只在新主会话或转入 working 时记录当时的前台终端窗口。
 
-可选 liveness metadata（仅 hook 路径写入，`dock start`/`complete` 不写）：`agent_os`（`linux` 或 `windows`）、`agent_pid`、`agent_starttime`（Linux `/proc/<pid>/stat` 字段 22，或 Windows `GetProcessTimes` FILETIME）、可选 `agent_wsl_distro`（仅 `WSL_DISTRO_NAME` 非空时）。三项 os+pid+starttime 齐全才合并进会话；缺一则忽略整组。`completed` / `closed` / `failed` / `cancelled` 不写 liveness。已有 os+pid+starttime 不被后来不同的 PID 覆盖，避免 Stop 钩子把短命 hook 壳当成 agent。不进入面板 snapshot。GUI-OS daemon 每 15s 查询「是否仍是原进程」，死亡则发 `session.closed`（`event_id` 为 `dock-liveness-` + SHA-256 前 8 字节 hex）。不扫进程表，不因 HWND 消失删会话。
+可选 liveness metadata（仅 hook 路径写入，`dock start`/`complete` 不写）：`agent_os`（`linux` 或 `windows`）、`agent_pid`、`agent_starttime`（Linux `/proc/<pid>/stat` 字段 22，或 Windows `GetProcessTimes` FILETIME）、可选 `agent_wsl_distro`（仅 `WSL_DISTRO_NAME` 非空时）。三项 os+pid+starttime 齐全才合并进会话；缺一则忽略整组。`completed` / `closed` / `failed` / `cancelled` 不写 liveness。已有 os+pid+starttime 不被后来不同的 PID 覆盖，避免 Stop 钩子把短命 hook 壳当成 agent。不进入面板 snapshot。GUI-OS daemon 每 15s 查询「是否仍是原进程」，死亡则发 `session.closed`（`event_id` 为 `dock-liveness-` + SHA-256 前 8 字节 hex；带该 PID 的 liveness metadata，只关闭对应那条）。不扫进程表，不因 HWND 消失删会话。
 
 大小限制：`event_id` / `terminal_id` 各 128 字节、`source` 64 字节、`session_id` / `parent_session_id` 各 256 字节、`summary` 512 字节、`deep_link` 2048 字节、`cwd` / `workspace_root` 各 256 字节、metadata 最多 32 项且 key/value 各 256 字节。
 
@@ -76,7 +76,7 @@
 
 打开中的会话在 `completed` / `failed` / `cancelled` 之后仍可再次进入工作。只有 `session.closed` 会从打开总数中移除该会话。事件 ID 在有界窗口内去重。
 
-小球上的工作数 / 追踪数只统计**主会话**：`started` / `working` / `idle` 可为未知 key 创建记录；`waiting_input` / `permission_requested` / `completed` / `failed` / `cancelled` 对未知会话 accepted，但不建记录、不发 attention。因此用户 reset/clear 之后迟到的 stop / notification 不会凭空复活计数。这类孤儿事件只写 debug 日志，不进 128 条上限的 audit 流。
+小球上的工作数 / 追踪数只统计**主会话**：`started` / `working` / `idle` 可为未知 key 创建记录；`waiting_input` / `permission_requested` / `completed` / `failed` / `cancelled` 对未知会话 accepted，但不建记录、不发 attention。因此用户 reset/clear 之后迟到的 stop / notification 不会凭空复活计数。这类孤儿事件只写 debug 日志，不进 128 条上限的 audit 流。同一 `source`+`session_id` 若来自**另一个还活着的进程**（hook liveness 的 os/pid/starttime 不同，典型是两个终端里 `grok --resume` 同一段对话），则再开一条主会话，不改写已有那条。关掉其中一条（含该进程的 `session.closed` 或 liveness 收割）只移除对应那条，另一条仍在列表里。同一进程后续事件仍合并到自己那条。
 
 ## Response and queries
 
@@ -117,7 +117,7 @@
 {"query":"reset","source":"claude","session_id":"session-123"}
 ```
 
-`subscribe` 连接会先收到 `type=subscribed`，之后每次状态变化收到 `type=snapshot`。`acknowledge` 只清除待查看标记；`reset` 显式移除指定会话，`source` 或 `session_id` 为 `*` 时匹配全部对应项。reset 不控制 Agent，也不会发送生命周期事件。
+`subscribe` 连接会先收到 `type=subscribed`，之后每次状态变化收到 `type=snapshot`。`acknowledge` 只清除待查看标记；`reset` 显式移除指定会话，`source` 或 `session_id` 为 `*` 时匹配全部对应项。可选 `terminal_id` 只作用于该终端上的那一条（两个进程 resume 同一段对话时，面板「清除」只去掉点的那张卡）。不带 `terminal_id` 的 reset 仍按 `source`+`session_id` 去掉全部实例。reset 不控制 Agent，也不会发送生命周期事件。`session.closed` 只关闭对得上的那一条（hook liveness 或 `terminal_id`）。进程退出常连发两条 `closed`（如 Grok `Stop shutdown` 再 `SessionEnd`）；第二条对不上已关掉的那条时，不得把剩下那条当唯一匹配删掉。
 
 ## CLI
 
@@ -135,10 +135,10 @@ dock reset --source claude --session-id session-123
 
 | source | 输入 | 能力 |
 | --- | --- | --- |
-| Claude | 结构化 hook payload | idle、working、permission、waiting、completed、failed、closed；`UserPromptSubmit` 标工作中；`Stop` 在仍有 background subagent 时保持 working，否则已完成；`SessionEnd` 为关闭（不是已完成）；带 parent 线索的子代理 permission/failed 可折叠，否则丢弃。不订阅 Pre/Post tool。hook 是观察者，投递失败必须 exit 0 |
-| Codex | 结构化 hook payload，notification 仅作回退 | 与 Claude 同一套回合生命周期；`SessionStart`→idle，`UserPromptSubmit`→working，`Stop` 在仍有 background subagent 时保持 working，否则已完成，`SessionEnd`→closed。无 `hook_event_name` 时仍接受旧 notification。不订阅 Pre/Post tool。打断回合（Esc / Ctrl+C）和对话报错时 Codex 不发送结束事件，会话停在 working，直到进程退出或用户 reset。hook 是观察者，投递失败必须 exit 0 |
-| Cursor | 结构化 hook payload（`conversation_id` 可当 session） | 与 Claude 同一套回合生命周期；`sessionStart`→idle，`beforeSubmitPrompt`→working，`afterAgentResponse`/`stop`→已完成（`status=error`→failed，`aborted`→cancelled），`sessionEnd`→closed。不订阅 tool/shell/MCP/thought。Cursor 偶尔不发结束事件，会话停在 working 直到进程退出。hook 是观察者，投递失败必须 exit 0 |
+| Claude | 结构化 hook payload | idle、working、permission、waiting、completed、failed、closed；`UserPromptSubmit` 标工作中；`Stop` 在仍有 background subagent 时保持 working，否则已完成；`SessionEnd` 为关闭（不是已完成）；带 parent 线索的子代理 permission/failed 可折叠，否则丢弃。不订阅通用 Pre/Post tool；仅 matcher `AskUserQuestion`：选择题 → waiting，答完 → working。hook 是观察者，投递失败必须 exit 0 |
+| Codex | 结构化 hook payload，notification 仅作回退 | 与 Claude 同一套回合生命周期；`SessionStart`→idle，`UserPromptSubmit`→working，`Stop` 在仍有 background subagent 时保持 working，否则已完成，`SessionEnd`→closed。无 `hook_event_name` 时仍接受旧 notification。不订阅通用 Pre/Post tool；仅 matcher `AskUserQuestion\|ask_user_question`。当前 Codex 运行时 PreToolUse 往往只打 Bash，选择题可能仍报不进来。打断回合（Esc / Ctrl+C）和对话报错时 Codex 不发送结束事件，会话停在 working，直到进程退出或用户 reset。hook 是观察者，投递失败必须 exit 0 |
+| Cursor | 结构化 hook payload（`conversation_id` 可当 session） | 与 Claude 同一套回合生命周期；`sessionStart`→idle，`beforeSubmitPrompt`→working，`afterAgentResponse`/`stop`→已完成（`status=error`→failed，`aborted`→cancelled），`sessionEnd`→closed。不订阅 Pre/Post tool。Cursor 的 AskQuestion 走内部 InteractionQuery，不发 hook，选择题无法标 waiting。偶尔不发结束事件，会话停在 working 直到进程退出。hook 是观察者，投递失败必须 exit 0 |
 | DSH | `session.*` projection payload | working、waiting、completed、failed、cancelled；payload 带 parent 线索时填 `parent_session_id` |
-| Grok | 结构化 hook payload | idle、working、permission、completed、failed、closed；`UserPromptSubmit` 标工作中；`Stop end_turn` 仅在仍有 **status 为 running 的** background subagent 时保持 working，shell/monitor 挂起、已结束的 subagent 与空任务视为已完成；`Notification idle_prompt`/`task_complete` 同样已完成；带 `subagentType` 的 payload 仍丢弃。不订阅 Pre/Post tool。hook 是观察者：投递失败必须 exit 0，不得把 Grok `Stop` 变成闸门。生成的 hook 脚本必须 `exec dock`，否则 liveness 会把短命 hook 壳当成 agent，约 15s 后误发 `session.closed` |
+| Grok | 结构化 hook payload | idle、working、permission、waiting、completed、failed、closed；`UserPromptSubmit` 标工作中；`Stop end_turn` 仅在仍有 **status 为 running 的** background subagent 时保持 working，shell/monitor 挂起、已结束的 subagent 与空任务视为已完成；`Notification idle_prompt`/`task_complete` 同样已完成；带 `subagentType` 的 payload 仍丢弃。不订阅通用 Pre/Post tool；仅 `PreToolUse`/`PostToolUse`/`PostToolUseFailure` 且 matcher 为 `ask_user_question`：弹出选择题 → waiting，答完或失败 → working。hook 是观察者：投递失败必须 exit 0，不得把 Grok `Stop` 变成闸门。生成的 hook 脚本必须 `exec dock`，否则 liveness 会把短命 hook 壳当成 agent，约 15s 后误发 `session.closed` |
 
 适配器只读取结构化 stdin。即使 payload 含有 `transcript_path`，也不会打开、保存或转发该路径。

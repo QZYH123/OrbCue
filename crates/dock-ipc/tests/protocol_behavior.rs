@@ -24,7 +24,7 @@ fn queries_are_explicit_and_oversized_frames_are_rejected() {
     let request = parse_request(br#"{"query":"reset","source":"claude","task_id":"s1"}"#).unwrap();
     assert!(matches!(
         request,
-        IpcRequest::Reset { source, session_id }
+        IpcRequest::Reset { source, session_id, terminal_id: None }
             if source == "claude" && session_id == "s1"
     ));
 

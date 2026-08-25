@@ -11,6 +11,7 @@ import {
   presentAuditRows,
   presentSessionSections,
   sessionDetail,
+  sessionDomKey,
   shortSessionId,
 } from './sessionIdentity';
 
@@ -35,6 +36,14 @@ describe('displayAgent', () => {
     expect(displayAgent('dsh')).toBe('DSH');
     expect(displayAgent('my-bot')).toBe('My-bot');
     expect(displayAgent('')).toBe('Agent');
+  });
+});
+
+describe('sessionDomKey', () => {
+  it('keeps two resumes of the same session distinct', () => {
+    const first = { source: 'grok', session_id: 'resume-id', terminal_id: 'term-a' };
+    const second = { source: 'grok', session_id: 'resume-id', terminal_id: 'term-b' };
+    expect(sessionDomKey(first)).not.toBe(sessionDomKey(second));
   });
 });
 

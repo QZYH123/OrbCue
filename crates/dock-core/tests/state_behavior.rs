@@ -5,6 +5,18 @@ fn event(id: &str, kind: EventKind, session: &str) -> DockEvent {
     DockEvent::new(id, kind, "claude", session)
 }
 
+fn attach_liveness(event: &mut DockEvent, pid: u32, starttime: u64) {
+    event
+        .metadata
+        .insert("agent_os".to_owned(), "linux".to_owned());
+    event
+        .metadata
+        .insert("agent_pid".to_owned(), pid.to_string());
+    event
+        .metadata
+        .insert("agent_starttime".to_owned(), starttime.to_string());
+}
+
 #[test]
 fn a_session_lifecycle_updates_the_aggregate_and_notifies_once() {
     let mut state = DockState::new();
@@ -122,7 +134,7 @@ fn waiting_for_permission_is_distinct_and_acknowledgeable() {
     assert!(repeated.attention.is_none());
     assert_eq!(repeated.snapshot.pending_count, 1);
 
-    let acknowledged = state.acknowledge("claude", "s1");
+    let acknowledged = state.acknowledge("claude", "s1", None);
     assert_eq!(acknowledged.pending_count, 1);
     assert_eq!(acknowledged.pending_mark, "?");
     assert!(acknowledged.sessions[0].requires_user_action);
@@ -421,7 +433,7 @@ fn unknown_session_attention_and_terminal_do_not_create_records() {
 fn reset_then_late_completed_does_not_resurrect() {
     let mut state = DockState::new();
     state.apply(event("e1", EventKind::Started, "a"));
-    state.reset("claude", "a");
+    state.reset("claude", "a", None);
     let late = state.apply(event("e2", EventKind::Completed, "a"));
     assert!(late.accepted);
     assert!(late.attention.is_none());
@@ -625,6 +637,186 @@ fn start_with_a_project_path_still_replaces_a_working_terminal_session() {
 }
 
 #[test]
+fn grok_lifecycle_with_terminal_and_liveness_fills_audit() {
+    let mut state = DockState::new();
+    let mut start = DockEvent::new("e1", EventKind::Idle, "grok", "sid");
+    attach_liveness(&mut start, 11, 100);
+    state.apply(start.with_terminal_id("term"));
+
+    let mut working = DockEvent::new("e2", EventKind::Working, "grok", "sid");
+    attach_liveness(&mut working, 11, 100);
+    state.apply(working.with_terminal_id("term"));
+    assert!(state.snapshot().audit.is_empty());
+
+    let completed =
+        DockEvent::new("e3", EventKind::Completed, "grok", "sid").with_terminal_id("term");
+    let result = state.apply(completed);
+    assert_eq!(result.snapshot.audit.len(), 1);
+    assert_eq!(result.snapshot.audit[0].state, SessionState::Completed);
+
+    let closed = DockEvent::new("e4", EventKind::Closed, "grok", "sid").with_terminal_id("term");
+    let result = state.apply(closed);
+    assert_eq!(result.snapshot.tracked_count, 0);
+    assert_eq!(result.snapshot.audit.len(), 2);
+    assert_eq!(result.snapshot.audit[1].state, SessionState::Closed);
+}
+
+#[test]
+fn two_resumes_of_the_same_session_are_two_main_sessions() {
+    let mut state = DockState::new();
+    let mut first = DockEvent::new("e1", EventKind::Working, "grok", "resume-id");
+    first.cwd = Some("/tmp/project".to_owned());
+    attach_liveness(&mut first, 11, 100);
+    state.apply(first.with_terminal_id("term-a"));
+
+    let mut second = DockEvent::new("e2", EventKind::Idle, "grok", "resume-id");
+    second.cwd = Some("/tmp/project".to_owned());
+    attach_liveness(&mut second, 22, 200);
+    let stacked = state.apply(second.with_terminal_id("term-b"));
+    assert_eq!(stacked.snapshot.tracked_count, 2);
+    assert_eq!(stacked.snapshot.working_count, 1);
+    assert!(stacked.snapshot.sessions.iter().any(|session| {
+        session.session_id == "resume-id"
+            && session.terminal_id.as_deref() == Some("term-a")
+            && session.state == SessionState::Working
+    }));
+    assert!(stacked.snapshot.sessions.iter().any(|session| {
+        session.session_id == "resume-id"
+            && session.terminal_id.as_deref() == Some("term-b")
+            && session.state == SessionState::Idle
+    }));
+}
+
+#[test]
+fn closing_one_resume_leaves_the_other_live_session() {
+    let mut state = DockState::new();
+    let mut first = DockEvent::new("e1", EventKind::Working, "grok", "resume-id");
+    attach_liveness(&mut first, 11, 100);
+    state.apply(first.with_terminal_id("term-a"));
+
+    let mut second = DockEvent::new("e2", EventKind::Idle, "grok", "resume-id");
+    attach_liveness(&mut second, 22, 200);
+    state.apply(second.with_terminal_id("term-b"));
+    assert_eq!(state.snapshot().tracked_count, 2);
+
+    let closed =
+        DockEvent::new("e3", EventKind::Closed, "grok", "resume-id").with_terminal_id("term-b");
+    let result = state.apply(closed);
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(result.snapshot.working_count, 1);
+    assert_eq!(result.snapshot.sessions[0].session_id, "resume-id");
+    assert_eq!(
+        result.snapshot.sessions[0].terminal_id.as_deref(),
+        Some("term-a")
+    );
+    assert_eq!(result.snapshot.sessions[0].state, SessionState::Working);
+}
+
+#[test]
+fn persisted_two_resumes_round_trip() {
+    let mut state = DockState::new();
+    let mut first = DockEvent::new("e1", EventKind::Working, "grok", "resume-id");
+    attach_liveness(&mut first, 11, 100);
+    state.apply(first.with_terminal_id("term-a"));
+    let mut second = DockEvent::new("e2", EventKind::Idle, "grok", "resume-id");
+    attach_liveness(&mut second, 22, 200);
+    state.apply(second.with_terminal_id("term-b"));
+
+    let mut restored = DockState::from_persisted(state.persisted());
+    assert_eq!(restored.snapshot().tracked_count, 2);
+
+    let closed =
+        DockEvent::new("e3", EventKind::Closed, "grok", "resume-id").with_terminal_id("term-b");
+    let result = restored.apply(closed);
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(
+        result.snapshot.sessions[0].terminal_id.as_deref(),
+        Some("term-a")
+    );
+}
+
+#[test]
+fn reset_one_resume_leaves_the_other() {
+    let mut state = DockState::new();
+    let mut first = DockEvent::new("e1", EventKind::Working, "grok", "resume-id");
+    attach_liveness(&mut first, 11, 100);
+    state.apply(first.with_terminal_id("term-a"));
+    let mut second = DockEvent::new("e2", EventKind::Idle, "grok", "resume-id");
+    attach_liveness(&mut second, 22, 200);
+    state.apply(second.with_terminal_id("term-b"));
+    assert_eq!(state.snapshot().tracked_count, 2);
+
+    state.reset("grok", "resume-id", Some("term-b"));
+    let snapshot = state.snapshot();
+    assert_eq!(snapshot.tracked_count, 1);
+    assert_eq!(snapshot.sessions[0].terminal_id.as_deref(), Some("term-a"));
+}
+
+#[test]
+fn closed_without_instance_identity_does_not_drop_both_resumes() {
+    let mut state = DockState::new();
+    let mut first = DockEvent::new("e1", EventKind::Working, "grok", "resume-id");
+    attach_liveness(&mut first, 11, 100);
+    state.apply(first.with_terminal_id("term-a"));
+    let mut second = DockEvent::new("e2", EventKind::Idle, "grok", "resume-id");
+    attach_liveness(&mut second, 22, 200);
+    state.apply(second.with_terminal_id("term-b"));
+
+    let result = state.apply(DockEvent::new("e3", EventKind::Closed, "grok", "resume-id"));
+    assert_eq!(result.snapshot.tracked_count, 2);
+}
+
+#[test]
+fn liveness_closed_of_one_resume_does_not_drop_the_other() {
+    let mut state = DockState::new();
+    let mut first = DockEvent::new("e1", EventKind::Working, "grok", "resume-id");
+    attach_liveness(&mut first, 11, 100);
+    state.apply(first.with_terminal_id("term-a"));
+
+    let mut second = DockEvent::new("e2", EventKind::Working, "grok", "resume-id");
+    attach_liveness(&mut second, 22, 200);
+    state.apply(second.with_terminal_id("term-b"));
+
+    let mut closed = DockEvent::new("e3", EventKind::Closed, "grok", "resume-id");
+    attach_liveness(&mut closed, 22, 200);
+    let result = state.apply(closed);
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(
+        result.snapshot.sessions[0].terminal_id.as_deref(),
+        Some("term-a")
+    );
+}
+
+#[test]
+fn quit_hooks_of_one_resume_do_not_close_the_other() {
+    let mut state = DockState::new();
+    let mut first = DockEvent::new("e1", EventKind::Working, "grok", "resume-id");
+    attach_liveness(&mut first, 11, 100);
+    state.apply(first.with_terminal_id("term-a"));
+
+    let mut second = DockEvent::new("e2", EventKind::Idle, "grok", "resume-id");
+    attach_liveness(&mut second, 22, 200);
+    state.apply(second.with_terminal_id("term-b"));
+    assert_eq!(state.snapshot().tracked_count, 2);
+
+    let mut stop = DockEvent::new("e3", EventKind::Closed, "grok", "resume-id");
+    attach_liveness(&mut stop, 22, 200);
+    state.apply(stop.with_terminal_id("term-b"));
+    assert_eq!(state.snapshot().tracked_count, 1);
+
+    let mut session_end = DockEvent::new("e4", EventKind::Closed, "grok", "resume-id");
+    attach_liveness(&mut session_end, 22, 200);
+    let result = state.apply(session_end.with_terminal_id("term-b"));
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(result.snapshot.working_count, 1);
+    assert_eq!(
+        result.snapshot.sessions[0].terminal_id.as_deref(),
+        Some("term-a")
+    );
+    assert_eq!(result.snapshot.sessions[0].state, SessionState::Working);
+}
+
+#[test]
 fn completed_session_is_still_replaced_by_a_pathless_start() {
     let mut state = DockState::new();
     let mut grok = DockEvent::new("e1", EventKind::Working, "grok", "grok-s");
@@ -692,7 +884,7 @@ fn reset_one_session_leaves_others_in_the_same_project() {
     let mut second = event("e2", EventKind::Started, "s2");
     second.cwd = Some("/tmp/same-project".to_owned());
     state.apply(second);
-    state.reset("claude", "s1");
+    state.reset("claude", "s1", None);
     let snapshot = state.snapshot();
     assert_eq!(snapshot.tracked_count, 1);
     assert_eq!(snapshot.sessions[0].session_id, "s2");

@@ -370,13 +370,16 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   font-size: 13px;
 }
 .session-heading {
-  display: inline-flex;
+  display: flex;
+  flex: 1 1 0;
   align-items: baseline;
   gap: 6px;
   min-width: 0;
   overflow: hidden;
 }
 .session-heading strong {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   font-weight: 650;
   text-overflow: ellipsis;

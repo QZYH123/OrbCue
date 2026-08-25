@@ -41,6 +41,23 @@ fn claude_adapter_follows_turn_lifecycle() {
     }))
     .is_none());
 
+    let asking = claude_hook(&serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "session_id": "claude-session",
+        "tool_name": "AskUserQuestion"
+    }))
+    .unwrap();
+    assert_eq!(asking.kind, EventKind::WaitingInput);
+    assert_eq!(asking.requires_user_action, Some(true));
+
+    let answered = claude_hook(&serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "session_id": "claude-session",
+        "tool_name": "AskUserQuestion"
+    }))
+    .unwrap();
+    assert_eq!(answered.kind, EventKind::Working);
+
     let stop = claude_hook(&serde_json::json!({
         "hook_event_name": "Stop",
         "session_id": "claude-session"
@@ -200,6 +217,35 @@ fn grok_adapter_keeps_one_record_per_session() {
         "toolName": "read_file"
     }))
     .is_none());
+
+    let asking = grok_hook(&serde_json::json!({
+        "hookEventName": "pre_tool_use",
+        "sessionId": "grok-session",
+        "promptId": "turn-1",
+        "toolName": "ask_user_question"
+    }))
+    .unwrap();
+    assert_eq!(asking.kind, EventKind::WaitingInput);
+    assert_eq!(asking.severity, agent_activity_dock_core::Severity::Attention);
+    assert_eq!(asking.requires_user_action, Some(true));
+
+    let answered = grok_hook(&serde_json::json!({
+        "hookEventName": "post_tool_use",
+        "sessionId": "grok-session",
+        "promptId": "turn-1",
+        "toolName": "ask_user_question"
+    }))
+    .unwrap();
+    assert_eq!(answered.kind, EventKind::Working);
+
+    let dismissed = grok_hook(&serde_json::json!({
+        "hookEventName": "post_tool_use_failure",
+        "sessionId": "grok-session",
+        "promptId": "turn-1",
+        "tool_name": "ask_user_question"
+    }))
+    .unwrap();
+    assert_eq!(dismissed.kind, EventKind::Working);
 
     let idle = grok_hook(&serde_json::json!({
         "hookEventName": "stop",

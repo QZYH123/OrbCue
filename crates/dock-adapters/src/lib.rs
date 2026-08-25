@@ -57,6 +57,10 @@ pub fn grok_hook(payload: &Value) -> Option<DockEvent> {
         "stop_failure" => EventKind::Failed,
         "stop_cancelled" => EventKind::Idle,
         "session_end" => EventKind::Closed,
+        "pre_tool_use" if is_ask_user_question(payload) => EventKind::WaitingInput,
+        "post_tool_use" | "post_tool_use_failure" if is_ask_user_question(payload) => {
+            EventKind::Working
+        }
         "notification" => match notification_type(payload)? {
             "permission_prompt" => EventKind::PermissionRequested,
             "idle_prompt" => EventKind::Completed,
@@ -125,6 +129,10 @@ fn lifecycle_kind(event_name: &str, payload: &Value) -> Option<EventKind> {
             Some(EventKind::Working)
         }
         "permission_request" => Some(EventKind::PermissionRequested),
+        "pre_tool_use" if is_ask_user_question(payload) => Some(EventKind::WaitingInput),
+        "post_tool_use" | "post_tool_use_failure" if is_ask_user_question(payload) => {
+            Some(EventKind::Working)
+        }
         "stop" | "after_agent_response" => Some(stop_kind(payload)),
         "stop_failure" => Some(EventKind::Failed),
         "session_end" => Some(EventKind::Closed),
@@ -182,6 +190,22 @@ fn notification_type(payload: &Value) -> Option<&str> {
         .or_else(|| payload.get("notification_type"))
         .or_else(|| payload.get("type"))
         .and_then(Value::as_str)
+}
+
+fn grok_tool_name(payload: &Value) -> Option<&str> {
+    payload
+        .get("toolName")
+        .or_else(|| payload.get("tool_name"))
+        .and_then(Value::as_str)
+}
+
+fn is_ask_user_question(payload: &Value) -> bool {
+    grok_tool_name(payload).is_some_and(|name| {
+        matches!(
+            normalize_hook_event(name).as_str(),
+            "ask_user_question" | "ask_question"
+        )
+    })
 }
 
 pub fn codex_notification(payload: &Value) -> Option<DockEvent> {

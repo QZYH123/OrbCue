@@ -13,7 +13,7 @@ use agent_activity_dock_core::{
     EVENT_VERSION,
 };
 use agent_activity_dock_ipc::{
-    default_endpoint, default_state_path, local_connect, local_set_recv_timeout,
+    default_endpoint, default_state_path, encode_request, local_connect, local_set_recv_timeout,
     local_set_send_timeout, local_try_clone, persist_default_backend_file, resolve_backend,
     DockBackend, IpcRequest, SnapshotView, WireResponse,
 };
@@ -497,10 +497,12 @@ fn request_for(command: &Command) -> Result<IpcRequest, String> {
         Command::Acknowledge(args) => IpcRequest::Acknowledge {
             source: args.source.clone(),
             session_id: args.session_id.clone(),
+            terminal_id: None,
         },
         Command::Reset(args) => IpcRequest::Reset {
             source: args.source.clone(),
             session_id: args.session_id.clone(),
+            terminal_id: None,
         },
         Command::Start(args) => event_request(args, EventKind::Started)?,
         Command::Working(args) => event_request(args, EventKind::Working)?,
@@ -581,11 +583,12 @@ fn attach_liveness(event: &mut DockEvent) {
     {
         return;
     }
-    // Stop/SessionEnd run as the turn or session is ending. Recording that
-    // short-lived hook parent would make the 15s reaper close a live agent.
+    // Completed/Failed/Cancelled update the live record; a short-lived hook
+    // parent must not replace the agent PID. Closed only uses liveness to pick
+    // which instance to remove and does not merge onto remaining sessions.
     if matches!(
         event.kind,
-        EventKind::Completed | EventKind::Closed | EventKind::Failed | EventKind::Cancelled
+        EventKind::Completed | EventKind::Failed | EventKind::Cancelled
     ) {
         return;
     }
@@ -1742,21 +1745,7 @@ fn send(endpoint: &PathBuf, request: &IpcRequest) -> Result<WireResponse, String
         .map_err(|error| error.to_string())?;
     local_set_send_timeout(&stream, Some(Duration::from_millis(500)))
         .map_err(|error| error.to_string())?;
-    let payload = match request {
-        IpcRequest::Event(event) => serde_json::to_vec(event).map_err(|error| error.to_string())?,
-        IpcRequest::Snapshot => br#"{"query":"snapshot"}"#.to_vec(),
-        IpcRequest::Subscribe => br#"{"query":"subscribe"}"#.to_vec(),
-        IpcRequest::Acknowledge { source, session_id } => serde_json::to_vec(
-            &serde_json::json!({"query":"acknowledge", "source":source, "session_id":session_id}),
-        )
-        .map_err(|error| error.to_string())?,
-        IpcRequest::Reset { source, session_id } => serde_json::to_vec(
-            &serde_json::json!({"query":"reset", "source":source, "session_id":session_id}),
-        )
-        .map_err(|error| error.to_string())?,
-    };
-    let mut line = payload;
-    line.push(b'\n');
+    let line = encode_request(request).map_err(|error| error.to_string())?;
     stream.write_all(&line).map_err(|error| error.to_string())?;
     let mut line = String::new();
     BufReader::new(stream)

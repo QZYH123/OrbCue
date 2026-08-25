@@ -97,9 +97,14 @@ impl ServiceHandle {
         self.state.lock().expect("state lock").snapshot()
     }
 
-    pub fn acknowledge(&self, source: &str, session_id: &str) -> WireResponse {
+    pub fn acknowledge(
+        &self,
+        source: &str,
+        session_id: &str,
+        terminal_id: Option<&str>,
+    ) -> WireResponse {
         let mut state = self.state.lock().expect("state lock");
-        let snapshot = state.acknowledge(source, session_id);
+        let snapshot = state.acknowledge(source, session_id, terminal_id);
         if let Some(path) = &self.state_path {
             if let Err(error) = persist_state(path, &state) {
                 eprintln!("Agent Activity Dock could not persist acknowledgement: {error}");
@@ -113,9 +118,9 @@ impl ServiceHandle {
         WireResponse::accepted(&snapshot)
     }
 
-    pub fn reset(&self, source: &str, session_id: &str) -> WireResponse {
+    pub fn reset(&self, source: &str, session_id: &str, terminal_id: Option<&str>) -> WireResponse {
         let mut state = self.state.lock().expect("state lock");
-        let snapshot = state.reset(source, session_id);
+        let snapshot = state.reset(source, session_id, terminal_id);
         if let Some(path) = &self.state_path {
             if let Err(error) = persist_state(path, &state) {
                 eprintln!("Agent Activity Dock could not persist reset: {error}");
@@ -332,12 +337,18 @@ fn dispatch(
     let response = match request {
         IpcRequest::Event(event) => WireResponse::from_apply(&state.apply(event)),
         IpcRequest::Snapshot | IpcRequest::Subscribe => WireResponse::accepted(&state.snapshot()),
-        IpcRequest::Acknowledge { source, session_id } => {
-            WireResponse::accepted(&state.acknowledge(&source, &session_id))
+        IpcRequest::Acknowledge {
+            source,
+            session_id,
+            terminal_id,
+        } => {
+            WireResponse::accepted(&state.acknowledge(&source, &session_id, terminal_id.as_deref()))
         }
-        IpcRequest::Reset { source, session_id } => {
-            WireResponse::accepted(&state.reset(&source, &session_id))
-        }
+        IpcRequest::Reset {
+            source,
+            session_id,
+            terminal_id,
+        } => WireResponse::accepted(&state.reset(&source, &session_id, terminal_id.as_deref())),
     };
     if response.accepted && is_mutating {
         if let Some(path) = state_path {
@@ -656,12 +667,26 @@ fn reap_dead_sessions(
             liveness.pid,
             liveness.starttime,
         );
-        let event = agent_activity_dock_core::DockEvent::new(
+        let mut event = agent_activity_dock_core::DockEvent::new(
             &event_id,
             agent_activity_dock_core::EventKind::Closed,
             &source,
             &session_id,
         );
+        event
+            .metadata
+            .insert("agent_os".to_owned(), liveness.os.clone());
+        event
+            .metadata
+            .insert("agent_pid".to_owned(), liveness.pid.to_string());
+        event
+            .metadata
+            .insert("agent_starttime".to_owned(), liveness.starttime.to_string());
+        if let Some(distro) = liveness.distro.as_ref() {
+            event
+                .metadata
+                .insert("agent_wsl_distro".to_owned(), distro.clone());
+        }
         let response = dispatch(IpcRequest::Event(event), state, state_path);
         if response.accepted {
             broadcast(
@@ -861,10 +886,13 @@ fn wsl_dead_sessions(
         let Some(source) = item.get("source").and_then(|value| value.as_str()) else {
             continue;
         };
-        if let Some(found) = group
-            .iter()
-            .find(|(src, sid, _)| src == source && sid == session_id)
-        {
+        let pid = item
+            .get("pid")
+            .and_then(|value| value.as_u64())
+            .map(|value| value as u32);
+        if let Some(found) = group.iter().find(|(src, sid, live)| {
+            src == source && sid == session_id && pid.map(|pid| pid == live.pid).unwrap_or(true)
+        }) {
             dead.push(found.clone());
         }
     }

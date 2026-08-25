@@ -46,28 +46,40 @@ impl DockSession {
         }
     }
 
-    pub fn acknowledge(&self, source: &str, session_id: &str) -> Result<SnapshotView, String> {
+    pub fn acknowledge(
+        &self,
+        source: &str,
+        session_id: &str,
+        terminal_id: Option<&str>,
+    ) -> Result<SnapshotView, String> {
         match self {
-            Self::Owned(handle) => Ok(handle.acknowledge(source, session_id).snapshot),
+            Self::Owned(handle) => Ok(handle.acknowledge(source, session_id, terminal_id).snapshot),
             Self::Remote { endpoint } => Ok(query_service(
                 endpoint,
                 &IpcRequest::Acknowledge {
                     source: source.to_owned(),
                     session_id: session_id.to_owned(),
+                    terminal_id: terminal_id.map(str::to_owned),
                 },
             )?
             .snapshot),
         }
     }
 
-    pub fn reset(&self, source: &str, session_id: &str) -> Result<SnapshotView, String> {
+    pub fn reset(
+        &self,
+        source: &str,
+        session_id: &str,
+        terminal_id: Option<&str>,
+    ) -> Result<SnapshotView, String> {
         match self {
-            Self::Owned(handle) => Ok(handle.reset(source, session_id).snapshot),
+            Self::Owned(handle) => Ok(handle.reset(source, session_id, terminal_id).snapshot),
             Self::Remote { endpoint } => Ok(query_service(
                 endpoint,
                 &IpcRequest::Reset {
                     source: source.to_owned(),
                     session_id: session_id.to_owned(),
+                    terminal_id: terminal_id.map(str::to_owned),
                 },
             )?
             .snapshot),

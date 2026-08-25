@@ -490,7 +490,7 @@ impl ConnectionManager {
     fn preview_claude_files(&self) -> Vec<PreviewFile> {
         let hook = hook_path(&self.config_dir, "claude");
         let settings = claude_settings_path();
-        let events = claude_hook_events();
+        let events = hook_spec_labels(claude_hook_specs());
         let mut files = vec![
             PreviewFile {
                 path: hook.clone(),
@@ -522,7 +522,7 @@ impl ConnectionManager {
     fn preview_grok_files(&self) -> Vec<PreviewFile> {
         let hook = hook_path(&self.config_dir, "grok");
         let hooks = self.grok_hooks_file();
-        let events = grok_hook_events();
+        let events = hook_spec_labels(grok_hook_specs());
         vec![
             PreviewFile {
                 path: hook.clone(),
@@ -539,11 +539,19 @@ impl ConnectionManager {
     }
 
     fn preview_codex_files(&self) -> Vec<PreviewFile> {
-        self.preview_shared_hooks_files("codex", &self.codex_hooks_file(), &codex_hook_events())
+        self.preview_shared_hooks_files(
+            "codex",
+            &self.codex_hooks_file(),
+            &hook_spec_labels(codex_hook_specs()),
+        )
     }
 
     fn preview_cursor_files(&self) -> Vec<PreviewFile> {
-        self.preview_shared_hooks_files("cursor", &self.cursor_hooks_file(), &cursor_hook_events())
+        self.preview_shared_hooks_files(
+            "cursor",
+            &self.cursor_hooks_file(),
+            &hook_spec_labels(cursor_hook_specs()),
+        )
     }
 
     fn preview_shared_hooks_files(
@@ -658,7 +666,7 @@ impl ConnectionManager {
         let settings_backup = match install_nested_hooks_at(
             &self.codex_hooks_file(),
             &hook,
-            &codex_hook_events(),
+            codex_hook_specs(),
             "hooks.json.agent-activity-dock.bak",
         ) {
             Ok(path) => path,
@@ -933,7 +941,7 @@ fn install_claude_settings_at(
     install_nested_hooks_at(
         settings_path,
         hook,
-        &claude_hook_events(),
+        claude_hook_specs(),
         "settings.json.agent-activity-dock.bak",
     )
 }
@@ -941,7 +949,7 @@ fn install_claude_settings_at(
 fn install_nested_hooks_at(
     settings_path: &Path,
     hook: &Path,
-    events: &[String],
+    specs: &[HookSpec],
     backup_name: &str,
 ) -> Result<Option<PathBuf>, String> {
     let existing = match fs::read(settings_path) {
@@ -962,21 +970,28 @@ fn install_nested_hooks_at(
     let hooks = hooks
         .as_object_mut()
         .ok_or_else(|| format!("{} hooks must be an object", file_label(settings_path)))?;
-    for event in events {
+    for spec in specs {
+        let event = spec.event.to_owned();
         let entries = hooks.entry(event.clone()).or_insert_with(|| json!([]));
         let entries = entries
             .as_array_mut()
             .ok_or_else(|| format!("hook {event} must be an array"))?;
         entries.retain(|entry| !is_dock_managed_hook(entry, hook));
-        entries.push(json!({
-            "hooks": [{
+        let mut group = serde_json::Map::new();
+        if let Some(matcher) = spec.matcher {
+            group.insert("matcher".to_owned(), json!(matcher));
+        }
+        group.insert(
+            "hooks".to_owned(),
+            json!([{
                 "type": "command",
                 "command": hook.to_string_lossy(),
                 "timeout": 5
-            }]
-        }));
+            }]),
+        );
+        entries.push(Value::Object(group));
     }
-    strip_unwanted_dock_hooks(hooks, events, hook);
+    strip_unwanted_dock_hooks(hooks, &hook_spec_names(specs), hook);
     let backup = existing.map(|bytes| {
         let backup = settings_path.with_file_name(backup_name);
         (backup, bytes)
@@ -1052,7 +1067,8 @@ fn install_cursor_hooks_at(hooks_path: &Path, hook: &Path) -> Result<Option<Path
         .as_object_mut()
         .ok_or_else(|| "Cursor hooks must be an object".to_owned())?;
     let command = hook.to_string_lossy();
-    for event in cursor_hook_events() {
+    for spec in cursor_hook_specs() {
+        let event = spec.event.to_owned();
         let entries = hooks.entry(event.clone()).or_insert_with(|| json!([]));
         let entries = entries
             .as_array_mut()
@@ -1061,12 +1077,15 @@ fn install_cursor_hooks_at(hooks_path: &Path, hook: &Path) -> Result<Option<Path
         let mut entry = serde_json::Map::new();
         entry.insert("command".to_owned(), json!(command.as_ref()));
         entry.insert("timeout".to_owned(), json!(5));
+        if let Some(matcher) = spec.matcher {
+            entry.insert("matcher".to_owned(), json!(matcher));
+        }
         if cursor_unbounded_events().iter().any(|name| name == &event) {
             entry.insert("loop_limit".to_owned(), Value::Null);
         }
         entries.push(Value::Object(entry));
     }
-    strip_unwanted_dock_hooks(hooks, &cursor_hook_events(), hook);
+    strip_unwanted_dock_hooks(hooks, &hook_spec_names(cursor_hook_specs()), hook);
     let backup = existing.map(|bytes| {
         let backup = hooks_path.with_file_name("hooks.json.agent-activity-dock.bak");
         (backup, bytes)
@@ -1201,60 +1220,175 @@ fn file_label(path: &Path) -> String {
         .to_owned()
 }
 
-fn claude_hook_events() -> Vec<String> {
-    [
-        "SessionStart",
-        "UserPromptSubmit",
-        "PermissionRequest",
-        "Notification",
-        "Stop",
-        "StopFailure",
-        "SessionEnd",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect()
+struct HookSpec {
+    event: &'static str,
+    matcher: Option<&'static str>,
 }
 
-fn grok_hook_events() -> Vec<String> {
-    [
-        "SessionStart",
-        "UserPromptSubmit",
-        "Notification",
-        "Stop",
-        "StopFailure",
-        "StopCancelled",
-        "SessionEnd",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect()
+fn hook_spec_names(specs: &[HookSpec]) -> Vec<String> {
+    specs.iter().map(|spec| spec.event.to_owned()).collect()
 }
 
-fn codex_hook_events() -> Vec<String> {
-    [
-        "SessionStart",
-        "UserPromptSubmit",
-        "PermissionRequest",
-        "Stop",
-        "SessionEnd",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect()
+fn hook_spec_labels(specs: &[HookSpec]) -> Vec<String> {
+    specs
+        .iter()
+        .map(|spec| match spec.matcher {
+            Some(matcher) => format!("{} ({matcher})", spec.event),
+            None => spec.event.to_owned(),
+        })
+        .collect()
 }
 
-fn cursor_hook_events() -> Vec<String> {
-    [
-        "sessionStart",
-        "beforeSubmitPrompt",
-        "afterAgentResponse",
-        "stop",
-        "sessionEnd",
+fn claude_hook_specs() -> &'static [HookSpec] {
+    &[
+        HookSpec {
+            event: "SessionStart",
+            matcher: None,
+        },
+        HookSpec {
+            event: "UserPromptSubmit",
+            matcher: None,
+        },
+        HookSpec {
+            event: "PermissionRequest",
+            matcher: None,
+        },
+        HookSpec {
+            event: "Notification",
+            matcher: None,
+        },
+        HookSpec {
+            event: "Stop",
+            matcher: None,
+        },
+        HookSpec {
+            event: "StopFailure",
+            matcher: None,
+        },
+        HookSpec {
+            event: "SessionEnd",
+            matcher: None,
+        },
+        HookSpec {
+            event: "PreToolUse",
+            matcher: Some("AskUserQuestion"),
+        },
+        HookSpec {
+            event: "PostToolUse",
+            matcher: Some("AskUserQuestion"),
+        },
+        HookSpec {
+            event: "PostToolUseFailure",
+            matcher: Some("AskUserQuestion"),
+        },
     ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect()
+}
+
+fn grok_hook_specs() -> &'static [HookSpec] {
+    &[
+        HookSpec {
+            event: "SessionStart",
+            matcher: None,
+        },
+        HookSpec {
+            event: "UserPromptSubmit",
+            matcher: None,
+        },
+        HookSpec {
+            event: "Notification",
+            matcher: None,
+        },
+        HookSpec {
+            event: "Stop",
+            matcher: None,
+        },
+        HookSpec {
+            event: "StopFailure",
+            matcher: None,
+        },
+        HookSpec {
+            event: "StopCancelled",
+            matcher: None,
+        },
+        HookSpec {
+            event: "SessionEnd",
+            matcher: None,
+        },
+        HookSpec {
+            event: "PreToolUse",
+            matcher: Some("ask_user_question"),
+        },
+        HookSpec {
+            event: "PostToolUse",
+            matcher: Some("ask_user_question"),
+        },
+        HookSpec {
+            event: "PostToolUseFailure",
+            matcher: Some("ask_user_question"),
+        },
+    ]
+}
+
+fn codex_hook_specs() -> &'static [HookSpec] {
+    &[
+        HookSpec {
+            event: "SessionStart",
+            matcher: None,
+        },
+        HookSpec {
+            event: "UserPromptSubmit",
+            matcher: None,
+        },
+        HookSpec {
+            event: "PermissionRequest",
+            matcher: None,
+        },
+        HookSpec {
+            event: "Stop",
+            matcher: None,
+        },
+        HookSpec {
+            event: "SessionEnd",
+            matcher: None,
+        },
+        HookSpec {
+            event: "PreToolUse",
+            matcher: Some("AskUserQuestion|ask_user_question"),
+        },
+        HookSpec {
+            event: "PostToolUse",
+            matcher: Some("AskUserQuestion|ask_user_question"),
+        },
+        HookSpec {
+            event: "PostToolUseFailure",
+            matcher: Some("AskUserQuestion|ask_user_question"),
+        },
+    ]
+}
+
+fn cursor_hook_specs() -> &'static [HookSpec] {
+    &[
+        HookSpec {
+            event: "sessionStart",
+            matcher: None,
+        },
+        HookSpec {
+            event: "beforeSubmitPrompt",
+            matcher: None,
+        },
+        HookSpec {
+            event: "afterAgentResponse",
+            matcher: None,
+        },
+        HookSpec {
+            event: "stop",
+            matcher: None,
+        },
+        HookSpec {
+            event: "sessionEnd",
+            matcher: None,
+        },
+    ]
 }
 
 fn cursor_unbounded_events() -> &'static [&'static str] {
@@ -1338,11 +1472,16 @@ fn install_grok_hooks(hooks_path: &Path, hook: &Path) -> Result<(), String> {
     }
     let command = hook.to_string_lossy().into_owned();
     let mut hooks = serde_json::Map::new();
-    for event in grok_hook_events() {
-        hooks.insert(
-            event,
-            json!([{"hooks":[{"type":"command","command": command.as_str(), "timeout": 5}]}]),
+    for spec in grok_hook_specs() {
+        let mut group = serde_json::Map::new();
+        if let Some(matcher) = spec.matcher {
+            group.insert("matcher".to_owned(), json!(matcher));
+        }
+        group.insert(
+            "hooks".to_owned(),
+            json!([{"type":"command","command": command.as_str(), "timeout": 5}]),
         );
+        hooks.insert(spec.event.to_owned(), json!([group]));
     }
     let document = json!({
         "name": "agent-activity-dock",
@@ -1526,7 +1665,9 @@ mod tests {
         .unwrap();
         install_claude_settings_at(&settings, &hook).unwrap();
         let connected = fs::read_to_string(&settings).unwrap();
-        assert!(!connected.contains("PreToolUse"));
+        assert!(connected.contains("PreToolUse"));
+        assert!(connected.contains("AskUserQuestion"));
+        assert!(!connected.contains("/tmp/claude-hook.sh"));
         assert!(connected.contains("PostToolUse"));
         assert!(connected.contains("UserPromptSubmit"));
         assert!(connected.contains("user-hook"));

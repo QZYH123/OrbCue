@@ -31,6 +31,7 @@
     formatAuditTime,
     presentAuditRows,
     presentSessionSections,
+    sessionDomKey,
   } from './sessionIdentity';
   import { barTones, matrixTones } from './glyphMatrix';
   import {
@@ -408,6 +409,7 @@
   }
 
   function selectPage(next: typeof page) {
+    onboardingChecked = true;
     if (next !== 'connections') connectSuccess = '';
     page = next;
     if (next === 'connections' && !previewMode) void loadAgentsCached();
@@ -682,17 +684,17 @@
     if (event.state === 'Pressed') void togglePanel();
   }
 
-  async function acknowledge(source: string, sessionId: string) {
+  async function acknowledge(source: string, sessionId: string, terminalId?: string | null) {
     try {
-      snapshot = await invoke<Snapshot>('acknowledge', { source, sessionId });
+      snapshot = await invoke<Snapshot>('acknowledge', { source, sessionId, terminalId });
     } catch (error) {
       console.warn('Could not acknowledge session', error);
     }
   }
 
-  async function resetSession(source: string, sessionId: string) {
+  async function resetSession(source: string, sessionId: string, terminalId?: string | null) {
     try {
-      snapshot = await invoke<Snapshot>('reset', { source, sessionId });
+      snapshot = await invoke<Snapshot>('reset', { source, sessionId, terminalId });
     } catch (error) {
       console.warn('Could not reset session', error);
     }
@@ -909,7 +911,7 @@
                 <span class="chevron" aria-hidden="true"></span>
               </button>
               {#if !collapsedGroups[group.key]}
-              {#each group.rows as row (row.session.source + ':' + row.session.session_id)}
+              {#each group.rows as row (sessionDomKey(row.session))}
                 {@const session = row.session}
                 <article
                   class:unread={session.mark === '?' || session.mark === '!'}
@@ -928,8 +930,8 @@
                       <span class="state-chip {session.state}">{stateLabel(session)}</span>
                     </div>
                     <div class="session-actions">
-                      {#if !session.acknowledged}<button onclick={() => acknowledge(session.source, session.session_id)}>已读</button>{/if}
-                      <button onclick={() => resetSession(session.source, session.session_id)}>清除</button>
+                      {#if !session.acknowledged}<button onclick={() => acknowledge(session.source, session.session_id, session.terminal_id)}>已读</button>{/if}
+                      <button onclick={() => resetSession(session.source, session.session_id, session.terminal_id)}>清除</button>
                     </div>
                     {#if focusNotes[focusErrorKey(session.source, session.session_id)]}<p class="session-focus-note">{focusNotes[focusErrorKey(session.source, session.session_id)]}</p>{/if}
                     {#if focusErrors[focusErrorKey(session.source, session.session_id)]}<p class="session-focus-error">{focusErrors[focusErrorKey(session.source, session.session_id)]}</p>{/if}
