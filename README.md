@@ -6,6 +6,10 @@ The orb that cues you when an agent needs you.
 
 OrbCue 在 Windows 桌面上放一个小球：orb 是形态，cue 是该你出手了。**工作时只显示数量，需要你处理时才提醒。** 点开小球是按项目分组的列表，点条目上的返回箭头可以跳回对应终端。命令行是 `orb`。
 
+![桌面上的 OrbCue 小球，工作时只显示数量](docs/screenshots/orb.png)
+
+![需要处理时，小球右上角出现问号](docs/screenshots/orb-waiting.png)
+
 当前 **0.2.0**，桌面程序只在 Windows 上提供。还没有预编译安装包，需要从源码构建。
 
 - 不读取对话、提示词、命令或代码，也不替你操作这些工具
@@ -82,6 +86,8 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/agent-activity
 
 外观主题有五套：原型、Fluent、Glyph、Braun、Glass，在「设置」里切换。
 
+![点开小球后的面板：动态页按项目分组列出会话](docs/screenshots/panel-activity.png)
+
 ### 动态
 
 每条会话显示工具名、项目和状态，没有对话内容。
@@ -93,16 +99,22 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/agent-activity
 - 工具进程退出后，对应条目会自动消失
 - 子任务计入所属的主任务，不单独占小球上的数字
 
+![动态页条目上的返回箭头](docs/screenshots/jump-back.png)
+
 要精确跳到某一个 Windows Terminal 标签：在「设置」里给启动方式起一个短命令（启动别名），然后用这个短命令在新标签里打开工具。没设别名时，在新开的 Windows Terminal 里运行 `orb run grok`（或 `claude` / `codex` 等）效果相同。第一次用之前需要先启动过一次 OrbCue，并**新开**终端。
 
 ### 连接
 
 每一行是一个已检测到的工具，并标明在 Windows 还是 WSL。状态是「可连接」或「已连接」。
 
+![连接页：列出本机工具，标明 Windows 或 WSL](docs/screenshots/panel-connect.png)
+
 - **连接**：先弹出将要改哪些文件，点「确认连接」才动手
 - **断开**：只移除 OrbCue 自己写入的内容，不会动你后来改过的其他设置
 - **刷新**：重新检测本机工具
 - **从文件夹添加**：官方安装路径里找不到时，选包含可执行文件的文件夹
+
+![确认连接前列出将要改的文件](docs/screenshots/connect-confirm.png)
 
 同名工具在 Windows 和 WSL 各装了一份，就各占一行，分开连接。Cursor 编辑器本身不会被当成命令行工具。
 
@@ -115,6 +127,8 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/agent-activity
 - **完成 / 等待 / 失败提示音**、**系统通知**
 - **开机自启**：登录 Windows 后自动打开 OrbCue
 - **全局快捷键**：默认 `Ctrl+Shift+Space` 打开或收起面板
+
+![设置页：外观、提示音、通知、开机自启、快捷键、启动别名](docs/screenshots/panel-settings.png)
 
 ## 连接时改了什么
 
