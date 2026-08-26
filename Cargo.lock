@@ -2612,7 +2612,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "orbcue"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "orbcue-connect",
  "orbcue-core",
@@ -2636,7 +2636,7 @@ dependencies = [
 
 [[package]]
 name = "orbcue-adapters"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "orbcue-core",
  "serde_json",
@@ -2645,7 +2645,7 @@ dependencies = [
 
 [[package]]
 name = "orbcue-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "libc",
@@ -2661,7 +2661,7 @@ dependencies = [
 
 [[package]]
 name = "orbcue-connect"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "orbcue-ipc",
  "serde",
@@ -2671,7 +2671,7 @@ dependencies = [
 
 [[package]]
 name = "orbcue-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2681,7 +2681,7 @@ dependencies = [
 
 [[package]]
 name = "orbcue-ipc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "interprocess",
  "orbcue-core",
@@ -2692,7 +2692,7 @@ dependencies = [
 
 [[package]]
 name = "orbcue-service"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ctrlc",
  "orbcue-core",

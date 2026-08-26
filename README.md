@@ -10,7 +10,7 @@ OrbCue 在 Windows 桌面上放一个小球：orb 是形态，cue 是该你出�
 
 ![需要处理时，小球右上角出现问号](docs/screenshots/orb-waiting.png)
 
-当前 **0.2.0**，桌面程序只在 Windows 上提供。还没有预编译安装包，需要从源码构建。
+当前 **0.2.1**，桌面程序只在 Windows 上提供。安装包见 [GitHub Releases](https://github.com/QZYH123/OrbCue/releases/latest)。
 
 - 不读取对话、提示词、命令或代码，也不替你操作这些工具
 - 默认不联网；状态只保存在本机当前用户目录
