@@ -21,6 +21,7 @@ pub fn dsh_projection(payload: &Value) -> Option<DockEvent> {
     let kind = match payload.get("event").and_then(Value::as_str)? {
         "session.started" | "session.working" => EventKind::Working,
         "session.waiting_input" => EventKind::WaitingInput,
+        "session.permission_requested" => EventKind::PermissionRequested,
         "session.completed" => EventKind::Completed,
         "session.failed" => EventKind::Failed,
         "session.cancelled" => EventKind::Cancelled,
@@ -48,10 +49,9 @@ pub fn grok_hook(payload: &Value) -> Option<DockEvent> {
         "stop_failure" => EventKind::Failed,
         "stop_cancelled" => EventKind::Idle,
         "session_end" => EventKind::Closed,
+        "permission_denied" => EventKind::Working,
         "pre_tool_use" if is_ask_user_question(payload) => EventKind::WaitingInput,
-        "post_tool_use" | "post_tool_use_failure" if is_ask_user_question(payload) => {
-            EventKind::Working
-        }
+        "post_tool_use" | "post_tool_use_failure" => EventKind::Working,
         "notification" => match notification_type(payload)? {
             "permission_prompt" => EventKind::PermissionRequested,
             "idle_prompt" => EventKind::Completed,
@@ -107,10 +107,9 @@ fn lifecycle_kind(event_name: &str, payload: &Value) -> Option<EventKind> {
             Some(EventKind::Working)
         }
         "permission_request" => Some(EventKind::PermissionRequested),
+        "permission_denied" => Some(EventKind::Working),
         "pre_tool_use" if is_ask_user_question(payload) => Some(EventKind::WaitingInput),
-        "post_tool_use" | "post_tool_use_failure" if is_ask_user_question(payload) => {
-            Some(EventKind::Working)
-        }
+        "post_tool_use" | "post_tool_use_failure" => Some(EventKind::Working),
         "stop" | "after_agent_response" => Some(stop_kind(payload)),
         "stop_failure" => Some(EventKind::Failed),
         "session_end" => Some(EventKind::Closed),

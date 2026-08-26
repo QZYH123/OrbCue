@@ -196,12 +196,13 @@ fn grok_connect_writes_a_revocable_hook_file() {
     assert!(document.contains("\"PreToolUse\""));
     assert!(document.contains("\"PostToolUse\""));
     assert!(document.contains("\"PostToolUseFailure\""));
+    assert!(document.contains("\"PermissionDenied\""));
     assert!(document.contains("\"ask_user_question\""));
     let parsed: serde_json::Value = serde_json::from_str(&document).unwrap();
     let pre = parsed["hooks"]["PreToolUse"][0].as_object().unwrap();
     assert_eq!(pre["matcher"], "ask_user_question");
     let post = parsed["hooks"]["PostToolUse"][0].as_object().unwrap();
-    assert_eq!(post["matcher"], "ask_user_question");
+    assert_eq!(post.get("matcher"), None);
     assert_eq!(parsed["hooks"]["SessionStart"][0].get("matcher"), None);
     assert!(document.contains("orbcue"));
     assert!(document.contains("grok-hook"));
@@ -424,6 +425,7 @@ fn claude_preview_notes_backup_and_disconnect_keeps_other_hooks() {
     let connected = fs::read_to_string(&settings).unwrap();
     assert!(connected.contains("SessionStart"));
     assert!(connected.contains("UserPromptSubmit"));
+    assert!(connected.contains("PermissionDenied"));
     assert!(connected.contains("\"Stop\""));
     assert!(connected.contains("\"PreToolUse\""));
     assert!(connected.contains("\"PostToolUse\""));
@@ -433,6 +435,7 @@ fn claude_preview_notes_backup_and_disconnect_keeps_other_hooks() {
         parsed["hooks"]["PreToolUse"][0]["matcher"],
         "AskUserQuestion"
     );
+    assert_eq!(parsed["hooks"]["PostToolUse"][0].get("matcher"), None);
     assert_eq!(parsed["hooks"]["SessionStart"][0].get("matcher"), None);
     assert!(connected.contains("user-hook"));
     fs::write(
@@ -669,6 +672,8 @@ fn codex_connect_merges_hooks_json_and_keeps_other_hooks() {
         parsed["hooks"]["PreToolUse"][0]["matcher"],
         "AskUserQuestion|ask_user_question"
     );
+    assert_eq!(parsed["hooks"]["PostToolUse"][0].get("matcher"), None);
+    assert!(!connected.contains("PostToolUseFailure"));
     assert!(connected.contains("user-hook"));
     assert!(connected.contains("codex-hook"));
     let script =

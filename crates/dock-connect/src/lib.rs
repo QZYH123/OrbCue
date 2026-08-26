@@ -1201,6 +1201,10 @@ fn claude_hook_specs() -> &'static [HookSpec] {
             matcher: None,
         },
         HookSpec {
+            event: "PermissionDenied",
+            matcher: None,
+        },
+        HookSpec {
             event: "Notification",
             matcher: None,
         },
@@ -1222,11 +1226,11 @@ fn claude_hook_specs() -> &'static [HookSpec] {
         },
         HookSpec {
             event: "PostToolUse",
-            matcher: Some("AskUserQuestion"),
+            matcher: None,
         },
         HookSpec {
             event: "PostToolUseFailure",
-            matcher: Some("AskUserQuestion"),
+            matcher: None,
         },
     ]
 }
@@ -1243,6 +1247,10 @@ fn grok_hook_specs() -> &'static [HookSpec] {
         },
         HookSpec {
             event: "Notification",
+            matcher: None,
+        },
+        HookSpec {
+            event: "PermissionDenied",
             matcher: None,
         },
         HookSpec {
@@ -1267,11 +1275,11 @@ fn grok_hook_specs() -> &'static [HookSpec] {
         },
         HookSpec {
             event: "PostToolUse",
-            matcher: Some("ask_user_question"),
+            matcher: None,
         },
         HookSpec {
             event: "PostToolUseFailure",
-            matcher: Some("ask_user_question"),
+            matcher: None,
         },
     ]
 }
@@ -1304,11 +1312,7 @@ fn codex_hook_specs() -> &'static [HookSpec] {
         },
         HookSpec {
             event: "PostToolUse",
-            matcher: Some("AskUserQuestion|ask_user_question"),
-        },
-        HookSpec {
-            event: "PostToolUseFailure",
-            matcher: Some("AskUserQuestion|ask_user_question"),
+            matcher: None,
         },
     ]
 }

@@ -1,7 +1,7 @@
 use orbcue_adapters::{
     claude_hook, codex_hook, codex_notification, cursor_hook, dsh_projection, grok_hook,
 };
-use orbcue_core::{DockState, EventKind, SessionState};
+use orbcue_core::{DockEvent, DockState, EventKind, SessionState};
 
 #[test]
 fn claude_adapter_uses_only_hook_metadata() {
@@ -34,12 +34,13 @@ fn claude_adapter_follows_turn_lifecycle() {
     .unwrap();
     assert_eq!(prompt.kind, EventKind::Working);
 
-    assert!(claude_hook(&serde_json::json!({
+    let after_tool = claude_hook(&serde_json::json!({
         "hook_event_name": "PostToolUse",
         "session_id": "claude-session",
         "tool_name": "Read"
     }))
-    .is_none());
+    .unwrap();
+    assert_eq!(after_tool.kind, EventKind::Working);
 
     let asking = claude_hook(&serde_json::json!({
         "hook_event_name": "PreToolUse",
@@ -106,6 +107,14 @@ fn claude_adapter_follows_turn_lifecycle() {
     }))
     .unwrap();
     assert_eq!(idle_prompt.kind, EventKind::Completed);
+
+    let denied = claude_hook(&serde_json::json!({
+        "hook_event_name": "PermissionDenied",
+        "session_id": "claude-session",
+        "tool_name": "Bash"
+    }))
+    .unwrap();
+    assert_eq!(denied.kind, EventKind::Working);
 
     let ended = claude_hook(&serde_json::json!({
         "hook_event_name": "SessionEnd",
@@ -180,6 +189,94 @@ fn projection_adapters_reject_unknown_payloads_without_throwing() {
     assert!(codex_notification(&serde_json::json!({"type":"unknown"})).is_none());
 }
 
+fn apply_permission_then(event: DockEvent) -> SessionState {
+    let mut state = DockState::new();
+    let started = DockEvent::new(
+        "start-1",
+        EventKind::Working,
+        &event.source,
+        &event.session_id,
+    );
+    assert!(state.apply(started).accepted);
+    let waiting = state.apply(DockEvent::new(
+        "perm-1",
+        EventKind::PermissionRequested,
+        &event.source,
+        &event.session_id,
+    ));
+    assert_eq!(
+        waiting.snapshot.sessions[0].state,
+        SessionState::NeedsAttention
+    );
+    state.apply(event).snapshot.sessions[0].state
+}
+
+#[test]
+fn claude_allowing_a_permission_prompt_returns_to_working() {
+    let allowed = claude_hook(&serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "session_id": "claude-session",
+        "tool_name": "Bash",
+        "event_id": "c-allow-1"
+    }))
+    .unwrap();
+    assert_eq!(allowed.kind, EventKind::Working);
+    assert_eq!(apply_permission_then(allowed), SessionState::Working);
+}
+
+#[test]
+fn claude_auto_mode_permission_denied_returns_to_working() {
+    let denied = claude_hook(&serde_json::json!({
+        "hook_event_name": "PermissionDenied",
+        "session_id": "claude-session",
+        "tool_name": "Bash",
+        "event_id": "c-deny-1"
+    }))
+    .unwrap();
+    assert_eq!(denied.kind, EventKind::Working);
+    assert_eq!(apply_permission_then(denied), SessionState::Working);
+}
+
+#[test]
+fn codex_allowing_a_permission_prompt_returns_to_working() {
+    let prompt = codex_hook(&serde_json::json!({
+        "hook_event_name": "PermissionRequest",
+        "session_id": "codex-session",
+        "tool_name": "Bash"
+    }))
+    .unwrap();
+    assert_eq!(prompt.kind, EventKind::PermissionRequested);
+
+    let allowed = codex_hook(&serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "session_id": "codex-session",
+        "tool_name": "Bash",
+        "event_id": "x-allow-1"
+    }))
+    .unwrap();
+    assert_eq!(allowed.kind, EventKind::Working);
+    assert_eq!(apply_permission_then(allowed), SessionState::Working);
+}
+
+#[test]
+fn dsh_permission_then_working_resumes() {
+    let permission = dsh_projection(&serde_json::json!({
+        "event": "session.permission_requested",
+        "session_id": "dsh-session",
+        "event_id": "d-perm-1"
+    }))
+    .expect("DSH session.permission_requested is the dock permission event");
+    assert_eq!(permission.kind, EventKind::PermissionRequested);
+
+    let working = dsh_projection(&serde_json::json!({
+        "event": "session.working",
+        "session_id": "dsh-session",
+        "event_id": "d-work-1"
+    }))
+    .unwrap();
+    assert_eq!(apply_permission_then(working), SessionState::Working);
+}
+
 #[test]
 fn grok_adapter_keeps_one_record_per_session() {
     let opened = grok_hook(&serde_json::json!({
@@ -217,6 +314,15 @@ fn grok_adapter_keeps_one_record_per_session() {
         "toolName": "read_file"
     }))
     .is_none());
+
+    let denied = grok_hook(&serde_json::json!({
+        "hookEventName": "permission_denied",
+        "sessionId": "grok-session",
+        "promptId": "turn-1",
+        "toolName": "run_terminal_command"
+    }))
+    .unwrap();
+    assert_eq!(denied.kind, EventKind::Working);
 
     let asking = grok_hook(&serde_json::json!({
         "hookEventName": "pre_tool_use",
@@ -325,11 +431,12 @@ fn grok_adapter_keeps_one_record_per_session() {
     .unwrap();
     assert_eq!(finished_subagent.kind, EventKind::Completed);
 
-    assert!(grok_hook(&serde_json::json!({
+    let failed_tool = grok_hook(&serde_json::json!({
         "hookEventName": "PostToolUseFailure",
         "sessionId": "grok-session"
     }))
-    .is_none());
+    .unwrap();
+    assert_eq!(failed_tool.kind, EventKind::Working);
 
     let ended = grok_hook(&serde_json::json!({
         "hookEventName": "session_end",
@@ -368,6 +475,110 @@ fn grok_adapter_copies_explicit_workspace_fields() {
     }))
     .unwrap();
     assert_eq!(snake.workspace_root.as_deref(), Some("/tmp/snake"));
+}
+
+#[test]
+fn grok_denying_a_permission_prompt_returns_to_working() {
+    let mut state = DockState::new();
+    let started = grok_hook(&serde_json::json!({
+        "hookEventName": "user_prompt_submit",
+        "sessionId": "grok-session",
+        "promptId": "turn-1",
+        "event_id": "g-perm-1"
+    }))
+    .unwrap();
+    assert!(state.apply(started).accepted);
+
+    let permission = grok_hook(&serde_json::json!({
+        "hookEventName": "notification",
+        "sessionId": "grok-session",
+        "promptId": "turn-1",
+        "notificationType": "permission_prompt",
+        "event_id": "g-perm-2"
+    }))
+    .unwrap();
+    let waiting = state.apply(permission);
+    assert_eq!(
+        waiting.snapshot.sessions[0].state,
+        SessionState::NeedsAttention
+    );
+    assert_eq!(
+        waiting.snapshot.sessions[0].attention_reason.as_deref(),
+        Some("permission")
+    );
+
+    let denied = grok_hook(&serde_json::json!({
+        "hookEventName": "PermissionDenied",
+        "sessionId": "grok-session",
+        "promptId": "turn-1",
+        "toolName": "run_terminal_command",
+        "event_id": "g-perm-3"
+    }))
+    .expect("Grok fires PermissionDenied after the user picks deny");
+    assert_eq!(denied.kind, EventKind::Working);
+
+    let resumed = state.apply(denied);
+    assert!(resumed.accepted);
+    assert_eq!(resumed.snapshot.working_count, 1);
+    assert_eq!(resumed.snapshot.pending_count, 0);
+    assert_eq!(resumed.snapshot.sessions[0].state, SessionState::Working);
+    assert_eq!(resumed.snapshot.sessions[0].attention_reason, None);
+}
+
+#[test]
+fn grok_allowing_a_permission_prompt_returns_to_working() {
+    let mut state = DockState::new();
+    let started = grok_hook(&serde_json::json!({
+        "hookEventName": "user_prompt_submit",
+        "sessionId": "grok-session",
+        "promptId": "turn-1",
+        "event_id": "g-allow-1"
+    }))
+    .unwrap();
+    assert!(state.apply(started).accepted);
+
+    let permission = grok_hook(&serde_json::json!({
+        "hookEventName": "notification",
+        "sessionId": "grok-session",
+        "promptId": "turn-1",
+        "notificationType": "permission_prompt",
+        "event_id": "g-allow-2"
+    }))
+    .unwrap();
+    let waiting = state.apply(permission);
+    assert_eq!(
+        waiting.snapshot.sessions[0].state,
+        SessionState::NeedsAttention
+    );
+
+    assert!(
+        grok_hook(&serde_json::json!({
+            "hookEventName": "pre_tool_use",
+            "sessionId": "grok-session",
+            "promptId": "turn-1",
+            "toolName": "run_terminal_command",
+            "event_id": "g-allow-pre"
+        }))
+        .is_none(),
+        "PreToolUse fires before the prompt, so it cannot resume after allow"
+    );
+
+    let allowed = grok_hook(&serde_json::json!({
+        "hookEventName": "post_tool_use",
+        "sessionId": "grok-session",
+        "promptId": "turn-1",
+        "toolName": "run_terminal_command",
+        "event_id": "g-allow-3"
+    }))
+    .expect("Grok fires PostToolUse after an allowed tool runs");
+    assert_eq!(allowed.kind, EventKind::Working);
+
+    let resumed = state.apply(allowed);
+    assert!(resumed.accepted);
+    assert_eq!(resumed.snapshot.working_count, 1);
+    assert_eq!(resumed.snapshot.pending_count, 0);
+    assert_eq!(resumed.snapshot.sessions[0].state, SessionState::Working);
+    assert_eq!(resumed.snapshot.sessions[0].attention_reason, None);
 }
 
 #[test]
