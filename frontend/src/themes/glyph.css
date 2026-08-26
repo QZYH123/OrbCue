@@ -176,7 +176,7 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   gap: 12px;
 }
 .hero-main { min-width: 0; flex: 1; }
-.hero-count { display: flex; align-items: baseline; min-width: 0; }
+.hero-count { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .hero-work,
 .hero-track,
 .hero-slash {
@@ -576,6 +576,7 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   cursor: pointer;
 }
 .primary-button { color: #000; background: #fff; border: 1px solid #fff; }
+.primary-button:disabled { opacity: .4; cursor: default; }
 .secondary-button { color: var(--text); background: none; border: 1px solid var(--edge); }
 .error-message {
   padding: 8px 0;

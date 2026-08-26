@@ -544,6 +544,7 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   cursor: pointer;
 }
 .primary-button { color: #102418; background: var(--working); }
+.primary-button:disabled { opacity: .4; cursor: default; }
 .secondary-button { color: var(--text); background: rgba(255, 255, 255, .08); }
 .error-message {
   padding: 9px 11px;

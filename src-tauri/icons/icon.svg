@@ -1,5 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <rect x="8" y="8" width="112" height="112" rx="34" fill="#101a2b"/>
-  <rect x="13" y="13" width="102" height="102" rx="29" fill="none" stroke="#64d88a" stroke-width="8"/>
-  <circle cx="64" cy="64" r="18" fill="#e8eef7"/>
+  <defs>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#21272d"/>
+      <stop offset="1" stop-color="#0f1318"/>
+    </linearGradient>
+    <radialGradient id="orb" cx=".36" cy=".3" r=".8">
+      <stop offset="0" stop-color="#39424c"/>
+      <stop offset="1" stop-color="#14181d"/>
+    </radialGradient>
+    <mask id="cue-gap">
+      <rect width="128" height="128" fill="#fff"/>
+      <circle cx="92.28" cy="35.72" r="14.5" fill="#000"/>
+    </mask>
+  </defs>
+  <rect width="128" height="128" rx="30" fill="url(#shell)"/>
+  <rect x=".75" y=".75" width="126.5" height="126.5" rx="29.25" fill="none" stroke="#e8eef7" stroke-opacity=".07" stroke-width="1.5"/>
+  <g mask="url(#cue-gap)">
+    <circle cx="64" cy="64" r="40" fill="none" stroke="#e8eef7" stroke-opacity=".14" stroke-width="7"/>
+    <circle cx="64" cy="64" r="40" fill="none" stroke="#5ecf8f" stroke-width="7"
+      stroke-linecap="round" stroke-dasharray="157 94.33" transform="rotate(-90 64 64)"/>
+    <circle cx="64" cy="64" r="25" fill="url(#orb)" stroke="#e8eef7" stroke-opacity=".08"/>
+  </g>
+  <circle cx="92.28" cy="35.72" r="9" fill="#e0a257"/>
 </svg>

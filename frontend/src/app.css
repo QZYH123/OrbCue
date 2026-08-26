@@ -92,6 +92,10 @@ html, body, #app {
   font-size: 11px;
   letter-spacing: .06em;
 }
+/* 主题、run 两步没有撑满的列表，靠上下 auto margin 让内容块居中 */
+.onboarding-copy {
+  margin-top: auto;
+}
 .onboarding-copy h2 {
   margin: 0 0 6px;
   font-size: 16px;
