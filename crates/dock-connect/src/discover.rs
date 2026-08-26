@@ -489,9 +489,13 @@ mod tests {
             .path
             .file_name()
             .and_then(|name| name.to_str())
-            == Some("claude.exe")));
+            .is_some_and(|name| name.eq_ignore_ascii_case("claude.exe"))));
         assert!(discovered.iter().any(|agent| agent.name == "cursor"
-            && agent.path.file_name().and_then(|name| name.to_str()) == Some("cursor-agent.exe")));
+            && agent
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("cursor-agent.exe"))));
         std::fs::remove_dir_all(root).unwrap();
     }
 
