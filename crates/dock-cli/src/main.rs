@@ -2468,7 +2468,9 @@ mod tests {
     fn write_orb_exe(path: &Path, modified: SystemTime) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, b"orb").unwrap();
-        fs::File::open(path)
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
             .unwrap()
             .set_modified(modified)
             .unwrap();
