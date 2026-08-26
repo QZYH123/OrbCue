@@ -12,11 +12,22 @@ OrbCue 在 Windows 桌面上放一个小球：orb 是形态，cue 是该你出�
   <img src="docs/screenshots/orb-waiting.png" width="88" alt="需要处理时右上角出现问号">
 </p>
 
-当前 **0.2.1**，桌面程序只在 Windows 上提供。安装包见 [GitHub Releases](https://github.com/QZYH123/OrbCue/releases/latest)。
+<p align="center">
+  <sub>工作中只显示数量 &nbsp;·&nbsp; 需要处理时出现问号</sub>
+</p>
+
+当前 **0.2.2**，桌面程序只在 Windows 上提供。安装包见 [GitHub Releases](https://github.com/QZYH123/OrbCue/releases/latest)。
 
 - 不读取对话、提示词、命令或代码，也不替你操作这些工具
 - 默认不联网；状态只保存在本机当前用户目录
-- 支持的是命令行工具：Claude Code CLI（`claude`）、Grok CLI（`grok`）、Codex CLI（`codex`）、Cursor Agent CLI（`agent` / `cursor-agent`）。
+- 支持的命令行工具：
+
+| 工具 | 命令 |
+| --- | --- |
+| Claude Code | `claude` |
+| Grok | `grok` |
+| Codex | `codex` |
+| Cursor Agent | `agent` / `cursor-agent` |
 
 ## 目录
 
@@ -34,14 +45,14 @@ OrbCue 在 Windows 桌面上放一个小球：orb 是形态，cue 是该你出�
 
 ## 它做什么、不做什么
 
-**做**
+### 做
 
 - 多个工具共用一个小球。数字是「正在工作的主会话 / 当前列表里的主会话」，例如 `2/5`
 - 等待输入、等待授权或失败时，弹一次系统通知并播提示音；正常完成只播提示音，不弹通知
 - 在「连接」页接上本机已经装好的工具：不替换可执行文件，确认前会列出将要改的文件
 - 从列表跳回终端。用 `orb run` 在 Windows Terminal 里开出的专属标签，可以精确回到那个标签
 
-**不做**
+### 不做
 
 - 不读取对话记录、提示词、命令、代码、终端输出或凭据
 - 不扫描进程列表去猜测工具是否在工作
@@ -88,13 +99,17 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/OrbCue/release
 
 外观主题有五套：原型、Fluent、Glyph、Braun、Glass，在「设置」里切换。
 
-![五套外观：原型、Fluent、Glyph、Braun、Glass](docs/screenshots/themes.png)
+<p align="center">
+  <img src="docs/screenshots/themes.png" alt="五套外观：原型、Fluent、Glyph、Braun、Glass">
+</p>
 
 ### 动态
 
 每条会话显示工具名、项目和状态，没有对话内容。
 
-![动态页按项目分组列出会话](docs/screenshots/panel-activity.png)
+<p align="center">
+  <img src="docs/screenshots/panel-activity.png" width="360" alt="动态页按项目分组列出会话">
+</p>
 
 - **已读**：去掉等待提醒
 - **清除**：把卡住的条目从列表拿掉。只影响 OrbCue 的显示，不会向工具发命令；清掉之后这条不会再回来
@@ -109,7 +124,9 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/OrbCue/release
 
 每一行是一个已检测到的工具，并标明在 Windows 还是 WSL。状态是「可连接」或「已连接」。
 
-![连接页：列出本机工具，标明 Windows 或 WSL](docs/screenshots/panel-connect.png)
+<p align="center">
+  <img src="docs/screenshots/panel-connect.png" width="360" alt="连接页：列出本机工具，标明 Windows 或 WSL">
+</p>
 
 - **连接**：先弹出将要改哪些文件，点「确认连接」才动手
 - **断开**：只移除 OrbCue 自己写入的内容，不会动你后来改过的其他设置
@@ -130,7 +147,7 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/OrbCue/release
 
 ## 连接时改了什么
 
-连接方式取决于工具是否提供 hook （hook，即工具自带的事件通知机制）：
+连接方式取决于工具是否提供 hook（工具自带的事件通知机制）：
 
 | 工具 | 连接方式 | 能报告的状态 |
 | --- | --- | --- |
@@ -156,31 +173,40 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/OrbCue/release
 
 ## 常见问题
 
-**连接之前已经在跑的工具没有出现在小球上？**  
+### 连接之前已经在跑的工具没有出现在小球上？
+
 不会回填。请在连接完成之后新开终端再启动工具。
 
-**任务一直显示「工作中」？**  
+### 任务一直显示「工作中」？
+
 工具可能被强制结束，或没有把「结束了」告诉 OrbCue（例如在 Codex 里按 Esc 打断）。在动态页点「清除」即可；进程真正退出后 OrbCue 也会自动清理。
 
-**授权框里点了拒绝，还显示等待授权？**  
+### 授权框里点了拒绝，还显示等待授权？
+
 Claude 和 Codex 不会把这次拒绝告诉 OrbCue。等到它继续干活或这一轮结束就会恢复；也可以点「清除」。Grok 没有这个问题。
 
-**点返回箭头找不到窗口，或不在那个标签？**  
+### 点返回箭头找不到窗口，或不在那个标签？
+
 自己开的终端只能回到最近交互的窗口。要精确跳到某个标签，用「设置」里的启动别名在 Windows Terminal 中启动工具。
 
-**小球不见了？**  
+### 小球不见了？
+
 看托盘图标：可能选过「隐藏小球」。点「显示小球」，或用 `Ctrl+Shift+Space` 打开面板。
 
-**等你处理时没有系统通知？**  
+### 等你处理时没有系统通知？
+
 在「设置」里打开系统通知，并在 Windows「设置 → 系统 → 通知」里允许 OrbCue。
 
-**没装 WSL 能用吗？**  
+### 没装 WSL 能用吗？
+
 能。没装 WSL 的话连接页只显示 Windows 上的工具。
 
-**连接页找不到 Windows 上明明能用的工具？**  
+### 连接页找不到 Windows 上明明能用的工具？
+
 像 fnm、nvm 这类只在某个终端里临时加路径的，桌面程序看不到。点「刷新」；官方安装一般会写进用户目录。仍没有时，点「从文件夹添加」，选那个可执行文件所在的文件夹。
 
-**OrbCue 能看到我的对话内容吗？**  
+### OrbCue 能看到我的对话内容吗？
+
 不能。只接收工具主动发来的状态变化（开始了、在等你、完成了），见[隐私与数据](#隐私与数据)。
 
 ## 卸载
@@ -206,6 +232,8 @@ npm run tauri -- dev
 
 完整说明见 [`docs/dev.md`](docs/dev.md)。术语与边界见 [`docs/agents/domain.md`](docs/agents/domain.md)，设计决策见 [`docs/adr/`](docs/adr/)。
 
-## 许可
+---
 
-[MIT](LICENSE)
+感谢 [LINUX DO](https://linux.do/) 社区对我 AI 学习的助力。
+
+许可：[MIT](LICENSE)
