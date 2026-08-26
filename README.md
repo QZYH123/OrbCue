@@ -6,9 +6,11 @@ The orb that cues you when an agent needs you.
 
 OrbCue 在 Windows 桌面上放一个小球：orb 是形态，cue 是该你出手了。**工作时只显示数量，需要你处理时才提醒。** 点开小球是按项目分组的列表，点条目上的返回箭头可以跳回对应终端。命令行是 `orb`。
 
-![桌面上的 OrbCue 小球，工作时只显示数量](docs/screenshots/orb.png)
-
-![需要处理时，小球右上角出现问号](docs/screenshots/orb-waiting.png)
+<p align="center">
+  <img src="docs/screenshots/orb.png" width="88" alt="工作时只显示数量">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/orb-waiting.png" width="88" alt="需要处理时右上角出现问号">
+</p>
 
 当前 **0.2.0**，桌面程序只在 Windows 上提供。安装包见 [GitHub Releases](https://github.com/QZYH123/OrbCue/releases/latest)。
 
@@ -56,7 +58,7 @@ OrbCue 在 Windows 桌面上放一个小球：orb 是形态，cue 是该你出�
 
 ## 安装
 
-Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/agent-activity-dock/releases/latest)。下载 NSIS 安装包，装好后启动 OrbCue。
+Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/OrbCue/releases/latest)。下载 NSIS 安装包，装好后启动 OrbCue。
 
 也可以从源码构建，步骤见 [从源码开发](docs/dev.md#构建-windows-桌面程序)。
 
@@ -86,11 +88,13 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/agent-activity
 
 外观主题有五套：原型、Fluent、Glyph、Braun、Glass，在「设置」里切换。
 
-![点开小球后的面板：动态页按项目分组列出会话](docs/screenshots/panel-activity.png)
+![五套外观：原型、Fluent、Glyph、Braun、Glass](docs/screenshots/themes.png)
 
 ### 动态
 
 每条会话显示工具名、项目和状态，没有对话内容。
+
+![动态页按项目分组列出会话](docs/screenshots/panel-activity.png)
 
 - **已读**：去掉等待提醒
 - **清除**：把卡住的条目从列表拿掉。只影响 OrbCue 的显示，不会向工具发命令；清掉之后这条不会再回来
@@ -98,8 +102,6 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/agent-activity
 - 底栏「全部已读」「清除全部」对当前列表一次性操作
 - 工具进程退出后，对应条目会自动消失
 - 子任务计入所属的主任务，不单独占小球上的数字
-
-![动态页条目上的返回箭头](docs/screenshots/jump-back.png)
 
 要精确跳到某一个 Windows Terminal 标签：在「设置」里给启动方式起一个短命令（启动别名），然后用这个短命令在新标签里打开工具。没设别名时，在新开的 Windows Terminal 里运行 `orb run grok`（或 `claude` / `codex` 等）效果相同。第一次用之前需要先启动过一次 OrbCue，并**新开**终端。
 
@@ -114,8 +116,6 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/agent-activity
 - **刷新**：重新检测本机工具
 - **从文件夹添加**：官方安装路径里找不到时，选包含可执行文件的文件夹
 
-![确认连接前列出将要改的文件](docs/screenshots/connect-confirm.png)
-
 同名工具在 Windows 和 WSL 各装了一份，就各占一行，分开连接。Cursor 编辑器本身不会被当成命令行工具。
 
 连接页会查看：桌面程序能看到的 PATH、用户 PATH，以及常见安装目录（例如 `%USERPROFILE%\.local\bin`、Grok 的 `%USERPROFILE%\.grok\bin`、Cursor 命令行的 `%LOCALAPPDATA%\cursor-agent`）。装了 WSL 时再查看 WSL 里的 PATH（WSL 里能看到的 Windows 程序不重复计）。
@@ -127,8 +127,6 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/agent-activity
 - **完成 / 等待 / 失败提示音**、**系统通知**
 - **开机自启**：登录 Windows 后自动打开 OrbCue
 - **全局快捷键**：默认 `Ctrl+Shift+Space` 打开或收起面板
-
-![设置页：外观、提示音、通知、开机自启、快捷键、启动别名](docs/screenshots/panel-settings.png)
 
 ## 连接时改了什么
 
@@ -144,6 +142,7 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/agent-activity
 
 - Cursor 命令行偶尔不会通知已经结束，任务会停在「工作中」，直到进程退出才消失
 - Codex 用 Esc 或 Ctrl+C 打断当前回复时，不会通知 OrbCue，任务停在「工作中」；对话报错也不会显示为失败。在动态页点「清除」即可；退出 Codex 后任务也会从列表消失
+- Claude / Codex 在授权框里点拒绝时，不会通知 OrbCue。小球会停在「等待授权」，直到工具下一刀命令结束或这一轮结束；也可以在动态页点「清除」。Grok 点拒绝会马上回到工作中
 - 首次修改 Claude / Codex / Cursor 的配置前，会保留一份备份（例如 `settings.json.orbcue.bak`）
 
 ## 隐私与数据
@@ -162,6 +161,9 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/agent-activity
 
 **任务一直显示「工作中」？**  
 工具可能被强制结束，或没有把「结束了」告诉 OrbCue（例如在 Codex 里按 Esc 打断）。在动态页点「清除」即可；进程真正退出后 OrbCue 也会自动清理。
+
+**授权框里点了拒绝，还显示等待授权？**  
+Claude 和 Codex 不会把这次拒绝告诉 OrbCue。等到它继续干活或这一轮结束就会恢复；也可以点「清除」。Grok 没有这个问题。
 
 **点返回箭头找不到窗口，或不在那个标签？**  
 自己开的终端只能回到最近交互的窗口。要精确跳到某个标签，用「设置」里的启动别名在 Windows Terminal 中启动工具。
