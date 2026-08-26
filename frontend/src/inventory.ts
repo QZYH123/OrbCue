@@ -25,7 +25,7 @@ export function wslDockErrorBanner(inventory: AgentInventory): string | null {
 }
 
 /** Agents whose CLI command differs from the agent name shown in the UI. */
-const AGENT_COMMANDS: Record<string, string> = { cursor: 'cursor-agent' };
+const AGENT_COMMANDS: Record<string, string> = { cursor: 'agent' };
 
 export function connectSuccessNotice(name: string, side: AgentSide): string {
   const command = AGENT_COMMANDS[name.trim().toLowerCase()] ?? name;

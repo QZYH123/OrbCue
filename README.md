@@ -16,7 +16,7 @@ OrbCue 在 Windows 桌面上放一个小球：orb 是形态，cue 是该你出�
 
 - 不读取对话、提示词、命令或代码，也不替你操作这些工具
 - 默认不联网；状态只保存在本机当前用户目录
-- 支持的是命令行工具：Claude Code CLI（`claude`）、Grok CLI（`grok`）、Codex CLI（`codex`）、Cursor Agent CLI（`cursor-agent`）。
+- 支持的是命令行工具：Claude Code CLI（`claude`）、Grok CLI（`grok`）、Codex CLI（`codex`）、Cursor Agent CLI（`agent` / `cursor-agent`）。
 
 ## 目录
 

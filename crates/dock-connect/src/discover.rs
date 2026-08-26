@@ -142,6 +142,48 @@ pub fn choose_discovered(name: &str, candidates: Vec<PathBuf>) -> Option<Discove
     select_agent(name, candidates)
 }
 
+pub fn looks_like_cursor_cli_path(path: &Path) -> bool {
+    looks_like_cursor_cli_path_inner(path, true)
+}
+
+fn looks_like_cursor_cli_path_inner(path: &Path, follow: bool) -> bool {
+    if cursor_agent_in_path_text(&path.to_string_lossy()) {
+        return true;
+    }
+    if follow {
+        if let Ok(resolved) = path.canonicalize() {
+            if resolved != path {
+                return looks_like_cursor_cli_path_inner(&resolved, false);
+            }
+        }
+    }
+    false
+}
+
+fn cursor_agent_in_path_text(text: &str) -> bool {
+    text.replace('\\', "/")
+        .split('/')
+        .any(|segment| path_segment_stem(segment).eq_ignore_ascii_case("cursor-agent"))
+}
+
+fn path_segment_stem(segment: &str) -> &str {
+    for suffix in [".exe", ".cmd", ".ps1", ".bat", ".com"] {
+        if let Some(stem) = strip_ascii_suffix_ignore_case(segment, suffix) {
+            return stem;
+        }
+    }
+    segment
+}
+
+fn strip_ascii_suffix_ignore_case<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
+    let start = value.len().saturating_sub(suffix.len());
+    value
+        .get(start..)
+        .is_some_and(|end| end.eq_ignore_ascii_case(suffix))
+        .then_some(&value[..start])
+        .filter(|stem| !stem.is_empty())
+}
+
 pub fn discover_agents(
     path: &OsStr,
     excluded_dir: Option<&Path>,
@@ -200,6 +242,11 @@ fn collect_cursor(
     excluded_dir: Option<&Path>,
 ) -> Vec<PathBuf> {
     let mut candidates = find_all_on_path("cursor-agent", path, excluded_dir);
+    for found in find_all_on_path("agent", path, excluded_dir) {
+        if looks_like_cursor_cli_path(&found) && !candidates.contains(&found) {
+            candidates.push(found);
+        }
+    }
     for dir in extra_dirs {
         for found in cursor_files_in_dir(dir, excluded_dir) {
             if !candidates.contains(&found) {
@@ -619,6 +666,54 @@ mod tests {
             "{:?}",
             discovered[0].path
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn path_agent_symlink_to_cursor_agent_is_discovered_as_cursor() {
+        let root = std::env::temp_dir().join(format!(
+            "orbcue-agent-symlink-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock is after epoch")
+                .as_nanos()
+        ));
+        let bin = root.join("bin");
+        let install = root.join("cursor-agent").join("versions").join("1");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&install).unwrap();
+        let real = install.join("cursor-agent");
+        std::fs::write(&real, b"").unwrap();
+        let agent = bin.join("agent");
+        std::os::unix::fs::symlink(&real, &agent).unwrap();
+        let path = std::env::join_paths([&bin]).unwrap();
+        let discovered = super::discover_agents_with_extras(&path, &[], None);
+        assert_eq!(discovered.len(), 1, "{discovered:?}");
+        assert_eq!(discovered[0].name, "cursor");
+        assert!(
+            super::looks_like_cursor_cli_path(&discovered[0].path),
+            "{:?}",
+            discovered[0].path
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn path_agent_without_cursor_install_is_not_cursor() {
+        let root = std::env::temp_dir().join(format!(
+            "orbcue-plain-agent-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock is after epoch")
+                .as_nanos()
+        ));
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("agent"), b"").unwrap();
+        let path = std::env::join_paths([&bin]).unwrap();
+        let discovered = super::discover_agents_with_extras(&path, &[], None);
+        assert!(discovered.is_empty(), "{discovered:?}");
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -30,7 +30,7 @@ describe('inventory display', () => {
   it('tells users to restart their terminal after a connect, in plain words', () => {
     const notice = connectSuccessNotice('cursor', 'wsl');
     expect(notice).toContain('已连接 Cursor（WSL）');
-    expect(notice).toContain('cursor-agent');
+    expect(notice).toContain('agent');
     expect(notice).toContain('新开一个终端');
     expect(connectSuccessNotice('claude', 'windows')).toContain('（Windows）');
     expect(connectSuccessNotice('claude', 'windows')).toContain('claude 不受影响');

@@ -3,7 +3,7 @@
 //! Spawn lives in this process. Focus of the same `orb:` marker lives in the
 //! Windows presenter (`src-tauri/src/focus.rs`).
 
-use orbcue_connect::ConnectionManager;
+use orbcue_connect::{looks_like_cursor_cli_path, ConnectionManager};
 use orbcue_core::{dock_tab_title, dock_terminal_marker, format_dock_marker};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -305,7 +305,7 @@ fn run_command_inner(
         },
     };
     let request = SpawnRequest {
-        agent: agent.to_owned(),
+        agent: run_agent_label(agent),
         marker: marker.clone(),
         profile: profile.clone(),
         inner,
@@ -331,7 +331,7 @@ pub fn prepare_wsl_run(
         return Err("WSL orb run produced a native inner command".to_owned());
     };
     Ok(WslRunSpec {
-        agent: agent.to_owned(),
+        agent: run_agent_label(agent),
         marker,
         profile,
         distro: inner.distro,
@@ -640,7 +640,7 @@ fn next_marker_suffix() -> u32 {
     (nanos ^ ((std::process::id() as u64) << 16) ^ seq.wrapping_mul(0x9E37_79B9)) as u32
 }
 
-const CURSOR_EDITOR_ON_PATH: &str = "cursor 在 PATH 上是 Cursor 编辑器，不是命令行工具。Dock 需要 cursor-agent；先安装 Cursor CLI 再运行 orb run cursor。";
+const CURSOR_EDITOR_ON_PATH: &str = "cursor 在 PATH 上是 Cursor 编辑器，不是命令行工具。Dock 需要 Cursor CLI（agent / cursor-agent）；先安装后再运行 orb run cursor。";
 
 fn resolve_agent(name: &str) -> Result<String, String> {
     if !valid_run_agent_name(name) {
@@ -695,10 +695,22 @@ fn run_binary_name(name: &str) -> &str {
     }
 }
 
+fn run_agent_label(name: &str) -> String {
+    run_agent_label_for(name, resolve_agent(name).ok().as_deref().map(Path::new))
+}
+
+fn run_agent_label_for(name: &str, resolved: Option<&Path>) -> String {
+    if name.eq_ignore_ascii_case("cursor")
+        || name.eq_ignore_ascii_case("cursor-agent")
+        || resolved.is_some_and(is_cursor_cli_binary)
+    {
+        return "cursor".to_owned();
+    }
+    name.to_owned()
+}
+
 fn is_cursor_cli_binary(path: &Path) -> bool {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .is_some_and(|stem| stem.eq_ignore_ascii_case("cursor-agent"))
+    looks_like_cursor_cli_path(path)
 }
 
 fn resolve_wt_profile(explicit: Option<&str>) -> Result<Option<String>, String> {
@@ -858,9 +870,9 @@ pub fn posix_single_quote(value: &str) -> String {
 mod tests {
     use super::{
         allocate_dock_marker, choose_wt_profile, inner_script, native_inner_args,
-        posix_single_quote, resolve_agent_with, should_close_launcher, spawn_plan, windows_quote,
-        wt_windows_command_line, InnerCommand, NativeInner, SpawnRequest, WslInner,
-        CURSOR_EDITOR_ON_PATH,
+        posix_single_quote, resolve_agent_with, run_agent_label_for, should_close_launcher,
+        spawn_plan, windows_quote, wt_windows_command_line, InnerCommand, NativeInner,
+        SpawnRequest, WslInner, CURSOR_EDITOR_ON_PATH,
     };
     use orbcue_connect::ConnectionManager;
     use orbcue_core::{dock_terminal_marker, DOCK_MARKER_HEX_LEN};
@@ -1129,5 +1141,25 @@ mod tests {
         let resolved = resolve_agent_with("cursor", Some(bin.as_os_str()), &manager).unwrap();
         assert_eq!(Path::new(&resolved), bin.join("cursor-agent"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn run_agent_label_treats_cursor_cli_agent_as_cursor() {
+        assert_eq!(run_agent_label_for("cursor", None), "cursor");
+        assert_eq!(run_agent_label_for("cursor-agent", None), "cursor");
+        assert_eq!(
+            run_agent_label_for(
+                "agent",
+                Some(Path::new(
+                    "/home/u/.local/share/cursor-agent/versions/x/cursor-agent"
+                ))
+            ),
+            "cursor"
+        );
+        assert_eq!(
+            run_agent_label_for("agent", Some(Path::new("/home/u/.grok/bin/agent"))),
+            "agent"
+        );
+        assert_eq!(run_agent_label_for("grok", None), "grok");
     }
 }

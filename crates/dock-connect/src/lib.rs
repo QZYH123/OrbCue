@@ -12,8 +12,9 @@ mod wsl_cli;
 
 pub use discover::{
     agent_is_connectable, agent_origin, agents_in_dir, choose_discovered, discover_agents,
-    discover_agents_with_extras, merge_search_path, parse_login_path_output, probe_login_path,
-    InventorySnapshotCache, ProbeOutput, LOGIN_PATH_END, LOGIN_PATH_START,
+    discover_agents_with_extras, looks_like_cursor_cli_path, merge_search_path,
+    parse_login_path_output, probe_login_path, InventorySnapshotCache, ProbeOutput, LOGIN_PATH_END,
+    LOGIN_PATH_START,
 };
 pub use grok_compat::{
     connection_warnings, grok_compat_cursor_hooks_enabled, GROK_COMPAT_CURSOR_HOOKS_WARNING,

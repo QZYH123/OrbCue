@@ -458,6 +458,7 @@ fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
         }
         return;
     };
+    event.source = hook_source_from_identities(&event.source, &hook_invoker_identities());
     attach_terminal_id(&mut event);
     attach_liveness(&mut event);
     maybe_set_terminal_title(&event);
@@ -1060,6 +1061,220 @@ fn linux_agent_liveness() -> Option<(u32, u64)> {
 #[cfg(unix)]
 fn is_short_lived_hook_parent(comm: &str) -> bool {
     matches!(comm, "sh" | "dash" | "bash" | "zsh" | "fish")
+}
+
+fn hook_source_from_identities(provider: &str, identities: &[String]) -> String {
+    if !provider.eq_ignore_ascii_case("claude") {
+        return provider.to_owned();
+    }
+    for identity in identities {
+        if looks_like_claude_cli_identity(identity) {
+            return "claude".to_owned();
+        }
+        if looks_like_cursor_cli_identity(identity) {
+            return "cursor".to_owned();
+        }
+    }
+    "claude".to_owned()
+}
+
+fn looks_like_cursor_cli_identity(identity: &str) -> bool {
+    identity
+        .replace('\\', "/")
+        .split(|character: char| character == '/' || character.is_ascii_whitespace())
+        .any(|segment| path_segment_stem(segment).eq_ignore_ascii_case("cursor-agent"))
+}
+
+fn looks_like_claude_cli_identity(identity: &str) -> bool {
+    let lower = identity.replace('\\', "/").to_ascii_lowercase();
+    if lower.contains("/claude/versions/") {
+        return true;
+    }
+    lower.split_whitespace().any(|token| {
+        path_segment_stem(token.rsplit('/').next().unwrap_or(token)).eq_ignore_ascii_case("claude")
+    })
+}
+
+fn path_segment_stem(segment: &str) -> &str {
+    for suffix in [".exe", ".cmd", ".ps1", ".bat", ".com"] {
+        let start = segment.len().saturating_sub(suffix.len());
+        if segment
+            .get(start..)
+            .is_some_and(|end| end.eq_ignore_ascii_case(suffix))
+            && start > 0
+        {
+            return &segment[..start];
+        }
+    }
+    segment
+}
+
+fn hook_invoker_identities() -> Vec<String> {
+    #[cfg(unix)]
+    {
+        return linux_hook_invoker_identities();
+    }
+    #[cfg(windows)]
+    {
+        return windows_hook_invoker_identities();
+    }
+    #[cfg(not(any(unix, windows)))]
+    Vec::new()
+}
+
+#[cfg(unix)]
+fn linux_hook_invoker_identities() -> Vec<String> {
+    let mut pid = unsafe { libc::getppid() };
+    let mut identities = Vec::new();
+    for _ in 0..8 {
+        if pid <= 1 {
+            break;
+        }
+        let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            Err(_) => break,
+        };
+        let Some((ppid, _, _)) = parse_proc_stat(&stat) else {
+            break;
+        };
+        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+        if !is_short_lived_hook_parent(comm.trim()) {
+            if let Some(identity) = linux_process_identity(pid as u32, comm.trim()) {
+                identities.push(identity);
+            }
+        }
+        if ppid <= 1 || ppid == pid {
+            break;
+        }
+        pid = ppid;
+    }
+    identities
+}
+
+#[cfg(unix)]
+fn linux_process_identity(pid: u32, comm: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Ok(exe) = std::fs::read_link(format!("/proc/{pid}/exe")) {
+        parts.push(exe.to_string_lossy().into_owned());
+    }
+    if let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) {
+        let text = String::from_utf8_lossy(&cmdline);
+        let trimmed: String = text
+            .chars()
+            .take(4096)
+            .map(|character| if character == '\0' { ' ' } else { character })
+            .collect();
+        if !trimmed.trim().is_empty() {
+            parts.push(trimmed);
+        }
+    }
+    if !comm.is_empty() {
+        parts.push(comm.to_owned());
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+#[cfg(windows)]
+fn windows_hook_invoker_identities() -> Vec<String> {
+    use std::mem::{size_of, zeroed};
+    #[repr(C)]
+    struct ProcessEntry32W {
+        dw_size: u32,
+        cnt_usage: u32,
+        th32_process_id: u32,
+        th32_default_heap_id: usize,
+        th32_module_id: u32,
+        cnt_threads: u32,
+        th32_parent_process_id: u32,
+        pc_pri_class_base: i32,
+        dw_flags: u32,
+        sz_exe_file: [u16; 260],
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcessId() -> u32;
+        fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> isize;
+        fn Process32FirstW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
+        fn Process32NextW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+        fn QueryFullProcessImageNameW(
+            process: isize,
+            flags: u32,
+            name: *mut u16,
+            size: *mut u32,
+        ) -> i32;
+    }
+    const TH32CS_SNAPPROCESS: u32 = 0x2;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const INVALID: isize = -1;
+    unsafe {
+        let current = GetCurrentProcessId();
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == 0 || snapshot == INVALID {
+            return Vec::new();
+        }
+        let mut entry: ProcessEntry32W = zeroed();
+        entry.dw_size = size_of::<ProcessEntry32W>() as u32;
+        let mut processes = Vec::new();
+        let mut names = Vec::new();
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                names.push(utf16_z(&entry.sz_exe_file));
+                processes.push((
+                    entry.th32_process_id,
+                    entry.th32_parent_process_id,
+                    names.len() - 1,
+                ));
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+        let mut by_pid = HashMap::with_capacity(processes.len());
+        for (pid, parent, index) in &processes {
+            by_pid.insert(*pid, (*parent, names[*index].as_str()));
+        }
+        let mut pid = match by_pid.get(&current) {
+            Some((parent, _)) => *parent,
+            None => return Vec::new(),
+        };
+        let mut identities = Vec::new();
+        for _ in 0..8 {
+            if pid == 0 {
+                break;
+            }
+            let Some((parent, name)) = by_pid.get(&pid).copied() else {
+                break;
+            };
+            if !is_short_lived_windows_hook_parent(name) {
+                let mut identity = name.to_owned();
+                let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+                if handle != 0 {
+                    let mut buf = [0u16; 1024];
+                    let mut size = buf.len() as u32;
+                    if QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) != 0
+                        && size > 0
+                    {
+                        identity.push(' ');
+                        identity.push_str(&String::from_utf16_lossy(&buf[..size as usize]));
+                    }
+                    CloseHandle(handle);
+                }
+                identities.push(identity);
+            }
+            if parent == 0 || parent == pid {
+                break;
+            }
+            pid = parent;
+        }
+        identities
+    }
 }
 
 fn parse_proc_stat(contents: &str) -> Option<(i32, u32, u64)> {
@@ -2060,9 +2275,11 @@ fn runtime_state_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        forward_to_wsl_predicate, is_forwardable_command, is_short_lived_windows_hook_parent,
-        looks_like_windows_pipe, newest_windows_dock_under_mnt, resolve_windows_liveness_pid,
-        stays_on_agent_os, trampoline_to_windows_predicate, Command, WINDOWS_APP_FOLDER,
+        forward_to_wsl_predicate, hook_source_from_identities, is_forwardable_command,
+        is_short_lived_windows_hook_parent, looks_like_claude_cli_identity,
+        looks_like_cursor_cli_identity, looks_like_windows_pipe, newest_windows_dock_under_mnt,
+        resolve_windows_liveness_pid, stays_on_agent_os, trampoline_to_windows_predicate, Command,
+        WINDOWS_APP_FOLDER,
     };
     use orbcue_core::{DockEvent, EventKind};
     use orbcue_ipc::DockBackend;
@@ -2103,6 +2320,66 @@ mod tests {
         assert!(!is_forwardable_command(&Command::Agents));
         assert!(!is_forwardable_command(&Command::Up));
         assert!(!is_forwardable_command(&Command::Down));
+    }
+
+    #[test]
+    fn claude_hook_from_cursor_cli_is_labeled_cursor() {
+        assert!(looks_like_cursor_cli_identity(
+            "/home/u/.local/share/cursor-agent/versions/2026.08.11-e8db854/node"
+        ));
+        assert!(looks_like_cursor_cli_identity(
+            "/home/u/.local/bin/agent /home/u/.local/share/cursor-agent/versions/x/index.js"
+        ));
+        assert!(looks_like_cursor_cli_identity(
+            r"C:\Users\u\AppData\Local\cursor-agent\versions\x\node.exe"
+        ));
+        assert!(looks_like_cursor_cli_identity("cursor-agent.exe"));
+        assert!(!looks_like_cursor_cli_identity("/home/u/.grok/bin/agent"));
+        assert!(!looks_like_cursor_cli_identity("/usr/bin/node"));
+        assert!(looks_like_claude_cli_identity(
+            "/home/u/.local/share/claude/versions/2.1.226"
+        ));
+        assert!(looks_like_claude_cli_identity("/home/u/.local/bin/claude"));
+        assert!(looks_like_claude_cli_identity("claude.exe"));
+        assert!(!looks_like_claude_cli_identity(
+            "/home/u/.config/orbcue/claude-hook.sh"
+        ));
+        assert!(looks_like_cursor_cli_identity(
+            r"C:\Users\claude\AppData\Local\cursor-agent\versions\x\node.exe"
+        ));
+        assert!(!looks_like_claude_cli_identity(
+            r"C:\Users\claude\AppData\Local\cursor-agent\versions\x\node.exe"
+        ));
+
+        assert_eq!(
+            hook_source_from_identities(
+                "claude",
+                &[
+                    "/home/u/.local/share/cursor-agent/versions/x/node".to_owned(),
+                    "WindowsTerminal.exe".to_owned()
+                ]
+            ),
+            "cursor"
+        );
+        assert_eq!(
+            hook_source_from_identities(
+                "claude",
+                &[
+                    "/home/u/.local/bin/claude".to_owned(),
+                    "/home/u/.local/share/cursor-agent/versions/x/node".to_owned()
+                ]
+            ),
+            "claude"
+        );
+        assert_eq!(
+            hook_source_from_identities("claude", &["/usr/bin/bash".to_owned()]),
+            "claude"
+        );
+        assert_eq!(
+            hook_source_from_identities("cursor", &["cursor-agent.exe".to_owned()]),
+            "cursor"
+        );
+        assert_eq!(hook_source_from_identities("claude", &[]), "claude");
     }
 
     #[test]
