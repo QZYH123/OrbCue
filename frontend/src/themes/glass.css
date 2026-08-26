@@ -23,6 +23,7 @@
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", system-ui, sans-serif;
   color: var(--text);
   background: transparent;
+  --ball-fill: #e6edf3;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   font-weight: 400;
@@ -67,7 +68,7 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   border: 0;
   border-radius: 50%;
   color: var(--text);
-  background: transparent;
+  background: var(--ball-fill);
   cursor: grab;
   touch-action: none;
   appearance: none;
@@ -612,18 +613,6 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   font-size: 12px;
   line-height: 1.45;
 }
-.onboarding-banner {
-  margin: 0 0 10px;
-  padding: 10px 12px;
-  border: 0.5px solid rgba(255, 255, 255, .7);
-  border-radius: 14px;
-  color: var(--text);
-  background: rgba(255, 255, 255, .48);
-  font-size: 11px;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-}
-.onboarding-banner p { margin: 4px 0 7px; color: var(--muted); line-height: 1.45; }
 .connections-toolbar { display: flex; align-items: center; gap: 10px; margin: 0 4px 8px; }
 .refresh-hint { color: var(--muted); font-size: 11px; }
 .side-badge {

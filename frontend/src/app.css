@@ -8,6 +8,11 @@ html, body, #app {
   background: transparent;
 }
 
+.ball {
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
 .theme-picker {
   display: flex;
   gap: 4px;
@@ -60,3 +65,66 @@ html, body, #app {
   font-size: 11px;
 }
 .alias-hint.error { color: var(--fail, #e07a7a); }
+
+.onboarding {
+  gap: 10px;
+}
+.onboarding-copy,
+.onboarding-step,
+.onboarding .connections-toolbar,
+.onboarding-actions {
+  flex: 0 0 auto;
+}
+.onboarding-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.onboarding-main .connection-list,
+.onboarding-main .empty {
+  flex: none;
+  min-height: 0;
+  overflow: visible;
+}
+.onboarding-step {
+  margin: 0;
+  color: var(--muted, #8d939c);
+  font-size: 11px;
+  letter-spacing: .06em;
+}
+.onboarding-copy h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 650;
+}
+.onboarding-copy p {
+  margin: 0;
+  color: var(--muted, #8d939c);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.onboarding .theme-picker { margin: 0; }
+.onboarding-code {
+  display: block;
+  padding: 9px 11px;
+  overflow: hidden;
+  border-radius: 8px;
+  color: inherit;
+  background: var(--card, rgba(255, 255, 255, .06));
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.onboarding-note {
+  margin: 0;
+  color: var(--muted, #8d939c);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.onboarding-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: auto;
+  padding-top: 8px;
+}

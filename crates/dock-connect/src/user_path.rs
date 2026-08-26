@@ -52,7 +52,7 @@ fn install_windows_cli_into(dir: &Path, source_exe: &Path) -> Result<PathBuf, St
     fs_create_dir_all(dir)?;
     let dest = dir.join("orb.exe");
     let mut errors = Vec::new();
-    if source_exe != dest && source_exe.is_file() {
+    if source_exe.is_file() && !same_exe_file(source_exe, &dest) {
         if let Err(error) = copy_exe_replacing(source_exe, &dest) {
             errors.push(error);
         }
@@ -95,7 +95,28 @@ fn replace_locked_exe(source: &Path, dest: &Path, original: std::io::Error) -> R
             let _ = std::fs::remove_file(&old);
             Ok(())
         }
-        Err(retry) => Err(format!("cannot install {}: {retry}", dest.display())),
+        Err(retry) => {
+            restore_replaced_exe(dest, &old);
+            Err(format!("cannot install {}: {retry}", dest.display()))
+        }
+    }
+}
+
+fn restore_replaced_exe(dest: &Path, old: &Path) {
+    let _ = std::fs::remove_file(dest);
+    if std::fs::rename(old, dest).is_ok() {
+        return;
+    }
+    let _ = std::fs::copy(old, dest);
+}
+
+fn same_exe_file(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
     }
 }
 
@@ -209,7 +230,8 @@ fn broadcast_environment_change() {
 #[cfg(test)]
 mod tests {
     use super::{
-        install_windows_cli_into, merge_path_entries, path_contains, user_path_from_registry,
+        install_windows_cli_into, merge_path_entries, path_contains, replace_locked_exe,
+        user_path_from_registry,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -301,6 +323,48 @@ mod tests {
         let error = install_windows_cli_into(&dest_dir, &source).unwrap_err();
         assert!(error.contains("cannot install"));
         assert!(dest_dir.join("orb.cmd").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn install_keeps_orb_exe_when_source_is_the_same_file() {
+        let root = temp_root();
+        let dest_dir = root.join("cli");
+        fs::create_dir_all(&dest_dir).unwrap();
+        let dest = dest_dir.join("orb.exe");
+        fs::write(&dest, b"cli-bytes").unwrap();
+        fs::create_dir_all(dest_dir.join("sub")).unwrap();
+        let source = dest_dir.join("sub").join("..").join("orb.exe");
+        assert_ne!(source, dest);
+
+        install_windows_cli_into(&dest_dir, &source).unwrap();
+
+        assert!(dest.is_file(), "orb.exe must remain a file");
+        assert_eq!(fs::read(&dest).unwrap(), b"cli-bytes");
+        assert!(!dest_dir.join("orb.exe.old").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn install_restores_orb_exe_when_locked_replace_cannot_copy() {
+        let root = temp_root();
+        let dest = root.join("orb.exe");
+        fs::write(&dest, b"keep-me").unwrap();
+        let source = root.join("orb-src");
+        fs::create_dir_all(&source).unwrap();
+
+        let error = replace_locked_exe(
+            &source,
+            &dest,
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "locked"),
+        )
+        .unwrap_err();
+        assert!(error.contains("cannot install"));
+        assert!(
+            dest.is_file(),
+            "orb.exe must be restored after a failed replace"
+        );
+        assert_eq!(fs::read(&dest).unwrap(), b"keep-me");
         fs::remove_dir_all(root).unwrap();
     }
 }

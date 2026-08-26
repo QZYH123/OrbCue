@@ -55,6 +55,30 @@ mod win32 {
         fn SetWindowRgn(hwnd: isize, hrgn: isize, redraw: i32) -> i32;
     }
 
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmSetWindowAttribute(
+            hwnd: isize,
+            attribute: u32,
+            value: *const core::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+    const DWMWCP_DONOTROUND: u32 = 1;
+    const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
+
+    unsafe fn set_dwm_u32(hwnd: isize, attribute: u32, value: u32) {
+        let _ = DwmSetWindowAttribute(hwnd, attribute, (&value as *const u32).cast(), 4);
+    }
+
+    unsafe fn suppress_dwm_frame(hwnd: isize) {
+        set_dwm_u32(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND);
+        set_dwm_u32(hwnd, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE);
+    }
+
     pub fn apply(window: &WebviewWindow) {
         let Some(hwnd) = hwnd_of(window) else {
             return;
@@ -66,6 +90,7 @@ mod win32 {
             return;
         };
         unsafe {
+            suppress_dwm_frame(hwnd);
             set_elliptic_region(hwnd, region);
         }
     }

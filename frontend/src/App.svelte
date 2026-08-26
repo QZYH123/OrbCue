@@ -42,6 +42,14 @@
     subscribeTheme,
     type DockTheme,
   } from './theme';
+  import {
+    initialOnboardingComplete,
+    nextOnboardingStep,
+    ONBOARDING_STEPS,
+    onboardingStepIndex,
+    persistOnboardingComplete,
+    type OnboardingStep,
+  } from './onboarding';
 
   const previewMode = !tauriAvailable();
   let label: string = previewMode ? previewLabel() : 'ball';
@@ -52,13 +60,13 @@
   let page: 'activity' | 'audit' | 'connections' | 'settings' = 'activity';
   let inventory: AgentInventory = previewMode ? demoInventory : { discovered: [], connected: [] };
   let inventoryRefreshing = false;
-  let onboardingChecked = false;
   let connectionError = '';
   let pendingAgent: DiscoveredAgent | null = null;
   let connectionPreview: ConnectionPreview | null = null;
   let previewLoading = false;
   let previewError = '';
-  let onboardingComplete = localStorage.getItem('onboarding-complete') === 'true';
+  let onboardingComplete = initialOnboardingComplete(window.location.search, localStorage);
+  let onboardingStep: OnboardingStep = 'theme';
   let completionSoundEnabled = localStorage.getItem('completion-sound-enabled') !== 'false';
   let attentionSoundEnabled = localStorage.getItem('attention-sound-enabled') !== 'false';
   let failureSoundEnabled = localStorage.getItem('failure-sound-enabled') !== 'false';
@@ -201,7 +209,6 @@
         if (!active) return;
         inventory = event.payload;
         inventoryRefreshing = false;
-        maybeOpenOnboarding();
       });
       const stopHighlight = await listen<{ source: string; session_id: string }>('orb:highlight', (event) => {
         if (!active || label === 'ball') return;
@@ -234,6 +241,9 @@
         } catch (error) {
           console.warn('Could not listen for notification clicks', error);
         }
+      }
+      if (label === 'ball' && !onboardingComplete) {
+        void invoke('open_panel');
       }
       if (label !== 'ball') {
         void loadAgentsCached();
@@ -395,20 +405,11 @@
     }
   }
 
-  function maybeOpenOnboarding() {
-    if (onboardingChecked || onboardingComplete || label === 'ball') return;
-    if (inventory.discovered.length > 0) {
-      page = 'connections';
-      onboardingChecked = true;
-    }
-  }
-
   function toggleGroup(key: string) {
     collapsedGroups = { ...collapsedGroups, [key]: !collapsedGroups[key] };
   }
 
   function selectPage(next: typeof page) {
-    onboardingChecked = true;
     if (next !== 'connections') connectSuccess = '';
     page = next;
     if (next === 'connections' && !previewMode) void loadAgentsCached();
@@ -420,7 +421,6 @@
     connectionError = '';
     try {
       inventory = await invoke<AgentInventory>('agent_inventory');
-      maybeOpenOnboarding();
     } catch (error) {
       connectionError = String(error);
     } finally {
@@ -495,19 +495,24 @@
       closeConnectDialog();
       connectSuccess = connectSuccessNotice(agent.name, agent.side);
       await refreshAgents();
-      if (inventory.connected.length > 0) {
-        onboardingComplete = true;
-        localStorage.setItem('onboarding-complete', 'true');
-      }
     } catch (error) {
       connectionError = String(error);
     }
   }
 
-  function skipOnboarding() {
+  function finishOnboarding() {
     onboardingComplete = true;
-    localStorage.setItem('onboarding-complete', 'true');
+    persistOnboardingComplete(localStorage);
     page = 'activity';
+  }
+
+  function skipOnboardingStep() {
+    const next = nextOnboardingStep(onboardingStep);
+    if (next === 'done') {
+      finishOnboarding();
+      return;
+    }
+    onboardingStep = next;
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -861,7 +866,90 @@
       </div>
       <button class="icon-button key-round" onclick={closePanel} aria-label="关闭">×</button>
     </header>
-    {#if page === 'activity'}
+    {#snippet themePicker()}
+      <div class="theme-picker" role="radiogroup" aria-label="外观">
+        {#each THEMES as item (item)}
+          <button type="button" role="radio" aria-checked={theme === item} class:active={theme === item} title={THEME_META[item].note} onclick={() => setTheme(item)}>
+            {THEME_META[item].name}
+          </button>
+        {/each}
+      </div>
+    {/snippet}
+    {#snippet connectionsToolbar()}
+      <div class="connections-toolbar">
+        <button class="text-button" onclick={() => void refreshAgents()} disabled={inventoryRefreshing}>刷新</button>
+        <button class="text-button" onclick={() => void addFromFolder()} disabled={inventoryRefreshing}>从文件夹添加</button>
+        {#if inventoryRefreshing}<span class="refresh-hint" aria-live="polite">正在检测</span>{/if}
+      </div>
+    {/snippet}
+    {#snippet connectionCard(agent: DiscoveredAgent)}
+      {@const record = connected(agent.name, agent.side)}
+      <article class="connection-card">
+        <div class="connection-content">
+          <div class="connection-title">
+            <strong>{displayAgent(agent.name)}</strong>
+            <span class="side-badge side-{agent.side}">{sideLabel(agent.side)}</span>
+          </div>
+          <div class="connection-path" title={agent.path}>{agent.path}</div>
+          {#if record?.limitation}<p class="connection-note">{record.limitation}</p>{/if}
+        </div>
+        <div class="connection-aside">
+          <span class:connected={!!record} class="connection-state">{record ? '已连接' : '可连接'}</span>
+          {#if record}
+            <button class="secondary-button" onclick={() => disconnectAgent(agent.name, agent.side)}>断开</button>
+          {:else}
+            <button class="primary-button" onclick={() => connectAgent(agent)}>连接</button>
+          {/if}
+        </div>
+      </article>
+    {/snippet}
+    {#if !onboardingComplete}
+      <section class="panel-body onboarding" aria-label="初次设置">
+        <p class="onboarding-step">{onboardingStepIndex(onboardingStep)} / {ONBOARDING_STEPS.length}</p>
+        {#if onboardingStep === 'theme'}
+          <div class="onboarding-copy">
+            <h2>选一个外观</h2>
+            <p>点一下即可预览，之后仍可在设置里改。</p>
+          </div>
+          {@render themePicker()}
+        {:else if onboardingStep === 'connect'}
+          <div class="onboarding-copy">
+            <h2>连接一个工具</h2>
+            <p>只接本机已经装好的。确认前会列出将要改的文件，每一步都可以跳过。</p>
+          </div>
+          {@render connectionsToolbar()}
+          <div class="onboarding-main">
+            {#if showDetectingPlaceholder(inventory, inventoryRefreshing)}
+              <div class="empty compact"><span>…</span><p>正在检测本机工具</p></div>
+            {:else if connectionAgents.length === 0}
+              <div class="empty compact"><span>○</span><p>没有检测到支持的工具</p><small>可点「从文件夹添加」，或先跳过、稍后在连接页再接。</small></div>
+            {:else}
+              <div class="connection-list">
+                {#each connectionAgents as agent (agent.side + ':' + agent.name)}
+                  {@render connectionCard(agent)}
+                {/each}
+              </div>
+            {/if}
+            {#if connectionError}<p class="error-message">{connectionError}</p>{/if}
+          </div>
+        {:else}
+          <div class="onboarding-copy">
+            <h2>建议用 orb run 启动</h2>
+            <p>在新的 Windows Terminal 标签里运行，点返回箭头才能精确回到那个标签。</p>
+          </div>
+          <code class="onboarding-code">orb run grok</code>
+          <p class="onboarding-note">claude、codex 同理。也可以在设置里起短命令{runAlias ? `，比如 ${runAlias} grok` : '，例如 or grok'}。</p>
+        {/if}
+        <div class="onboarding-actions">
+          <button class="text-button" onclick={skipOnboardingStep}>跳过</button>
+          {#if onboardingStep === 'run'}
+            <button class="primary-button" onclick={finishOnboarding}>完成</button>
+          {:else}
+            <button class="primary-button" onclick={skipOnboardingStep}>下一步</button>
+          {/if}
+        </div>
+      </section>
+    {:else if page === 'activity'}
       <nav class="filters" aria-label="筛选任务">
         <button aria-pressed={filter === 'all'} class:active={filter === 'all'} onclick={() => (filter = 'all')}>全部 <span>{snapshot.tracked_count}</span></button>
         <button aria-pressed={filter === 'working'} class:active={filter === 'working'} onclick={() => (filter = 'working')}>工作中 <span>{snapshot.working_count}</span></button>
@@ -973,18 +1061,7 @@
       </div>
     {:else if page === 'connections'}
       <p class="section-intro">{CONNECTIONS_INTRO}</p>
-      {#if !onboardingComplete}
-        <div class="onboarding-banner">
-          <strong>先连接一个已有的 Agent</strong>
-          <p>连接只会安装可撤销的用户级 Hook 或 wrapper，并保留原命令和参数。</p>
-          <button class="text-button" onclick={skipOnboarding}>稍后设置</button>
-        </div>
-      {/if}
-      <div class="connections-toolbar">
-        <button class="text-button" onclick={() => void refreshAgents()} disabled={inventoryRefreshing}>刷新</button>
-        <button class="text-button" onclick={() => void addFromFolder()} disabled={inventoryRefreshing}>从文件夹添加</button>
-        {#if inventoryRefreshing}<span class="refresh-hint" aria-live="polite">正在检测</span>{/if}
-      </div>
+      {@render connectionsToolbar()}
       {#if wslDockErrorBanner(inventory)}
         <p class="error-message">{wslDockErrorBanner(inventory)}</p>
       {/if}
@@ -1004,80 +1081,16 @@
         <div class="panel-body">
         <div class="connection-list">
           {#each connectionAgents as agent (agent.side + ':' + agent.name)}
-            {@const record = connected(agent.name, agent.side)}
-            <article class="connection-card">
-              <div class="connection-content">
-                <div class="connection-title">
-                  <strong>{displayAgent(agent.name)}</strong>
-                  <span class="side-badge side-{agent.side}">{sideLabel(agent.side)}</span>
-                </div>
-                <div class="connection-path" title={agent.path}>{agent.path}</div>
-                {#if record?.limitation}<p class="connection-note">{record.limitation}</p>{/if}
-              </div>
-              <div class="connection-aside">
-                <span class:connected={!!record} class="connection-state">{record ? '已连接' : '可连接'}</span>
-                {#if record}
-                  <button class="secondary-button" onclick={() => disconnectAgent(agent.name, agent.side)}>断开</button>
-                {:else}
-                  <button class="primary-button" onclick={() => connectAgent(agent)}>连接</button>
-                {/if}
-              </div>
-            </article>
+            {@render connectionCard(agent)}
           {/each}
         </div>
         </div>
       {/if}
       {#if connectionError}<p class="error-message">{connectionError}</p>{/if}
-      {#if pendingAgent}
-        <div class="modal-backdrop" role="presentation" onclick={(event) => event.target === event.currentTarget && closeConnectDialog()}>
-          <dialog open class="confirm-dialog" aria-labelledby="connect-title">
-            <h2 id="connect-title">连接 {displayAgent(pendingAgent.name)}<span class="side-badge side-{pendingAgent.side}">{sideLabel(pendingAgent.side)}</span></h2>
-            <p>OrbCue 将在 {sideLabel(pendingAgent.side)} 侧使用现有可执行文件：</p>
-            <code>{pendingAgent.path}</code>
-            {#if previewLoading}
-              <p class="dialog-note">正在生成预览</p>
-            {:else if previewError}
-              <p class="error-message">{previewError}</p>
-            {:else if connectionPreview}
-              <div class="preview-block">
-                {#each connectionPreview.files as file (file.path)}
-                  <div class="preview-file">
-                    <strong title={file.path}>{file.action} {file.path}</strong>
-                    {#if file.entries.length > 0}
-                      <ul class="preview-entries">
-                        {#each file.entries as entry (entry)}<li>{entry}</li>{/each}
-                      </ul>
-                    {/if}
-                  </div>
-                {/each}
-                <ul class="preview-will-not">
-                  {#each connectionPreview.will_not as line (line)}<li>{line}</li>{/each}
-                </ul>
-                {#each connectionPreview.warnings ?? [] as warning (warning)}
-                  <p class="dialog-warning">{warning}</p>
-                {/each}
-                {#each connectionPreview.notes as note (note)}
-                  <p class="dialog-note">{note}</p>
-                {/each}
-              </div>
-            {/if}
-            <div class="dialog-actions">
-              <button class="secondary-button" onclick={closeConnectDialog}>取消</button>
-              <button class="primary-button" onclick={confirmConnect} disabled={previewLoading || !connectionPreview}>确认连接</button>
-            </div>
-          </dialog>
-        </div>
-      {/if}
     {:else}
       <p class="section-intro">默认保持安静，只在任务真正需要你回来时提醒一次。</p>
       <div class="panel-body">
-      <div class="theme-picker" role="radiogroup" aria-label="外观">
-        {#each THEMES as item (item)}
-          <button type="button" role="radio" aria-checked={theme === item} class:active={theme === item} title={THEME_META[item].note} onclick={() => setTheme(item)}>
-            {THEME_META[item].name}
-          </button>
-        {/each}
-      </div>
+      {@render themePicker()}
       <div class="settings-list">
         <div class="setting-row alias-row">
           <span>
@@ -1085,7 +1098,7 @@
             <small>把 orb run 收成短命令，空则删除</small>
           </span>
           <form onsubmit={saveRunAlias}>
-            <input bind:value={runAliasDraft} maxlength="24" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="dr" aria-label="启动别名" />
+            <input bind:value={runAliasDraft} maxlength="24" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="or" aria-label="启动别名" />
             <button type="submit" class="secondary-button">应用</button>
           </form>
         </div>
@@ -1116,6 +1129,7 @@
       </div>
       <div class="privacy-note"><strong>本地与隐私优先</strong><p>OrbCue 默认不联网，不读取 transcript、prompt、命令或代码；持久化状态也不包含摘要。</p></div>
     {/if}
+    {#if onboardingComplete}
     <nav class="dock-nav" aria-label="OrbCue 页面">
       <button aria-pressed={page === 'activity'} class:active={page === 'activity'} onclick={() => selectPage('activity')}>
         <span class="nav-key" aria-hidden="true">
@@ -1142,5 +1156,46 @@
         设置
       </button>
     </nav>
+    {/if}
+    {#if pendingAgent}
+      <div class="modal-backdrop" role="presentation" onclick={(event) => event.target === event.currentTarget && closeConnectDialog()}>
+        <dialog open class="confirm-dialog" aria-labelledby="connect-title">
+          <h2 id="connect-title">连接 {displayAgent(pendingAgent.name)}<span class="side-badge side-{pendingAgent.side}">{sideLabel(pendingAgent.side)}</span></h2>
+          <p>OrbCue 将在 {sideLabel(pendingAgent.side)} 侧使用现有可执行文件：</p>
+          <code>{pendingAgent.path}</code>
+          {#if previewLoading}
+            <p class="dialog-note">正在生成预览</p>
+          {:else if previewError}
+            <p class="error-message">{previewError}</p>
+          {:else if connectionPreview}
+            <div class="preview-block">
+              {#each connectionPreview.files as file (file.path)}
+                <div class="preview-file">
+                  <strong title={file.path}>{file.action} {file.path}</strong>
+                  {#if file.entries.length > 0}
+                    <ul class="preview-entries">
+                      {#each file.entries as entry (entry)}<li>{entry}</li>{/each}
+                    </ul>
+                  {/if}
+                </div>
+              {/each}
+              <ul class="preview-will-not">
+                {#each connectionPreview.will_not as line (line)}<li>{line}</li>{/each}
+              </ul>
+              {#each connectionPreview.warnings ?? [] as warning (warning)}
+                <p class="dialog-warning">{warning}</p>
+              {/each}
+              {#each connectionPreview.notes as note (note)}
+                <p class="dialog-note">{note}</p>
+              {/each}
+            </div>
+          {/if}
+          <div class="dialog-actions">
+            <button class="secondary-button" onclick={closeConnectDialog}>取消</button>
+            <button class="primary-button" onclick={confirmConnect} disabled={previewLoading || !connectionPreview}>确认连接</button>
+          </div>
+        </dialog>
+      </div>
+    {/if}
   </main>
 {/if}
