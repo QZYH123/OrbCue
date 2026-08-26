@@ -27,6 +27,7 @@ describe('onboarding persistence', () => {
       getItem: (key: string) => (key === ONBOARDING_STORAGE_KEY ? 'true' : null),
     };
     expect(initialOnboardingComplete('?onboarding=1', storage)).toBe(false);
+    expect(initialOnboardingComplete('?onboarding=0', { getItem: () => null })).toBe(true);
     expect(initialOnboardingComplete('', storage)).toBe(true);
     expect(initialOnboardingComplete('', { getItem: () => null })).toBe(false);
   });

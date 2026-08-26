@@ -14,7 +14,9 @@ export function initialOnboardingComplete(
   search: string,
   storage: Pick<Storage, 'getItem'> | null,
 ): boolean {
-  if (new URLSearchParams(search).get('onboarding') === '1') return false;
+  const onboarding = new URLSearchParams(search).get('onboarding');
+  if (onboarding === '1') return false;
+  if (onboarding === '0') return true;
   try {
     return storage?.getItem(ONBOARDING_STORAGE_KEY) === 'true';
   } catch {

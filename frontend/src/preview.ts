@@ -12,6 +12,35 @@ export function previewLabel(): 'ball' | 'panel' {
 export function applyPreviewDocument(label: 'ball' | 'panel') {
   document.documentElement.classList.add('preview');
   document.documentElement.classList.toggle('preview-ball', label === 'ball');
+  const demo = new URLSearchParams(window.location.search).get('demo');
+  if (demo === 'ball' || demo === 'panel') {
+    const style = document.createElement('style');
+    style.textContent =
+      demo === 'ball'
+        ? `html, body { width: 480px !important; height: 448px !important; }
+           html.preview.preview-ball #app { transform: scale(2.8); }`
+        : `html, body { width: 480px !important; height: 448px !important; }
+           html.preview body {
+             display: flex !important;
+             align-items: center !important;
+             justify-content: flex-end !important;
+             padding: 24px 24px 24px 0 !important;
+           }`;
+    document.head.appendChild(style);
+  }
+}
+
+export function previewSnapshot(): Snapshot {
+  const cue = new URLSearchParams(window.location.search).get('cue');
+  if (cue === 'working') {
+    return {
+      ...demoSnapshot,
+      pending_count: 0,
+      pending_mark: '',
+      border_state: 'working',
+    };
+  }
+  return demoSnapshot;
 }
 
 export const demoSnapshot: Snapshot = {

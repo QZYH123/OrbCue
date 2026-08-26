@@ -24,7 +24,7 @@
   import { connectSuccessNotice, inventoryHasRows, showDetectingPlaceholder, sideLabel, wslDockErrorBanner } from './inventory';
   import { clampToWorkArea, shouldHidePanelOnBallDrag } from './placement';
   import { CONNECTIONS_INTRO, EMPTY_TRACKING_HINT, isDockTerminalId, jumpFeedback } from './jumpBack';
-  import { applyPreviewDocument, demoInventory, demoSnapshot, previewLabel, tauriAvailable } from './preview';
+  import { applyPreviewDocument, demoInventory, previewLabel, previewSnapshot, tauriAvailable } from './preview';
   import {
     displayAgent,
     filterSessionSections,
@@ -53,7 +53,7 @@
 
   const previewMode = !tauriAvailable();
   let label: string = previewMode ? previewLabel() : 'ball';
-  let snapshot: Snapshot = previewMode ? demoSnapshot : emptySnapshot;
+  let snapshot: Snapshot = previewMode ? previewSnapshot() : emptySnapshot;
   let pulse = false;
   let filter: 'all' | 'attention' | 'working' = 'all';
   let collapsedGroups: Record<string, boolean> = {};
