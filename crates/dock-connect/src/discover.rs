@@ -382,9 +382,11 @@ fn diagnostic_suffix(stderr: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::LOGIN_PATH_SCRIPT;
     use super::{
         agent_origin, parse_login_path_output, probe_login_path, InventorySnapshotCache,
-        ProbeOutput, LOGIN_PATH_END, LOGIN_PATH_SCRIPT, LOGIN_PATH_START,
+        ProbeOutput, LOGIN_PATH_END, LOGIN_PATH_START,
     };
     use crate::{AgentOrigin, ConnectionRecord, DiscoveredAgent};
     use std::path::{Path, PathBuf};
@@ -477,7 +479,7 @@ mod tests {
         std::fs::write(bin.join("codex.cmd"), b"").unwrap();
         std::fs::write(bin.join("cursor-agent.exe"), b"").unwrap();
         std::fs::write(bin.join("dsh.bat"), b"").unwrap();
-        std::fs::write(bin.join("grok.ps1"), b"").unwrap();
+        std::fs::write(bin.join("grok.cmd"), b"").unwrap();
         let path = std::env::join_paths([&bin]).unwrap();
         let discovered = super::discover_agents(&path, None, &root.join("missing-grok"));
         let mut names: Vec<_> = discovered.iter().map(|agent| agent.name.as_str()).collect();
@@ -501,7 +503,7 @@ mod tests {
             super::choose_discovered("claude", vec![windows.clone(), wsl.clone()]).unwrap();
         assert_eq!(preferred.path, wsl);
         assert_eq!(preferred.origin, AgentOrigin::Wsl);
-        assert!(preferred.connectable);
+        assert_eq!(preferred.connectable, cfg!(not(windows)));
 
         let only = super::choose_discovered("claude", vec![windows.clone()]).unwrap();
         assert_eq!(only.path, windows);
@@ -544,6 +546,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn login_path_script_prints_three_marked_lines() {
         let output = std::process::Command::new("bash")
             .arg("-c")
@@ -603,7 +606,15 @@ mod tests {
             super::discover_agents_with_extras(std::ffi::OsStr::new(""), &[dir.clone()], None);
         assert_eq!(discovered.len(), 1);
         assert_eq!(discovered[0].name, "cursor");
-        assert_eq!(discovered[0].path, dir.join("agent.cmd"));
+        assert!(
+            discovered[0]
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("agent.cmd")),
+            "{:?}",
+            discovered[0].path
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

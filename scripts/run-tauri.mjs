@@ -11,6 +11,7 @@ const result = spawnSync(
     cwd: root,
     env: { ...process.env, TAURI_FRONTEND_PATH: resolve(root, 'frontend') },
     stdio: 'inherit',
+    shell: process.platform === 'win32',
   },
 );
 if (result.error) throw result.error;
