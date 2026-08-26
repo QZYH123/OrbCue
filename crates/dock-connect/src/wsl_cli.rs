@@ -1,13 +1,13 @@
-//! Pure helpers for shipping a Linux `dock` into WSL from the Windows presenter.
+//! Pure helpers for shipping a Linux `orb` into WSL from the Windows presenter.
 
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-pub const PACKAGED_LINUX_DOCK_NAME: &str = "dock-wsl";
+pub const PACKAGED_LINUX_DOCK_NAME: &str = "orb-wsl";
 pub const WSL_DOCK_BIN_DIR: &str = "$HOME/.local/bin";
-pub const WSL_DOCK_TMP_NAME: &str = ".dock.tmp";
-pub const WSL_DOCK_DEST_NAME: &str = "dock";
+pub const WSL_DOCK_TMP_NAME: &str = ".orb.tmp";
+pub const WSL_DOCK_DEST_NAME: &str = "orb";
 
 pub fn parse_dock_version_output(output: &str) -> Option<String> {
     let trimmed = output.trim();
@@ -16,7 +16,7 @@ pub fn parse_dock_version_output(output: &str) -> Option<String> {
     }
     let mut parts = trimmed.split_whitespace();
     let first = parts.next()?;
-    let version = if first.eq_ignore_ascii_case("dock") {
+    let version = if first.eq_ignore_ascii_case("orb") {
         parts.next()?
     } else {
         first
@@ -167,11 +167,11 @@ mod tests {
     #[test]
     fn parses_clap_version_line() {
         assert_eq!(
-            parse_dock_version_output("dock 0.2.0").as_deref(),
+            parse_dock_version_output("orb 0.2.0").as_deref(),
             Some("0.2.0")
         );
-        assert!(dock_version_matches("dock 0.2.0\n", "0.2.0"));
-        assert!(!dock_version_matches("dock 0.1.0", "0.2.0"));
+        assert!(dock_version_matches("orb 0.2.0\n", "0.2.0"));
+        assert!(!dock_version_matches("orb 0.1.0", "0.2.0"));
     }
 
     #[test]
@@ -179,8 +179,8 @@ mod tests {
         assert_eq!(parse_dock_version_output(""), None);
         assert_eq!(parse_dock_version_output("   \n"), None);
         assert_eq!(parse_dock_version_output("command not found"), None);
-        assert_eq!(parse_dock_version_output("dock"), None);
-        assert_eq!(parse_dock_version_output("dock 0.2.0 extra"), None);
+        assert_eq!(parse_dock_version_output("orb"), None);
+        assert_eq!(parse_dock_version_output("orb 0.2.0 extra"), None);
         assert!(!dock_version_matches("", "0.2.0"));
         assert!(!dock_version_matches("oops", "0.2.0"));
     }
@@ -190,15 +190,15 @@ mod tests {
         let exe = Path::new("/portable");
         let resources = Path::new("/install/resources");
         let candidates = packaged_linux_dock_candidates(Some(exe), Some(resources));
-        assert_eq!(candidates[0], PathBuf::from("/portable/dock-wsl"));
+        assert_eq!(candidates[0], PathBuf::from("/portable/orb-wsl"));
         assert_eq!(
             choose_packaged_linux_dock(&candidates, |_| true),
-            Some(PathBuf::from("/portable/dock-wsl"))
+            Some(PathBuf::from("/portable/orb-wsl"))
         );
         assert_eq!(
             choose_packaged_linux_dock(&candidates, |path| path
-                == Path::new("/install/resources/dock-wsl")),
-            Some(PathBuf::from("/install/resources/dock-wsl"))
+                == Path::new("/install/resources/orb-wsl")),
+            Some(PathBuf::from("/install/resources/orb-wsl"))
         );
         assert_eq!(packaged_linux_dock_candidates(None, None).len(), 0);
         assert_eq!(choose_packaged_linux_dock(&candidates, |_| false), None);
@@ -206,13 +206,13 @@ mod tests {
 
     #[test]
     fn install_shell_replaces_atomically() {
-        let command = wsl_dock_install_shell("/mnt/c/App/dock-wsl");
+        let command = wsl_dock_install_shell("/mnt/c/App/orb-wsl");
         assert!(command.contains("mkdir -p \"$HOME/.local/bin\""));
         assert!(command.contains("chmod 755"));
         assert!(command.contains("mv -f"));
-        assert!(command.contains("$HOME/.local/bin/.dock.tmp"));
-        assert!(command.contains("\"$HOME/.local/bin/dock\""));
-        assert!(command.contains("'/mnt/c/App/dock-wsl'"));
+        assert!(command.contains("$HOME/.local/bin/.orb.tmp"));
+        assert!(command.contains("\"$HOME/.local/bin/orb\""));
+        assert!(command.contains("'/mnt/c/App/orb-wsl'"));
     }
 
     #[test]
@@ -253,8 +253,8 @@ mod tests {
         )));
         assert_eq!(decode_console_output(b"dock 0.2.0\n"), "dock 0.2.0\n");
         assert_eq!(
-            decode_console_output(b"invalid dock bridge response"),
-            "invalid dock bridge response"
+            decode_console_output(b"invalid orb bridge response"),
+            "invalid orb bridge response"
         );
     }
 

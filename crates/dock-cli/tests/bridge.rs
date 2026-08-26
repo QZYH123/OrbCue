@@ -12,28 +12,28 @@ fn isolated_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("aadock-bridge-{nonce}"));
+    let root = std::env::temp_dir().join(format!("orbcue-bridge-{nonce}"));
     fs::create_dir_all(&root).unwrap();
     root
 }
 
-fn dock_cmd() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_dock"))
+fn orb_cmd() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_orb"))
 }
 
 fn isolated_env<'a>(command: &'a mut Command, root: &Path, socket: &Path) -> &'a mut Command {
     command
-        .env("AGENT_ACTIVITY_DOCK_SOCKET", socket)
-        .env("AGENT_ACTIVITY_DOCK_BACKEND", "wsl")
+        .env("ORBCUE_SOCKET", socket)
+        .env("ORBCUE_BACKEND", "wsl")
         .env("XDG_STATE_HOME", root.join("state"))
         .env("HOME", root.join("home"))
-        .env("AGENT_ACTIVITY_DOCK_DOCKD", root.join("missing-dockd"))
+        .env("ORBCUE_ORBD", root.join("missing-orbd"))
         .env_remove("XDG_RUNTIME_DIR")
 }
 
 fn spawn_bridge(root: &Path, socket: &Path) -> Child {
     isolated_env(
-        dock_cmd()
+        orb_cmd()
             .args(["--socket", socket.to_str().unwrap(), "bridge"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -83,7 +83,7 @@ fn query_bridge(root: &Path, socket: &Path, request: &str) -> Value {
 }
 
 fn emit(root: &Path, socket: &Path, args: &[&str]) {
-    let status = isolated_env(dock_cmd().args(args).stdin(Stdio::null()), root, socket)
+    let status = isolated_env(orb_cmd().args(args).stdin(Stdio::null()), root, socket)
         .status()
         .expect("run dock emitter");
     assert!(status.success(), "dock {} failed", args.join(" "));
@@ -92,7 +92,7 @@ fn emit(root: &Path, socket: &Path, args: &[&str]) {
 #[test]
 fn bridge_forwards_subscribe_ack_and_reset() {
     let root = isolated_root();
-    let socket = root.join("dock.sock");
+    let socket = root.join("orb.sock");
     fs::create_dir_all(root.join("home")).unwrap();
 
     let mut subscribe = spawn_bridge(&root, &socket);

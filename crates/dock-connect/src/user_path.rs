@@ -40,7 +40,7 @@ fn trim_path_entry(value: &str) -> &str {
 }
 
 pub fn default_windows_cli_dir() -> Option<PathBuf> {
-    agent_activity_dock_ipc::windows_app_data_dir().map(|dir| dir.join("Agent Activity Dock"))
+    orbcue_ipc::windows_app_data_dir().map(|dir| dir.join(orbcue_ipc::WINDOWS_APP_FOLDER))
 }
 
 pub fn install_windows_cli(source_exe: &Path) -> Result<PathBuf, String> {
@@ -50,15 +50,15 @@ pub fn install_windows_cli(source_exe: &Path) -> Result<PathBuf, String> {
 
 fn install_windows_cli_into(dir: &Path, source_exe: &Path) -> Result<PathBuf, String> {
     fs_create_dir_all(dir)?;
-    let dest = dir.join("dock.exe");
+    let dest = dir.join("orb.exe");
     let mut errors = Vec::new();
     if source_exe != dest && source_exe.is_file() {
         if let Err(error) = copy_exe_replacing(source_exe, &dest) {
             errors.push(error);
         }
     }
-    let cmd = dir.join("dock.cmd");
-    if let Err(error) = std::fs::write(&cmd, b"@echo off\r\n\"%~dp0dock.exe\" %*\r\n") {
+    let cmd = dir.join("orb.cmd");
+    if let Err(error) = std::fs::write(&cmd, b"@echo off\r\n\"%~dp0orb.exe\" %*\r\n") {
         errors.push(format!("cannot write {}: {error}", cmd.display()));
     }
     if let Err(error) = ensure_dir_on_user_path(dir) {
@@ -220,7 +220,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock is after epoch")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("aadock-user-path-{nonce}"));
+        let root = std::env::temp_dir().join(format!("orbcue-user-path-{nonce}"));
         fs::create_dir_all(&root).expect("create temporary user-path directory");
         root
     }
@@ -230,14 +230,11 @@ mod tests {
         assert_eq!(
             merge_path_entries(
                 r"C:\Windows;C:\Windows\System32",
-                r"C:\Users\u\AppData\Local\Agent Activity Dock",
+                r"C:\Users\u\AppData\Local\OrbCue",
                 ';',
                 true,
             ),
-            Some(
-                r"C:\Users\u\AppData\Local\Agent Activity Dock;C:\Windows;C:\Windows\System32"
-                    .into()
-            )
+            Some(r"C:\Users\u\AppData\Local\OrbCue;C:\Windows;C:\Windows\System32".into())
         );
     }
 
@@ -245,16 +242,16 @@ mod tests {
     fn skips_when_already_present_ignoring_case_and_slash() {
         assert_eq!(
             merge_path_entries(
-                r"C:\Windows;C:\Users\u\AppData\Local\Agent Activity Dock\;C:\Windows\System32",
-                r"c:\users\u\appdata\local\agent activity dock",
+                r"C:\Windows;C:\Users\u\AppData\Local\OrbCue\;C:\Windows\System32",
+                r"c:\users\u\appdata\local\orbcue",
                 ';',
                 true,
             ),
             None
         );
         assert!(path_contains(
-            r"C:\Windows;C:\Users\u\AppData\Local\Agent Activity Dock",
-            r"C:\Users\u\AppData\Local\Agent Activity Dock",
+            r"C:\Windows;C:\Users\u\AppData\Local\OrbCue",
+            r"C:\Users\u\AppData\Local\OrbCue",
             ';',
             true,
         ));
@@ -295,15 +292,15 @@ mod tests {
     fn install_runs_remaining_steps_after_exe_copy_fails() {
         let root = temp_root();
         let dest_dir = root.join("cli");
-        fs::create_dir_all(dest_dir.join("dock.exe")).unwrap();
-        fs::create_dir_all(dest_dir.join("dock.exe.old")).unwrap();
-        fs::write(dest_dir.join("dock.exe.old").join("keep"), b"x").unwrap();
-        let source = root.join("dock-src.exe");
+        fs::create_dir_all(dest_dir.join("orb.exe")).unwrap();
+        fs::create_dir_all(dest_dir.join("orb.exe.old")).unwrap();
+        fs::write(dest_dir.join("orb.exe.old").join("keep"), b"x").unwrap();
+        let source = root.join("orb-src.exe");
         fs::write(&source, b"new").unwrap();
 
         let error = install_windows_cli_into(&dest_dir, &source).unwrap_err();
         assert!(error.contains("cannot install"));
-        assert!(dest_dir.join("dock.cmd").is_file());
+        assert!(dest_dir.join("orb.cmd").is_file());
         fs::remove_dir_all(root).unwrap();
     }
 }

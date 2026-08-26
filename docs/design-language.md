@@ -1,4 +1,4 @@
-# Design Language — Agent Activity Dock
+# Design Language — OrbCue
 
 designer 子代理的持久记忆。新的设计决策用一两行追加到对应小节。
 

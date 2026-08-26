@@ -1,5 +1,5 @@
 [package]
-name = "agent-activity-dock-core"
+name = "orbcue-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

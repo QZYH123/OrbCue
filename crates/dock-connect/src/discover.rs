@@ -10,12 +10,12 @@ use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub const LOGIN_PATH_START: &str = "__AADOCK_PATH_START__";
-pub const LOGIN_PATH_END: &str = "__AADOCK_PATH_END__";
+pub const LOGIN_PATH_START: &str = "__ORBCUE_PATH_START__";
+pub const LOGIN_PATH_END: &str = "__ORBCUE_PATH_END__";
 /// Quoted `%s\n` so bash printf emits real newlines. Unquoted `%s\n` prints a
 /// literal `n` and glues the markers to PATH.
 pub const LOGIN_PATH_SCRIPT: &str =
-    r#"printf '%s\n' '__AADOCK_PATH_START__' "$PATH" '__AADOCK_PATH_END__'"#;
+    r#"printf '%s\n' '__ORBCUE_PATH_START__' "$PATH" '__ORBCUE_PATH_END__'"#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeOutput {
@@ -75,7 +75,7 @@ pub fn cached_login_path() -> Result<String, String> {
         .get_or_init(|| {
             let result = probe_login_path(|| run_login_path_command(Duration::from_secs(2)));
             if let Err(diagnostic) = &result {
-                eprintln!("Agent Activity Dock: {diagnostic}; falling back to process PATH");
+                eprintln!("OrbCue: {diagnostic}; falling back to process PATH");
             }
             result
         })
@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn discover_agents_skips_mnt_windows_interop_paths() {
         let root = std::env::temp_dir().join(format!(
-            "aadock-mnt-{}",
+            "orbcue-mnt-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock is after epoch")
@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn discover_agents_finds_windows_pathext_executables() {
         let root = std::env::temp_dir().join(format!(
-            "aadock-pathext-{}",
+            "orbcue-pathext-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock is after epoch")
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn extra_dirs_find_claude_when_not_on_path() {
         let root = std::env::temp_dir().join(format!(
-            "aadock-extra-{}",
+            "orbcue-extra-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock is after epoch")
@@ -590,7 +590,7 @@ mod tests {
     #[test]
     fn cursor_install_dir_agent_cmd_is_discovered_as_cursor() {
         let root = std::env::temp_dir().join(format!(
-            "aadock-cursor-dir-{}",
+            "orbcue-cursor-dir-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock is after epoch")
@@ -610,7 +610,7 @@ mod tests {
     #[test]
     fn grok_bin_agent_is_not_treated_as_cursor() {
         let root = std::env::temp_dir().join(format!(
-            "aadock-grok-agent-{}",
+            "orbcue-grok-agent-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock is after epoch")
@@ -631,7 +631,7 @@ mod tests {
     #[test]
     fn path_wins_over_extra_dir_for_the_same_agent() {
         let root = std::env::temp_dir().join(format!(
-            "aadock-path-wins-{}",
+            "orbcue-path-wins-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock is after epoch")

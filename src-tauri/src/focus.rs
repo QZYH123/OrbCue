@@ -1,11 +1,11 @@
 //! Presenter-side jump-back execution.
 //!
-//! Ladder: deep_link → dock: marker (precise tab) → captured HWND (window-level)
+//! Ladder: deep_link → orb: marker (precise tab) → captured HWND (window-level)
 //! → honest failure. Used only for the user's explicit「回去」click.
 
 #[cfg(windows)]
-use agent_activity_dock_core::{captured_hwnd_usable, select_unique_window_title};
-use agent_activity_dock_core::{
+use orbcue_core::{captured_hwnd_usable, select_unique_window_title};
+use orbcue_core::{
     captured_keys_to_drop, dock_terminal_marker, focus_attempts, sessions_to_capture,
     CaptureSession, FocusDecision, FocusRequest, SessionKey, SessionSnapshot, JUMP_WINDOW_MISSING,
 };
@@ -55,7 +55,7 @@ fn snapshot_views(sessions: &[SessionSnapshot]) -> Vec<CaptureSession> {
 
 fn log_capture(line: &str) {
     eprintln!("{line}");
-    let path = std::env::temp_dir().join("agent-activity-dock-jump-capture.log");
+    let path = std::env::temp_dir().join("orbcue-jump-capture.log");
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -228,7 +228,7 @@ fn focus_window_title_containing(marker: &str) -> bool {
 
 #[cfg(windows)]
 mod win32 {
-    use agent_activity_dock_core::is_terminal_window_candidate;
+    use orbcue_core::is_terminal_window_candidate;
     use std::os::windows::ffi::OsStringExt;
 
     pub struct VisibleWindow {

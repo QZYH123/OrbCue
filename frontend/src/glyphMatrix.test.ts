@@ -7,7 +7,7 @@ describe('glyph matrix', () => {
   });
 
   it('always returns 121 cells and never draws a digit block', () => {
-    const tones = matrixTones(2, 5, 'working', '');
+    const tones = matrixTones(2, 5, 'working');
     expect(tones).toHaveLength(121);
     expect(tones.some((tone) => tone === 'void')).toBe(true);
     expect(tones.filter((tone) => tone === 'lit').length).toBeGreaterThan(0);

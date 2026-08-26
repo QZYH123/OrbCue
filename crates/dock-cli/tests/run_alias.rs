@@ -12,24 +12,24 @@ fn isolated_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("aadock-alias-{nonce}"));
+    let root = std::env::temp_dir().join(format!("orbcue-alias-{nonce}"));
     fs::create_dir_all(&root).unwrap();
     root
 }
 
-fn dock_cmd() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_dock"))
+fn orb_cmd() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_orb"))
 }
 
 fn alias_json(root: &Path, args: &[&str]) -> Value {
-    let output = dock_cmd()
+    let output = orb_cmd()
         .args(args)
         .env("HOME", root.join("home"))
         .env("XDG_STATE_HOME", root.join("state"))
-        .env("AGENT_ACTIVITY_DOCK_BIN", root.join("bin"))
-        .env("AGENT_ACTIVITY_DOCK_SOCKET", root.join("dock.sock"))
-        .env("AGENT_ACTIVITY_DOCK_BACKEND", "wsl")
-        .env("AGENT_ACTIVITY_DOCK_DOCKD", root.join("missing-dockd"))
+        .env("ORBCUE_BIN", root.join("bin"))
+        .env("ORBCUE_SOCKET", root.join("orb.sock"))
+        .env("ORBCUE_BACKEND", "wsl")
+        .env("ORBCUE_ORBD", root.join("missing-orbd"))
         .env_remove("XDG_RUNTIME_DIR")
         .output()
         .expect("run dock alias");
@@ -55,7 +55,7 @@ fn set_get_and_clear_alias() {
 
     let shim = root.join("bin").join("dr");
     let text = fs::read_to_string(&shim).unwrap();
-    assert!(text.contains("dock run"));
+    assert!(text.contains("orb run"));
     assert_eq!(shim.metadata().unwrap().permissions().mode() & 0o111, 0o111);
 
     let got = alias_json(&root, &["alias", "--json"]);

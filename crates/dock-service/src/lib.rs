@@ -6,13 +6,13 @@ pub use client::{
     attach_or_listen, connect_or_spawn_detached, query_service, DetachedConnectError, DockSession,
 };
 
-use agent_activity_dock_core::{DockState, PersistedState};
-use agent_activity_dock_ipc::{
+use orbcue_core::{DockState, PersistedState};
+use orbcue_ipc::{
     encode_line, local_accept, local_connect, local_listener, parse_request, IpcRequest,
     LocalStream, SnapshotView, WireResponse, MAX_FRAME_BYTES,
 };
 #[cfg(windows)]
-use agent_activity_dock_ipc::{resolve_backend, DockBackend};
+use orbcue_ipc::{resolve_backend, DockBackend};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -45,14 +45,11 @@ pub struct SnapshotMessage {
     #[serde(rename = "type")]
     pub message_type: String,
     pub snapshot: SnapshotView,
-    pub attention: Option<agent_activity_dock_core::Attention>,
+    pub attention: Option<orbcue_core::Attention>,
 }
 
 impl SnapshotMessage {
-    pub fn snapshot(
-        snapshot: SnapshotView,
-        attention: Option<agent_activity_dock_core::Attention>,
-    ) -> Self {
+    pub fn snapshot(snapshot: SnapshotView, attention: Option<orbcue_core::Attention>) -> Self {
         Self {
             message_type: "snapshot".to_owned(),
             snapshot,
@@ -93,7 +90,7 @@ impl ServiceHandle {
         receiver
     }
 
-    pub fn snapshot(&self) -> agent_activity_dock_core::DockSnapshot {
+    pub fn snapshot(&self) -> orbcue_core::DockSnapshot {
         self.state.lock().expect("state lock").snapshot()
     }
 
@@ -103,27 +100,27 @@ impl ServiceHandle {
         session_id: &str,
         terminal_id: Option<&str>,
     ) -> WireResponse {
-        let mut state = self.state.lock().expect("state lock");
-        let snapshot = state.acknowledge(source, session_id, terminal_id);
-        if let Some(path) = &self.state_path {
-            if let Err(error) = persist_state(path, &state) {
-                eprintln!("Agent Activity Dock could not persist acknowledgement: {error}");
-            }
-        }
-        drop(state);
-        broadcast(
-            &self.updates,
-            SnapshotMessage::snapshot(SnapshotView::from(&snapshot), None),
-        );
-        WireResponse::accepted(&snapshot)
+        self.mutate_and_broadcast("acknowledgement", |state| {
+            state.acknowledge(source, session_id, terminal_id)
+        })
     }
 
     pub fn reset(&self, source: &str, session_id: &str, terminal_id: Option<&str>) -> WireResponse {
+        self.mutate_and_broadcast("reset", |state| {
+            state.reset(source, session_id, terminal_id)
+        })
+    }
+
+    fn mutate_and_broadcast(
+        &self,
+        persist_label: &str,
+        mutate: impl FnOnce(&mut DockState) -> orbcue_core::DockSnapshot,
+    ) -> WireResponse {
         let mut state = self.state.lock().expect("state lock");
-        let snapshot = state.reset(source, session_id, terminal_id);
+        let snapshot = mutate(&mut state);
         if let Some(path) = &self.state_path {
             if let Err(error) = persist_state(path, &state) {
-                eprintln!("Agent Activity Dock could not persist reset: {error}");
+                eprintln!("OrbCue could not persist {persist_label}: {error}");
             }
         }
         drop(state);
@@ -291,7 +288,7 @@ fn handle_client(
         Ok(bytes) => parse_request(&bytes),
         Err(reason) => {
             let snapshot = state.lock().expect("state lock").snapshot();
-            let _ = write_response(&mut stream, &WireResponse::rejected(&snapshot, &reason));
+            let _ = write_json(&mut stream, &WireResponse::rejected(&snapshot, &reason));
             return;
         }
     };
@@ -299,7 +296,7 @@ fn handle_client(
         Ok(request) => request,
         Err(error) => {
             let snapshot = state.lock().expect("state lock").snapshot();
-            let _ = write_response(
+            let _ = write_json(
                 &mut stream,
                 &WireResponse::rejected(&snapshot, &error.to_string()),
             );
@@ -310,7 +307,7 @@ fn handle_client(
         IpcRequest::Subscribe => handle_subscription(stream, state, updates, stopping),
         request => {
             let response = dispatch(request, &state, state_path.as_deref());
-            let _ = write_response(&mut stream, &response);
+            let _ = write_json(&mut stream, &response);
             if response.accepted {
                 broadcast(
                     &updates,
@@ -353,7 +350,7 @@ fn dispatch(
     if response.accepted && is_mutating {
         if let Some(path) = state_path {
             if let Err(error) = persist_state(path, &state) {
-                eprintln!("Agent Activity Dock could not persist state: {error}");
+                eprintln!("OrbCue could not persist state: {error}");
             }
         }
     }
@@ -402,10 +399,6 @@ fn read_request(stream: &LocalStream) -> Result<Vec<u8>, String> {
         return Err("message_too_large".to_owned());
     }
     Ok(bytes)
-}
-
-fn write_response(stream: &mut LocalStream, response: &WireResponse) -> std::io::Result<()> {
-    write_json(stream, response)
 }
 
 fn write_json<T: Serialize>(stream: &mut LocalStream, value: &T) -> std::io::Result<()> {
@@ -501,7 +494,7 @@ fn schedule_wsl_state_migration(
             return;
         };
         let _ = thread::Builder::new()
-            .name("dock-wsl-migrate".to_owned())
+            .name("orb-wsl-migrate".to_owned())
             .spawn(move || migrate_wsl_state(state, updates, state_path));
     }
 }
@@ -524,7 +517,7 @@ fn apply_copied_sessions(
     *guard = DockState::from_persisted(copied);
     let snapshot = SnapshotView::from(&guard.snapshot());
     if let Err(error) = persist_state(state_path, &guard) {
-        eprintln!("Agent Activity Dock could not persist migrated state: {error}");
+        eprintln!("OrbCue could not persist migrated state: {error}");
     }
     drop(guard);
     broadcast(updates, SnapshotMessage::snapshot(snapshot, None));
@@ -593,7 +586,7 @@ fn migrate_wsl_state(
 fn cat_wsl_state(timeout: Duration) -> Result<(String, String), MigrationReason> {
     let mut command = std::process::Command::new("wsl.exe");
     hide_windows_console(&mut command);
-    if let Ok(distro) = std::env::var("AGENT_ACTIVITY_DOCK_WSL_DISTRO") {
+    if let Ok(distro) = std::env::var("ORBCUE_WSL_DISTRO") {
         if !distro.is_empty() {
             command.args(["-d", &distro]);
         }
@@ -602,7 +595,7 @@ fn cat_wsl_state(timeout: Duration) -> Result<(String, String), MigrationReason>
         "-e",
         "sh",
         "-c",
-        r#"cat "${XDG_STATE_HOME:-$HOME/.local/state}/agent-activity-dock/state.json""#,
+        r#"cat "${XDG_STATE_HOME:-$HOME/.local/state}/orbcue/state.json""#,
     ]);
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -636,7 +629,7 @@ fn schedule_liveness_reaper(
     stopping: Arc<AtomicBool>,
 ) {
     let _ = thread::Builder::new()
-        .name("dock-liveness".to_owned())
+        .name("orb-liveness".to_owned())
         .spawn(move || {
             let busy = Arc::new(AtomicBool::new(false));
             while !stopping.load(Ordering::Acquire) {
@@ -661,15 +654,15 @@ fn reap_dead_sessions(
     let targets = state.lock().expect("state lock").liveness_targets();
     let dead = find_dead_sessions(&targets);
     for (source, session_id, liveness) in dead {
-        let event_id = agent_activity_dock_core::liveness_closed_event_id(
+        let event_id = orbcue_core::liveness_closed_event_id(
             &source,
             &session_id,
             liveness.pid,
             liveness.starttime,
         );
-        let mut event = agent_activity_dock_core::DockEvent::new(
+        let mut event = orbcue_core::DockEvent::new(
             &event_id,
-            agent_activity_dock_core::EventKind::Closed,
+            orbcue_core::EventKind::Closed,
             &source,
             &session_id,
         );
@@ -698,14 +691,14 @@ fn reap_dead_sessions(
 }
 
 fn find_dead_sessions(
-    targets: &[(String, String, agent_activity_dock_core::AgentLiveness)],
-) -> Vec<(String, String, agent_activity_dock_core::AgentLiveness)> {
+    targets: &[(String, String, orbcue_core::AgentLiveness)],
+) -> Vec<(String, String, orbcue_core::AgentLiveness)> {
     let mut dead = Vec::new();
     #[cfg(windows)]
     {
         let mut by_distro: std::collections::BTreeMap<
             String,
-            Vec<(String, String, agent_activity_dock_core::AgentLiveness)>,
+            Vec<(String, String, orbcue_core::AgentLiveness)>,
         > = std::collections::BTreeMap::new();
         for (source, session_id, liveness) in targets {
             match liveness.os.as_str() {
@@ -819,8 +812,8 @@ fn windows_pid_is_dead(pid: u32, starttime: u64) -> Option<bool> {
 #[cfg(windows)]
 fn wsl_dead_sessions(
     distro: &str,
-    group: &[(String, String, agent_activity_dock_core::AgentLiveness)],
-) -> Vec<(String, String, agent_activity_dock_core::AgentLiveness)> {
+    group: &[(String, String, orbcue_core::AgentLiveness)],
+) -> Vec<(String, String, orbcue_core::AgentLiveness)> {
     let queries: Vec<serde_json::Value> = group
         .iter()
         .map(|(source, session_id, liveness)| {
@@ -840,12 +833,12 @@ fn wsl_dead_sessions(
         "-e",
         "sh",
         "-c",
-        r#"exec "$HOME/.local/bin/dock" "$@""#,
+        r#"exec "$HOME/.local/bin/orb" "$@""#,
         "sh",
         "liveness-check",
     ]);
-    command.env("AGENT_ACTIVITY_DOCK_HOP", "wsl");
-    command.env("AGENT_ACTIVITY_DOCK_BACKEND", "local");
+    command.env("ORBCUE_HOP", "wsl");
+    command.env("ORBCUE_BACKEND", "local");
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -902,7 +895,7 @@ fn wsl_dead_sessions(
 #[cfg(test)]
 mod tests {
     use super::{apply_copied_sessions, SnapshotMessage};
-    use agent_activity_dock_core::{DockEvent, DockState, EventKind};
+    use orbcue_core::{DockEvent, DockState, EventKind};
     use std::sync::{mpsc, Arc, Mutex};
 
     #[test]
@@ -965,7 +958,7 @@ mod tests {
     fn linux_host_reaps_without_wsl_distro() {
         let dead = super::linux_pid_is_dead(u32::MAX, 1);
         assert_eq!(dead, Some(true));
-        let liveness = agent_activity_dock_core::AgentLiveness {
+        let liveness = orbcue_core::AgentLiveness {
             os: "linux".to_owned(),
             pid: u32::MAX,
             starttime: 1,

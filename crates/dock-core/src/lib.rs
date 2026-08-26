@@ -1,4 +1,4 @@
-//! Public domain seam for Agent Activity Dock.
+//! Public domain seam for OrbCue.
 //!
 //! The rest of the application talks to this crate through events and
 //! snapshots. Rendering, transport and Agent-specific adapters stay outside
@@ -38,7 +38,6 @@ pub const MAX_METADATA_VALUE_LEN: usize = 256;
 pub const MAX_EVENT_AGE: Duration = Duration::hours(24);
 pub const MAX_FUTURE_SKEW: Duration = Duration::minutes(5);
 const SEEN_EVENT_LIMIT: usize = 8_192;
-const MAX_SESSIONS: usize = 256;
 const MAX_AUDIT_ENTRIES: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,10 +89,6 @@ pub enum SessionState {
 }
 
 impl SessionState {
-    pub fn is_open(self) -> bool {
-        true
-    }
-
     pub fn is_audit_event(self) -> bool {
         !matches!(self, Self::Working | Self::Idle)
     }
@@ -451,10 +446,7 @@ impl DockState {
             .iter()
             .filter(|session| session.state == SessionState::Working)
             .count();
-        let tracked_count = sessions
-            .iter()
-            .filter(|session| session.state.is_open())
-            .count();
+        let tracked_count = sessions.len();
         let pending_count = tracked_count.saturating_sub(working_count);
         let pending_mark = if sessions
             .iter()
@@ -515,6 +507,7 @@ impl DockState {
             return self.apply_child_event(event, parent_id);
         }
 
+        let event_id = event.event_id.clone();
         let kind = event.kind;
         let creating = matches!(
             kind,
@@ -531,7 +524,7 @@ impl DockState {
             }
         }
         let previous_state = self.sessions.get(&key).map(|record| record.state);
-        let result = match kind {
+        let attention = match kind {
             EventKind::Idle => self.apply_idle(&key, event),
             EventKind::Started | EventKind::Working => self.apply_working(&key, event),
             EventKind::WaitingInput => {
@@ -559,25 +552,7 @@ impl DockState {
             ),
             EventKind::Closed => self.apply_closed(&key, event),
         };
-
-        if result.reason.is_none() {
-            self.remember_event(&result.event_id);
-            if kind != EventKind::Closed {
-                let current_state = self.sessions.get(&key).map(|record| record.state);
-                if previous_state != current_state {
-                    if let Some(record) = self.sessions.get(&key).cloned() {
-                        self.remember_audit(&record);
-                    }
-                }
-            }
-            self.accepted(result.attention)
-        } else {
-            self.rejected(
-                result
-                    .reason
-                    .unwrap_or_else(|| "invalid_transition".to_owned()),
-            )
-        }
+        self.finish_transition(&event_id, kind, &key, previous_state, attention)
     }
 
     pub fn acknowledge(
@@ -621,35 +596,34 @@ impl DockState {
         self.seen_order.clear();
     }
 
-    fn apply_idle(&mut self, key: &str, event: DockEvent) -> TransitionResult {
-        if let Some(record) = self.sessions.get_mut(key) {
-            update_record(record, &event);
-            record.state = SessionState::Idle;
-            record.attention_reason = None;
-            record.acknowledged = true;
-            record.requires_user_action = false;
-            return TransitionResult::accepted(event.event_id, None);
-        }
-        self.sessions.insert(
-            key.to_owned(),
-            SessionRecord::new(&event, SessionState::Idle, None),
-        );
-        TransitionResult::accepted(event.event_id, None)
+    fn apply_idle(&mut self, key: &str, event: DockEvent) -> Option<Attention> {
+        self.apply_open(key, event, SessionState::Idle, true)
     }
 
-    fn apply_working(&mut self, key: &str, event: DockEvent) -> TransitionResult {
+    fn apply_working(&mut self, key: &str, event: DockEvent) -> Option<Attention> {
+        self.apply_open(key, event, SessionState::Working, false)
+    }
+
+    fn apply_open(
+        &mut self,
+        key: &str,
+        event: DockEvent,
+        state: SessionState,
+        clear_user_action: bool,
+    ) -> Option<Attention> {
         if let Some(record) = self.sessions.get_mut(key) {
             update_record(record, &event);
-            record.state = SessionState::Working;
+            record.state = state;
             record.attention_reason = None;
             record.acknowledged = true;
-            return TransitionResult::accepted(event.event_id, None);
+            if clear_user_action {
+                record.requires_user_action = false;
+            }
+            return None;
         }
-        self.sessions.insert(
-            key.to_owned(),
-            SessionRecord::new(&event, SessionState::Working, None),
-        );
-        TransitionResult::accepted(event.event_id, None)
+        self.sessions
+            .insert(key.to_owned(), SessionRecord::new(&event, state, None));
+        None
     }
 
     fn apply_attention(
@@ -658,24 +632,21 @@ impl DockState {
         event: DockEvent,
         reason: &str,
         severity: Severity,
-    ) -> TransitionResult {
-        if let Some(record) = self.sessions.get_mut(key) {
-            let already_pending = record.state == SessionState::NeedsAttention
-                && record.attention_reason.as_deref() == Some(reason)
-                && !record.acknowledged;
-            update_record(record, &event);
-            record.state = SessionState::NeedsAttention;
-            record.attention_reason = Some(reason.to_owned());
-            record.acknowledged = false;
-            let attention = (!already_pending).then(|| Attention {
-                source: event.source.clone(),
-                session_id: event.session_id.clone(),
-                reason: reason.to_owned(),
-                severity,
-            });
-            return TransitionResult::accepted(event.event_id, attention);
-        }
-        TransitionResult::accepted(event.event_id, None)
+    ) -> Option<Attention> {
+        let record = self.sessions.get_mut(key)?;
+        let already_pending = record.state == SessionState::NeedsAttention
+            && record.attention_reason.as_deref() == Some(reason)
+            && !record.acknowledged;
+        update_record(record, &event);
+        record.state = SessionState::NeedsAttention;
+        record.attention_reason = Some(reason.to_owned());
+        record.acknowledged = false;
+        (!already_pending).then(|| Attention {
+            source: event.source.clone(),
+            session_id: event.session_id.clone(),
+            reason: reason.to_owned(),
+            severity,
+        })
     }
 
     fn apply_terminal(
@@ -685,25 +656,22 @@ impl DockState {
         state: SessionState,
         reason: &str,
         severity: Severity,
-    ) -> TransitionResult {
-        if let Some(record) = self.sessions.get_mut(key) {
-            if record.state == state {
-                update_record(record, &event);
-                return TransitionResult::accepted(event.event_id, None);
-            }
+    ) -> Option<Attention> {
+        let record = self.sessions.get_mut(key)?;
+        if record.state == state {
             update_record(record, &event);
-            record.state = state;
-            record.attention_reason = (state != SessionState::Cancelled).then(|| reason.to_owned());
-            record.acknowledged = state == SessionState::Cancelled;
-            let attention = (state != SessionState::Cancelled).then(|| Attention {
-                source: event.source.clone(),
-                session_id: event.session_id.clone(),
-                reason: reason.to_owned(),
-                severity,
-            });
-            return TransitionResult::accepted(event.event_id, attention);
+            return None;
         }
-        TransitionResult::accepted(event.event_id, None)
+        update_record(record, &event);
+        record.state = state;
+        record.attention_reason = (state != SessionState::Cancelled).then(|| reason.to_owned());
+        record.acknowledged = state == SessionState::Cancelled;
+        (state != SessionState::Cancelled).then(|| Attention {
+            source: event.source.clone(),
+            session_id: event.session_id.clone(),
+            reason: reason.to_owned(),
+            severity,
+        })
     }
 
     fn apply_child_event(&mut self, event: DockEvent, parent_id: String) -> ApplyResult {
@@ -724,10 +692,11 @@ impl DockState {
         }
 
         let previous_state = self.sessions.get(&parent_key).map(|record| record.state);
+        let event_id = event.event_id.clone();
         let kind = event.kind;
         let mut folded = event;
         folded.session_id = parent_id;
-        let result = match kind {
+        let attention = match kind {
             EventKind::WaitingInput => {
                 self.apply_attention(&parent_key, folded, "input", Severity::Attention)
             }
@@ -743,23 +712,7 @@ impl DockState {
             ),
             _ => unreachable!("non-foldable child events return earlier"),
         };
-
-        if result.reason.is_none() {
-            self.remember_event(&result.event_id);
-            let current_state = self.sessions.get(&parent_key).map(|record| record.state);
-            if previous_state != current_state {
-                if let Some(record) = self.sessions.get(&parent_key).cloned() {
-                    self.remember_audit(&record);
-                }
-            }
-            self.accepted(result.attention)
-        } else {
-            self.rejected(
-                result
-                    .reason
-                    .unwrap_or_else(|| "invalid_transition".to_owned()),
-            )
-        }
+        self.finish_transition(&event_id, kind, &parent_key, previous_state, attention)
     }
 
     fn resolve_session_key(&self, event: &DockEvent, for_create: bool) -> String {
@@ -848,11 +801,35 @@ impl DockState {
         }
     }
 
-    fn apply_closed(&mut self, key: &str, event: DockEvent) -> TransitionResult {
+    fn apply_closed(&mut self, key: &str, event: DockEvent) -> Option<Attention> {
         if let Some(record) = self.sessions.remove(key) {
             self.remember_closed_audit(record, Some(event.occurred_at.clone()));
         }
-        TransitionResult::accepted(event.event_id, None)
+        None
+    }
+
+    fn finish_transition(
+        &mut self,
+        event_id: &str,
+        kind: EventKind,
+        key: &str,
+        previous_state: Option<SessionState>,
+        attention: Option<Attention>,
+    ) -> ApplyResult {
+        self.remember_event(event_id);
+        if kind != EventKind::Closed {
+            self.audit_if_changed(key, previous_state);
+        }
+        self.accepted(attention)
+    }
+
+    fn audit_if_changed(&mut self, key: &str, previous_state: Option<SessionState>) {
+        let current_state = self.sessions.get(key).map(|record| record.state);
+        if previous_state != current_state {
+            if let Some(record) = self.sessions.get(key).cloned() {
+                self.remember_audit(&record);
+            }
+        }
     }
 
     fn accepted(&self, attention: Option<Attention>) -> ApplyResult {
@@ -880,44 +857,6 @@ impl DockState {
             if let Some(oldest) = self.seen_order.pop_front() {
                 self.seen_event_ids.remove(&oldest);
             }
-        }
-    }
-
-    #[allow(dead_code)]
-    fn prune_sessions(&mut self) {
-        while self.sessions.len() > MAX_SESSIONS {
-            let candidate = self
-                .sessions
-                .iter()
-                .filter(|(_, record)| {
-                    record.acknowledged
-                        && matches!(
-                            record.state,
-                            SessionState::Completed
-                                | SessionState::Failed
-                                | SessionState::Cancelled
-                        )
-                })
-                .min_by_key(|(_, record)| record.occurred_at.clone())
-                .map(|(key, _)| key.clone())
-                .or_else(|| {
-                    self.sessions
-                        .iter()
-                        .filter(|(_, record)| {
-                            matches!(
-                                record.state,
-                                SessionState::Completed
-                                    | SessionState::Failed
-                                    | SessionState::Cancelled
-                            )
-                        })
-                        .min_by_key(|(_, record)| record.occurred_at.clone())
-                        .map(|(key, _)| key.clone())
-                });
-            let Some(candidate) = candidate else {
-                break;
-            };
-            self.sessions.remove(&candidate);
         }
     }
 
@@ -1082,7 +1021,7 @@ pub fn liveness_closed_event_id(
         .take(8)
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    format!("dock-liveness-{hex}")
+    format!("orb-liveness-{hex}")
 }
 
 fn resolve_project_path(event: &DockEvent) -> Option<String> {
@@ -1283,21 +1222,5 @@ fn session_priority(session: &SessionSnapshot) -> u8 {
         SessionState::Cancelled => 5,
         SessionState::Idle => 6,
         SessionState::Closed => 7,
-    }
-}
-
-struct TransitionResult {
-    event_id: String,
-    attention: Option<Attention>,
-    reason: Option<String>,
-}
-
-impl TransitionResult {
-    fn accepted(event_id: String, attention: Option<Attention>) -> Self {
-        Self {
-            event_id,
-            attention,
-            reason: None,
-        }
     }
 }

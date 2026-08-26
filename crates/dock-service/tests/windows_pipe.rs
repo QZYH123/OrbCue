@@ -1,10 +1,8 @@
 #![cfg(windows)]
 
-use agent_activity_dock_core::{DockEvent, EventKind};
-use agent_activity_dock_ipc::{encode_line, local_connect, WireResponse};
-use agent_activity_dock_service::{
-    attach_or_listen, connect_or_spawn_detached, spawn, DetachedConnectError,
-};
+use orbcue_core::{DockEvent, EventKind};
+use orbcue_ipc::{encode_line, local_connect, WireResponse};
+use orbcue_service::{attach_or_listen, connect_or_spawn_detached, spawn, DetachedConnectError};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -14,14 +12,14 @@ fn endpoint() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    PathBuf::from(format!(r"\\.\pipe\agent-activity-dock-test-{nonce}"))
+    PathBuf::from(format!(r"\\.\pipe\orbcue-test-{nonce}"))
 }
 
 fn state_path(endpoint: &Path) -> PathBuf {
     let name = endpoint
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("agent-activity-dock-test");
+        .unwrap_or("orbcue-test");
     std::env::temp_dir().join(format!("{name}.state.json"))
 }
 

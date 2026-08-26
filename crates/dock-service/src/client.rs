@@ -1,5 +1,5 @@
 use crate::{ServiceError, ServiceHandle, SnapshotMessage};
-use agent_activity_dock_ipc::{
+use orbcue_ipc::{
     encode_request, local_connect, local_set_recv_timeout, local_set_send_timeout, IpcRequest,
     SnapshotView, WireResponse,
 };
@@ -119,12 +119,12 @@ pub fn attach_or_listen(
     if let Some(binary) = dockd.filter(|path| path.is_file()) {
         let log_path = state_path
             .parent()
-            .map(|parent| parent.join("dockd.log"))
-            .unwrap_or_else(|| PathBuf::from("dockd.log"));
+            .map(|parent| parent.join("orbd.log"))
+            .unwrap_or_else(|| PathBuf::from("orbd.log"));
         let pid_path = state_path
             .parent()
-            .map(|parent| parent.join("dockd.pid"))
-            .unwrap_or_else(|| PathBuf::from("dockd.pid"));
+            .map(|parent| parent.join("orbd.pid"))
+            .unwrap_or_else(|| PathBuf::from("orbd.pid"));
         if spawn_detached_daemon(&binary, &log_path, &pid_path).is_ok() {
             for _ in 0..25 {
                 if query_service(&endpoint, &IpcRequest::Snapshot).is_ok() {
@@ -148,7 +148,7 @@ pub fn attach_or_listen(
 }
 
 /// CLI short processes use this instead of `attach_or_listen`.
-/// Never `spawn_persistent`: exiting `dock emit` must not take the daemon with it.
+/// Never `spawn_persistent`: exiting `orb emit` must not take the daemon with it.
 #[derive(Debug)]
 pub enum DetachedConnectError {
     NeedPresenterOrDockd,
@@ -160,7 +160,7 @@ impl std::fmt::Display for DetachedConnectError {
         match self {
             Self::NeedPresenterOrDockd => write!(
                 f,
-                "cannot reach Dock named pipe; start the presenter or `dock up` (requires dockd.exe)"
+                "cannot reach Dock named pipe; start the presenter or `orb up` (requires orbd.exe)"
             ),
             Self::Io(error) => write!(f, "{error}"),
         }
@@ -185,12 +185,12 @@ pub fn connect_or_spawn_detached(
     }
     let log_path = state_path
         .parent()
-        .map(|parent| parent.join("dockd.log"))
-        .unwrap_or_else(|| PathBuf::from("dockd.log"));
+        .map(|parent| parent.join("orbd.log"))
+        .unwrap_or_else(|| PathBuf::from("orbd.log"));
     let pid_path = state_path
         .parent()
-        .map(|parent| parent.join("dockd.pid"))
-        .unwrap_or_else(|| PathBuf::from("dockd.pid"));
+        .map(|parent| parent.join("orbd.pid"))
+        .unwrap_or_else(|| PathBuf::from("orbd.pid"));
     if let Some(binary) = dockd.filter(|path| path.is_file()) {
         spawn_detached_daemon(&binary, &log_path, &pid_path)?;
         for _ in 0..25 {

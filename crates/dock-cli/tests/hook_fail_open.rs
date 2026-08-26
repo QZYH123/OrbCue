@@ -12,7 +12,7 @@ fn isolated_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("aadock-hook-fail-open-{nonce}"));
+    let root = std::env::temp_dir().join(format!("orbcue-hook-fail-open-{nonce}"));
     fs::create_dir_all(&root).unwrap();
     root
 }
@@ -23,17 +23,17 @@ fn write_exec(path: &Path, contents: &str) {
 }
 
 fn run_grok_stop_hook(root: &Path, windows_dock: &Path) -> std::process::Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_dock"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_orb"))
         .args(["hook", "grok"])
         .env("HOME", root.join("home"))
         .env("XDG_STATE_HOME", root.join("state"))
-        .env("AGENT_ACTIVITY_DOCK_SOCKET", root.join("missing.sock"))
-        .env("AGENT_ACTIVITY_DOCK_BACKEND", "local")
-        .env("AGENT_ACTIVITY_DOCK_DOCKD", root.join("missing-dockd"))
-        .env("AGENT_ACTIVITY_DOCK_WINDOWS_DOCK", windows_dock)
+        .env("ORBCUE_SOCKET", root.join("missing.sock"))
+        .env("ORBCUE_BACKEND", "local")
+        .env("ORBCUE_ORBD", root.join("missing-orbd"))
+        .env("ORBCUE_WINDOWS_ORB", windows_dock)
         .env_remove("XDG_RUNTIME_DIR")
-        .env_remove("AGENT_ACTIVITY_DOCK_HOP")
-        .env_remove("AGENT_ACTIVITY_DOCK_FORWARD")
+        .env_remove("ORBCUE_HOP")
+        .env_remove("ORBCUE_FORWARD")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -51,10 +51,10 @@ fn run_grok_stop_hook(root: &Path, windows_dock: &Path) -> std::process::Output 
 #[test]
 fn grok_stop_hook_is_fail_open_when_windows_emit_exits_2() {
     let root = isolated_root();
-    let stub = root.join("dock.exe");
+    let stub = root.join("orb.exe");
     write_exec(
         &stub,
-        "#!/bin/sh\necho 'dock: cannot reach Dock named pipe; start the presenter or `dock up` (requires dockd.exe)' >&2\nexit 2\n",
+        "#!/bin/sh\necho 'orb: cannot reach Dock named pipe; start the presenter or `orb up` (requires orbd.exe)' >&2\nexit 2\n",
     );
 
     let output = run_grok_stop_hook(&root, &stub);

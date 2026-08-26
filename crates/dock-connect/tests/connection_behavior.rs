@@ -1,8 +1,6 @@
 #![cfg(unix)]
 
-use agent_activity_dock_connect::{
-    AgentOrigin, ConnectionManager, ConnectionMethod, PreviewAction,
-};
+use orbcue_connect::{AgentOrigin, ConnectionManager, ConnectionMethod, PreviewAction};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -22,7 +20,7 @@ fn temp_root() -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("aadock-connect-{nonce}"));
+    let path = std::env::temp_dir().join(format!("orbcue-connect-{nonce}"));
     fs::create_dir_all(&path).unwrap();
     path
 }
@@ -39,11 +37,11 @@ fn wrapper_preserves_arguments_and_exit_code_while_emitting_lifecycle() {
     let config = root.join("config");
     let data = root.join("data");
     fs::create_dir_all(&home).unwrap();
-    let dock = root.join("dock");
+    let dock = root.join("orb");
     let original = root.join("dsh-real");
     executable(
         &dock,
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$AADOCK_TEST_LOG\"\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$ORBCUE_TEST_LOG\"\n",
     );
     executable(
         &original,
@@ -55,11 +53,11 @@ fn wrapper_preserves_arguments_and_exit_code_while_emitting_lifecycle() {
     let record = manager.connect("dsh", &original).unwrap();
     assert_eq!(record.method, ConnectionMethod::Wrapper);
     let wrapper = record.wrapper.unwrap();
-    assert_eq!(wrapper, data.join("agent-activity-dock").join("dsh"));
+    assert_eq!(wrapper, data.join("orbcue").join("dsh"));
     let result = Command::new(&wrapper)
         .arg("--model")
         .arg("gpt-test")
-        .env("AADOCK_TEST_LOG", &log)
+        .env("ORBCUE_TEST_LOG", &log)
         .status()
         .unwrap();
     assert_eq!(result.code(), Some(17));
@@ -72,21 +70,17 @@ fn wrapper_preserves_arguments_and_exit_code_while_emitting_lifecycle() {
         .filter(|path| path.is_file())
         .collect::<Vec<_>>();
     assert!(!written_profiles.is_empty());
-    assert!(written_profiles.iter().all(|path| {
-        fs::read_to_string(path)
-            .unwrap()
-            .contains("agent-activity-dock PATH")
-    }));
+    assert!(written_profiles
+        .iter()
+        .all(|path| { fs::read_to_string(path).unwrap().contains("orbcue PATH") }));
     let failed_refresh = manager.connect("dsh", &wrapper);
     assert!(failed_refresh.is_err());
     assert!(wrapper.exists());
     assert!(manager.disconnect("dsh").unwrap());
     assert!(!wrapper.exists());
-    assert!(written_profiles.iter().all(|path| {
-        !fs::read_to_string(path)
-            .unwrap()
-            .contains("agent-activity-dock PATH")
-    }));
+    assert!(written_profiles
+        .iter()
+        .all(|path| { !fs::read_to_string(path).unwrap().contains("orbcue PATH") }));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -116,7 +110,7 @@ fn wrapper_path_is_injected_into_every_existing_shell_profile() {
         home.clone(),
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
 
     manager.connect("dsh", &original).unwrap();
@@ -136,14 +130,14 @@ fn wrapper_path_is_injected_into_every_existing_shell_profile() {
     assert!(manager.disconnect("dsh").unwrap());
     assert!(!fs::read_to_string(home.join(".zshrc"))
         .unwrap()
-        .contains("agent-activity-dock PATH"));
+        .contains("orbcue PATH"));
     assert!(!fs::read_to_string(
         home.join(".config")
             .join("powershell")
             .join("Microsoft.PowerShell_profile.ps1")
     )
     .unwrap()
-    .contains("agent-activity-dock PATH"));
+    .contains("orbcue PATH"));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -160,7 +154,7 @@ fn zsh_users_get_a_zshrc_snippet_even_when_only_bashrc_exists() {
         home.clone(),
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
     let old_shell = std::env::var_os("SHELL");
     std::env::set_var("SHELL", "/usr/bin/zsh");
@@ -188,15 +182,12 @@ fn grok_connect_writes_a_revocable_hook_file() {
         home.clone(),
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
 
     let record = manager.connect("grok", &original).unwrap();
     assert_eq!(record.method, ConnectionMethod::GrokHook);
-    let hooks = home
-        .join(".grok")
-        .join("hooks")
-        .join("agent-activity-dock.json");
+    let hooks = home.join(".grok").join("hooks").join("orbcue.json");
     let document = fs::read_to_string(&hooks).unwrap();
     assert!(document.contains("SessionStart"));
     assert!(document.contains("UserPromptSubmit"));
@@ -212,21 +203,17 @@ fn grok_connect_writes_a_revocable_hook_file() {
     let post = parsed["hooks"]["PostToolUse"][0].as_object().unwrap();
     assert_eq!(post["matcher"], "ask_user_question");
     assert_eq!(parsed["hooks"]["SessionStart"][0].get("matcher"), None);
-    assert!(document.contains("agent-activity-dock"));
+    assert!(document.contains("orbcue"));
     assert!(document.contains("grok-hook"));
-    let script = fs::read_to_string(
-        root.join("config")
-            .join("agent-activity-dock")
-            .join("grok-hook.sh"),
-    )
-    .unwrap();
+    let script =
+        fs::read_to_string(root.join("config").join("orbcue").join("grok-hook.sh")).unwrap();
     assert!(
         script.contains("exec "),
-        "hook must exec dock so liveness PPID is the agent: {script}"
+        "hook must exec orb so liveness PPID is the agent: {script}"
     );
     assert!(
         !script.contains("|| true"),
-        "|| true would keep a short-lived shell as dock's parent: {script}"
+        "|| true would keep a short-lived shell as orb's parent: {script}"
     );
     assert!(manager.disconnect("grok").unwrap());
     assert!(!hooks.exists());
@@ -242,7 +229,7 @@ fn connection_names_cannot_escape_the_managed_data_directory() {
         root.join("home"),
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
 
     let error = manager.connect("../../outside", &original).unwrap_err();
@@ -311,7 +298,7 @@ fn preview_is_side_effect_free() {
         home,
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
     let before_paths = all_paths(&root);
     let before_files = file_contents(&root);
@@ -349,7 +336,7 @@ fn connect_writes_exactly_the_previewed_paths() {
         home,
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
     with_shell("/bin/bash", || {
         let before = file_contents(&root);
@@ -381,17 +368,17 @@ fn refusing_non_dock_overwrite_still_works() {
     let home = root.join("home");
     let data = root.join("data");
     fs::create_dir_all(&home).unwrap();
-    let wrapper = data.join("agent-activity-dock").join("dsh");
+    let wrapper = data.join("orbcue").join("dsh");
     fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
     fs::write(&wrapper, "user-owned wrapper\n").unwrap();
     let original = root.join("dsh-real");
     executable(&original, "#!/bin/sh\nexit 0\n");
-    let manager = ConnectionManager::new(home, root.join("config"), data, root.join("dock"));
+    let manager = ConnectionManager::new(home, root.join("config"), data, root.join("orb"));
     with_shell("/bin/bash", || {
         let preview = manager.preview("dsh", &original).unwrap();
         assert!(preview.files.iter().any(|file| file.path == wrapper));
         let error = manager.connect("dsh", &original).unwrap_err();
-        assert!(error.contains("refusing to overwrite non-Dock file"));
+        assert!(error.contains("refusing to overwrite non-OrbCue file"));
         assert_eq!(
             fs::read_to_string(&wrapper).unwrap(),
             "user-owned wrapper\n"
@@ -419,7 +406,7 @@ fn claude_preview_notes_backup_and_disconnect_keeps_other_hooks() {
         home,
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
     let _guard = lock_env();
     let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
@@ -481,18 +468,14 @@ fn discovery_skips_the_managed_wrapper_and_finds_the_real_agent() {
     fs::create_dir_all(&home).unwrap();
     let original = real_bin.join("dsh");
     executable(&original, "#!/bin/sh\nexit 0\n");
-    let manager = agent_activity_dock_connect::ConnectionManager::new(
-        home,
-        config,
-        data.clone(),
-        root.join("dock"),
-    );
+    let manager =
+        orbcue_connect::ConnectionManager::new(home, config, data.clone(), root.join("orb"));
     manager.connect("dsh", &original).unwrap();
 
-    let nested_stub = data.join("agent-activity-dock").join("bin").join("dsh");
+    let nested_stub = data.join("orbcue").join("bin").join("dsh");
     fs::create_dir_all(nested_stub.parent().unwrap()).unwrap();
     executable(&nested_stub, "#!/bin/sh\nexit 0\n");
-    let managed_bin = data.join("agent-activity-dock");
+    let managed_bin = data.join("orbcue");
     let path =
         std::env::join_paths([managed_bin.join("bin"), managed_bin, real_bin.clone()]).unwrap();
     let discovered = manager.discover_from_path(&path);
@@ -526,7 +509,7 @@ fn discover_from_path_finds_local_bin_and_prefers_wsl_over_windows() {
         root.join("home"),
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
 
     let windows_first = std::env::join_paths([&windows_bin, &local_bin]).unwrap();
@@ -559,7 +542,7 @@ fn discover_from_path_names_cursor_agent_cursor() {
         root.join("home"),
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
     let path = std::env::join_paths([&local_bin]).unwrap();
     let discovered = manager.discover_from_path(&path);
@@ -590,7 +573,7 @@ fn discover_from_path_finds_well_known_install_dirs_without_path() {
         home,
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
     let discovered = manager.discover_from_path(std::ffi::OsStr::new(""));
     let mut names: Vec<_> = discovered.iter().map(|agent| agent.name.as_str()).collect();
@@ -615,7 +598,7 @@ fn add_scan_dir_persists_and_discovers_later() {
         home,
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
     let found = manager.add_scan_dir(&custom).unwrap();
     assert_eq!(found.len(), 1);
@@ -638,7 +621,7 @@ fn add_scan_dir_rejects_folder_without_supported_tools() {
         home,
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
     let error = manager.add_scan_dir(&empty).unwrap_err();
     assert!(error.contains("没有支持的工具"));
@@ -664,7 +647,7 @@ fn codex_connect_merges_hooks_json_and_keeps_other_hooks() {
         home,
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
     let preview = manager.preview("codex", &original).unwrap();
     assert_eq!(preview.method, ConnectionMethod::CodexHook);
@@ -688,13 +671,9 @@ fn codex_connect_merges_hooks_json_and_keeps_other_hooks() {
     );
     assert!(connected.contains("user-hook"));
     assert!(connected.contains("codex-hook"));
-    let script = fs::read_to_string(
-        root.join("config")
-            .join("agent-activity-dock")
-            .join("codex-hook.sh"),
-    )
-    .unwrap();
-    assert!(script.contains("exec "), "hook must exec dock: {script}");
+    let script =
+        fs::read_to_string(root.join("config").join("orbcue").join("codex-hook.sh")).unwrap();
+    assert!(script.contains("exec "), "hook must exec orb: {script}");
     assert!(
         !script.contains("|| true"),
         "|| true would hide the agent PPID: {script}"
@@ -725,7 +704,7 @@ fn cursor_connect_writes_camelcase_hooks_and_keeps_other_hooks() {
         home,
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
     let preview = manager.preview("cursor", &original).unwrap();
     assert_eq!(preview.method, ConnectionMethod::CursorHook);
@@ -742,13 +721,9 @@ fn cursor_connect_writes_camelcase_hooks_and_keeps_other_hooks() {
     assert!(connected.contains("loop_limit"));
     assert!(connected.contains("user-hook"));
     assert!(connected.contains("cursor-hook"));
-    let script = fs::read_to_string(
-        root.join("config")
-            .join("agent-activity-dock")
-            .join("cursor-hook.sh"),
-    )
-    .unwrap();
-    assert!(script.contains("exec "), "hook must exec dock: {script}");
+    let script =
+        fs::read_to_string(root.join("config").join("orbcue").join("cursor-hook.sh")).unwrap();
+    assert!(script.contains("exec "), "hook must exec orb: {script}");
     assert!(manager.disconnect("cursor").unwrap());
     let remaining = fs::read_to_string(&hooks).unwrap();
     assert!(remaining.contains("user-hook"));
@@ -765,16 +740,12 @@ fn reconnecting_codex_replaces_an_old_wrapper() {
     fs::create_dir_all(&home).unwrap();
     let original = root.join("codex-real");
     executable(&original, "#!/bin/sh\nexit 0\n");
-    let manager = ConnectionManager::new(
-        home.clone(),
-        config.clone(),
-        data.clone(),
-        root.join("dock"),
-    );
-    let wrapper = data.join("agent-activity-dock").join("codex");
+    let manager =
+        ConnectionManager::new(home.clone(), config.clone(), data.clone(), root.join("orb"));
+    let wrapper = data.join("orbcue").join("codex");
     fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
     fs::write(&wrapper, "# Agent Activity Dock generated wrapper\n").unwrap();
-    let connections = config.join("agent-activity-dock").join("connections.json");
+    let connections = config.join("orbcue").join("connections.json");
     fs::create_dir_all(connections.parent().unwrap()).unwrap();
     fs::write(
         &connections,
@@ -800,7 +771,7 @@ fn reconnecting_codex_replaces_an_old_wrapper() {
 
     fs::write(
         home.join(".bashrc"),
-        "export EXISTING=1\n# >>> agent-activity-dock PATH >>>\nexport PATH=\"old-wrapper:$PATH\"\n# <<< agent-activity-dock PATH <<<\n",
+        "export EXISTING=1\n# >>> orbcue PATH >>>\nexport PATH=\"old-wrapper:$PATH\"\n# <<< orbcue PATH <<<\n",
     )
     .unwrap();
     with_shell("/bin/bash", || {
@@ -810,7 +781,7 @@ fn reconnecting_codex_replaces_an_old_wrapper() {
         assert!(home.join(".codex").join("hooks.json").is_file());
         let bashrc = fs::read_to_string(home.join(".bashrc")).unwrap();
         assert!(bashrc.contains("EXISTING=1"));
-        assert!(!bashrc.contains("agent-activity-dock PATH"));
+        assert!(!bashrc.contains("orbcue PATH"));
     });
     fs::remove_dir_all(root).unwrap();
 }
@@ -826,7 +797,7 @@ fn cursor_preview_and_listing_admit_missing_stop() {
         home,
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
     let preview = manager.preview("cursor", &original).unwrap();
     assert!(preview
@@ -857,7 +828,7 @@ fn codex_preview_and_listing_admit_interrupt_and_error_gaps() {
         home,
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
     let preview = manager.preview("codex", &original).unwrap();
     assert!(preview
@@ -888,7 +859,7 @@ fn claude_and_codex_preview_mention_native_toasts() {
         home,
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
     let _guard = lock_env();
     let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
@@ -913,7 +884,7 @@ fn claude_and_codex_preview_mention_native_toasts() {
 
 #[test]
 fn cursor_and_grok_preview_warn_when_grok_compat_hooks_are_on() {
-    use agent_activity_dock_connect::GROK_COMPAT_CURSOR_HOOKS_WARNING;
+    use orbcue_connect::GROK_COMPAT_CURSOR_HOOKS_WARNING;
 
     let root = temp_root();
     let home = root.join("home");
@@ -927,7 +898,7 @@ fn cursor_and_grok_preview_warn_when_grok_compat_hooks_are_on() {
         home,
         root.join("config"),
         root.join("data"),
-        root.join("dock"),
+        root.join("orb"),
     );
 
     let quiet_cursor = manager.preview("cursor", &cursor).unwrap();

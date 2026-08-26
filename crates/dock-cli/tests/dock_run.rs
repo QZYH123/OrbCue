@@ -12,7 +12,7 @@ fn isolated_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("aadock-run-{nonce}"));
+    let root = std::env::temp_dir().join(format!("orbcue-run-{nonce}"));
     fs::create_dir_all(&root).unwrap();
     root
 }
@@ -22,12 +22,12 @@ fn write_exec(path: &Path, contents: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-fn dock_cmd() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_dock"))
+fn orb_cmd() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_orb"))
 }
 
 fn run_json(root: &Path, extra_path: &Path, args: &[&str]) -> (Value, String) {
-    let output = dock_cmd()
+    let output = orb_cmd()
         .args(args)
         .env(
             "PATH",
@@ -39,12 +39,12 @@ fn run_json(root: &Path, extra_path: &Path, args: &[&str]) -> (Value, String) {
         )
         .env("HOME", root.join("home"))
         .env("XDG_STATE_HOME", root.join("state"))
-        .env("AGENT_ACTIVITY_DOCK_SOCKET", root.join("dock.sock"))
-        .env("AGENT_ACTIVITY_DOCK_BACKEND", "wsl")
-        .env("AGENT_ACTIVITY_DOCK_DOCKD", root.join("missing-dockd"))
-        .env("AGENT_ACTIVITY_DOCK_WT", root.join("bin").join("wt"))
-        .env("AGENT_ACTIVITY_DOCK_WSL", root.join("bin").join("wsl"))
-        .env("AGENT_ACTIVITY_DOCK_WSL_DISTRO", "TestDistro")
+        .env("ORBCUE_SOCKET", root.join("orb.sock"))
+        .env("ORBCUE_BACKEND", "wsl")
+        .env("ORBCUE_ORBD", root.join("missing-orbd"))
+        .env("ORBCUE_WT", root.join("bin").join("wt"))
+        .env("ORBCUE_WSL", root.join("bin").join("wsl"))
+        .env("ORBCUE_WSL_DISTRO", "TestDistro")
         .env("SHELL", root.join("bin").join("shell"))
         .env("WT_RECORD", root.join("wt-argv.txt"))
         .env_remove("XDG_RUNTIME_DIR")
@@ -75,7 +75,7 @@ fn setup_bin(root: &Path) -> PathBuf {
     write_exec(
         &bin.join("wt"),
         r#"#!/bin/sh
-: "${WT_RECORD:=/tmp/aadock-wt-argv.txt}"
+: "${WT_RECORD:=/tmp/orbcue-wt-argv.txt}"
 : > "$WT_RECORD"
 for arg in "$@"; do
   printf '%s\n' "$arg" >> "$WT_RECORD"
@@ -125,17 +125,17 @@ fn dock_run_requires_windows_terminal() {
     let bin = setup_bin(&root);
     write_exec(&bin.join("fakeagent"), "#!/bin/sh\nexit 0\n");
     fs::remove_file(bin.join("wt")).unwrap();
-    let output = dock_cmd()
+    let output = orb_cmd()
         .args(["--json", "run", "fakeagent"])
         .env("PATH", bin.display().to_string())
         .env("HOME", root.join("home"))
-        .env("AGENT_ACTIVITY_DOCK_BACKEND", "wsl")
-        .env("AGENT_ACTIVITY_DOCK_WSL_DISTRO", "TestDistro")
-        .env_remove("AGENT_ACTIVITY_DOCK_WT")
+        .env("ORBCUE_BACKEND", "wsl")
+        .env("ORBCUE_WSL_DISTRO", "TestDistro")
+        .env_remove("ORBCUE_WT")
         .env_remove("LOCALAPPDATA")
-        .env("USER", "aadock-missing-wt")
-        .env("USERNAME", "aadock-missing-wt")
-        .env("AGENT_ACTIVITY_DOCK_WSL", bin.join("wsl"))
+        .env("USER", "orbcue-missing-wt")
+        .env("USERNAME", "orbcue-missing-wt")
+        .env("ORBCUE_WSL", bin.join("wsl"))
         .output()
         .expect("run dock");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -154,9 +154,9 @@ fn dock_run_requires_windows_terminal() {
 #[test]
 fn dock_run_injects_marker_and_replaces_the_previous_session() {
     let root = isolated_root();
-    let socket = root.join("dock.sock");
+    let socket = root.join("orb.sock");
     let bin = setup_bin(&root);
-    let dock = env!("CARGO_BIN_EXE_dock");
+    let orb = env!("CARGO_BIN_EXE_orb");
     write_exec(
         &bin.join("fakeagent"),
         &format!(
@@ -164,17 +164,17 @@ fn dock_run_injects_marker_and_replaces_the_previous_session() {
 "{dock}" --socket "{socket}" --json start s1 --source grok >/dev/null
 "{dock}" --socket "{socket}" --json start s2 --source grok >/dev/null
 "#,
-            dock = dock,
+            dock = orb,
             socket = socket.display(),
         ),
     );
 
-    let service = agent_activity_dock_service::spawn(&socket).expect("spawn isolated dockd");
+    let service = orbcue_service::spawn(&socket).expect("spawn isolated orbd");
     let (started, stderr) = run_json(&root, &bin, &["--json", "run", "fakeagent", "--probe"]);
     assert_eq!(started["ok"], true, "stdout={started} stderr={stderr}");
     let marker = started["marker"].as_str().expect("marker").to_owned();
     assert!(
-        marker.starts_with("dock:") && marker.len() == 11,
+        marker.starts_with("orb:") && marker.len() == 10,
         "marker={marker}"
     );
     assert!(
@@ -198,18 +198,15 @@ fn dock_run_injects_marker_and_replaces_the_previous_session() {
     });
     if !script.is_empty() {
         assert!(script.contains("--probe"), "{script}");
-        assert!(
-            script.contains("AGENT_ACTIVITY_DOCK_TERMINAL_ID="),
-            "{script}"
-        );
+        assert!(script.contains("ORBCUE_TERMINAL_ID="), "{script}");
     }
 
-    let status = dock_cmd()
+    let status = orb_cmd()
         .args(["--socket", socket.to_str().unwrap(), "--json", "status"])
         .env("HOME", root.join("home"))
         .env("XDG_STATE_HOME", root.join("state"))
-        .env("AGENT_ACTIVITY_DOCK_SOCKET", &socket)
-        .env("AGENT_ACTIVITY_DOCK_BACKEND", "wsl")
+        .env("ORBCUE_SOCKET", &socket)
+        .env("ORBCUE_BACKEND", "wsl")
         .env_remove("XDG_RUNTIME_DIR")
         .output()
         .expect("status");

@@ -1,8 +1,8 @@
 #![cfg(unix)]
 
-use agent_activity_dock_core::{DockEvent, EventKind};
-use agent_activity_dock_ipc::{default_endpoint, encode_line, WireResponse};
-use agent_activity_dock_service::{
+use orbcue_core::{DockEvent, EventKind};
+use orbcue_ipc::{default_endpoint, encode_line, WireResponse};
+use orbcue_service::{
     attach_or_listen, connect_or_spawn_detached, spawn, spawn_persistent, DetachedConnectError,
 };
 use std::io::{BufRead, BufReader, Write};
@@ -14,7 +14,7 @@ fn endpoint() -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("agent-activity-dock-test-{nonce}.sock"))
+    std::env::temp_dir().join(format!("orbcue-test-{nonce}.sock"))
 }
 
 fn send(path: &std::path::Path, value: impl serde::Serialize) -> WireResponse {
@@ -128,8 +128,7 @@ fn connect_or_spawn_detached_does_not_listen_in_process() {
 }
 
 fn query_absent(path: &std::path::Path) -> bool {
-    agent_activity_dock_service::query_service(path, &agent_activity_dock_ipc::IpcRequest::Snapshot)
-        .is_err()
+    orbcue_service::query_service(path, &orbcue_ipc::IpcRequest::Snapshot).is_err()
 }
 
 #[test]

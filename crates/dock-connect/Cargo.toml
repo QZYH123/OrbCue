@@ -1,12 +1,12 @@
 [package]
-name = "agent-activity-dock-connect"
+name = "orbcue-connect"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-agent-activity-dock-ipc = { path = "../dock-ipc" }
+orbcue-ipc = { path = "../dock-ipc" }
 serde.workspace = true
 serde_json.workspace = true
 

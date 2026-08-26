@@ -32,8 +32,8 @@ const AGENT_NAMES: Record<string, string> = {
   dsh: 'DSH',
 };
 
-const DOCK_MARKER_PREFIX = /^dock:[0-9a-f]{6}\s*[·•\-–—]\s*/i;
-const DOCK_MARKER_SUFFIX = /\s*[·•\-–—]\s*dock:[0-9a-f]{6}$/i;
+const DOCK_MARKER_PREFIX = /^orb:[0-9a-f]{6}\s*[·•\-–—]\s*/i;
+const DOCK_MARKER_SUFFIX = /\s*[·•\-–—]\s*orb:[0-9a-f]{6}$/i;
 const WT_PREFIX = /^Windows Terminal\s*[-–—]\s*/i;
 const OTHER_LABEL = '其他';
 
@@ -134,7 +134,7 @@ export function sessionDomKey(session: SessionLike): string {
 
 export function sessionDetail(session: SessionLike): string {
   const terminal = session.terminal_id?.trim() ?? '';
-  const dock = /^dock:([0-9a-fA-F]{6})$/.exec(terminal);
+  const dock = /^orb:([0-9a-fA-F]{6})$/.exec(terminal);
   if (dock?.[1]) return dock[1].toLowerCase();
   return shortSessionId(session.session_id);
 }

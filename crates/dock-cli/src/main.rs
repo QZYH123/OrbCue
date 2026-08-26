@@ -2,25 +2,21 @@
 
 mod terminal;
 
-use agent_activity_dock_adapters::{
-    claude_hook, codex_hook, cursor_hook, dsh_projection, grok_hook,
-};
-use agent_activity_dock_connect::{
-    ConnectionManager, ConnectionMethod, ConnectionPreview, PreviewAction,
-};
-use agent_activity_dock_core::{
+use clap::{Parser, Subcommand, ValueEnum};
+use orbcue_adapters::{claude_hook, codex_hook, cursor_hook, dsh_projection, grok_hook};
+use orbcue_connect::{ConnectionManager, ConnectionMethod, ConnectionPreview, PreviewAction};
+use orbcue_core::{
     dock_tab_title, dock_terminal_marker, session_terminal_title, DockEvent, EventKind, Severity,
     EVENT_VERSION,
 };
-use agent_activity_dock_ipc::{
+use orbcue_ipc::{
     default_endpoint, default_state_path, encode_request, local_connect, local_set_recv_timeout,
     local_set_send_timeout, local_try_clone, persist_default_backend_file, resolve_backend,
-    DockBackend, IpcRequest, SnapshotView, WireResponse,
+    DockBackend, IpcRequest, SnapshotView, WireResponse, WINDOWS_APP_FOLDER,
 };
 #[cfg(not(windows))]
-use agent_activity_dock_service::attach_or_listen;
-use agent_activity_dock_service::connect_or_spawn_detached;
-use clap::{Parser, Subcommand, ValueEnum};
+use orbcue_service::attach_or_listen;
+use orbcue_service::connect_or_spawn_detached;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -35,7 +31,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 #[derive(Debug, Parser)]
-#[command(name = "dock", version, about = "Agent Activity Dock event emitter")]
+#[command(name = "orb", version, about = "OrbCue event emitter")]
 struct Cli {
     /// Override the current-user local socket path.
     #[arg(long, global = true)]
@@ -94,7 +90,7 @@ enum Command {
     /// Report whether the given Linux PIDs are still the original processes.
     #[command(hide = true)]
     LivenessCheck,
-    /// Install or remove a short command for `dock run`.
+    /// Install or remove a short command for `orb run`.
     Alias {
         /// Command name. Omit to print the current alias.
         name: Option<String>,
@@ -110,7 +106,7 @@ enum Command {
         /// After the new tab starts, close this interactive shell tab.
         #[arg(long)]
         close: bool,
-        /// Hidden: Windows dock.exe consumes a WSL-prepared run spec on stdin.
+        /// Hidden: Windows orb.exe consumes a WSL-prepared run spec on stdin.
         #[arg(long, hide = true)]
         from_wsl: bool,
         /// Agent command, such as grok, claude, or codex.
@@ -167,7 +163,7 @@ fn main() {
     let endpoint = cli
         .socket
         .clone()
-        .or_else(|| std::env::var_os("AGENT_ACTIVITY_DOCK_SOCKET").map(PathBuf::from))
+        .or_else(|| std::env::var_os("ORBCUE_SOCKET").map(PathBuf::from))
         .unwrap_or_else(default_endpoint);
     if should_forward_to_wsl(&cli.command, &endpoint) {
         std::process::exit(forward_to_wsl());
@@ -218,7 +214,7 @@ fn main() {
             terminal::run_from_wsl_stdin(cli.json)
         } else {
             let Some(agent) = agent.as_deref() else {
-                eprintln!("dock run: missing agent name");
+                eprintln!("orb run: missing agent name");
                 std::process::exit(1);
             };
             if should_delegate_run_to_windows() {
@@ -253,7 +249,7 @@ fn main() {
     let request = match request_for(&cli.command) {
         Ok(request) => request,
         Err(error) => {
-            eprintln!("dock: {error}");
+            eprintln!("orb: {error}");
             std::process::exit(2);
         }
     };
@@ -280,8 +276,8 @@ fn main() {
             }
         }
         Err(error) => {
-            eprintln!("dock: cannot reach Dock at {}: {error}", endpoint.display());
-            eprintln!("Start the daemon from any directory with: dock up");
+            eprintln!("orb: cannot reach Dock at {}: {error}", endpoint.display());
+            eprintln!("Start the daemon from any directory with: orb up");
             std::process::exit(2);
         }
     }
@@ -289,24 +285,22 @@ fn main() {
 
 fn run_alias_command(name: Option<&str>, clear: bool, json_output: bool) -> i32 {
     let result = if clear || name.is_some_and(|value| value.trim().is_empty()) {
-        agent_activity_dock_connect::set_run_alias(None)
+        orbcue_connect::set_run_alias(None)
     } else if let Some(name) = name {
-        agent_activity_dock_connect::set_run_alias(Some(name))
+        orbcue_connect::set_run_alias(Some(name))
     } else {
-        Ok(agent_activity_dock_connect::current_run_alias())
+        Ok(orbcue_connect::current_run_alias())
     };
     match result {
         Ok(alias) => {
             if json_output {
                 println!(
                     "{}",
-                    serde_json::to_string(&agent_activity_dock_connect::run_alias_ok(
-                        alias.clone()
-                    ))
-                    .expect("alias view serializes")
+                    serde_json::to_string(&orbcue_connect::run_alias_ok(alias.clone()))
+                        .expect("alias view serializes")
                 );
             } else if let Some(alias) = alias {
-                println!("{alias} grok 等同 dock run grok");
+                println!("{alias} grok 等同 orb run grok");
             } else {
                 println!("没有启动别名");
             }
@@ -316,13 +310,11 @@ fn run_alias_command(name: Option<&str>, clear: bool, json_output: bool) -> i32 
             if json_output {
                 println!(
                     "{}",
-                    serde_json::to_string(&agent_activity_dock_connect::run_alias_err(
-                        error.clone()
-                    ))
-                    .expect("alias error serializes")
+                    serde_json::to_string(&orbcue_connect::run_alias_err(error.clone()))
+                        .expect("alias error serializes")
                 );
             } else {
-                eprintln!("dock alias: {error}");
+                eprintln!("orb alias: {error}");
             }
             1
         }
@@ -330,7 +322,7 @@ fn run_alias_command(name: Option<&str>, clear: bool, json_output: bool) -> i32 
 }
 
 fn run_connection_command(command: &Command, json_output: bool) -> i32 {
-    let dock_binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("dock"));
+    let dock_binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("orb"));
     let manager = ConnectionManager::from_environment(dock_binary);
     match command {
         Command::Agents => {
@@ -354,7 +346,7 @@ fn run_connection_command(command: &Command, json_output: bool) -> i32 {
                     } else {
                         "available"
                     };
-                    if agent.origin == agent_activity_dock_connect::AgentOrigin::Windows {
+                    if agent.origin == orbcue_connect::AgentOrigin::Windows {
                         println!(
                             "{} — {} ({status}, Windows PATH)",
                             agent.name,
@@ -380,7 +372,7 @@ fn run_connection_command(command: &Command, json_output: bool) -> i32 {
                     .map(|agent| agent.path)
             });
             let Some(path) = path else {
-                eprintln!("dock connect: {name} is not on PATH; pass --original");
+                eprintln!("orb connect: {name} is not on PATH; pass --original");
                 return 1;
             };
             if *dry_run {
@@ -392,7 +384,7 @@ fn run_connection_command(command: &Command, json_output: bool) -> i32 {
                     ),
                     Ok(preview) => print_connect_preview(&preview),
                     Err(error) => {
-                        eprintln!("dock connect: {error}");
+                        eprintln!("orb connect: {error}");
                         return 1;
                     }
                 }
@@ -415,7 +407,7 @@ fn run_connection_command(command: &Command, json_output: bool) -> i32 {
                     print_connect_warnings(&manager.connect_warnings(name));
                 }
                 Err(error) => {
-                    eprintln!("dock connect: {error}");
+                    eprintln!("orb connect: {error}");
                     return 1;
                 }
             }
@@ -430,7 +422,7 @@ fn run_connection_command(command: &Command, json_output: bool) -> i32 {
                 Ok(true) => println!("Disconnected {name}; the original Agent was not changed."),
                 Ok(false) => println!("{name} was not connected."),
                 Err(error) => {
-                    eprintln!("dock disconnect: {error}");
+                    eprintln!("orb disconnect: {error}");
                     return 1;
                 }
             }
@@ -443,13 +435,13 @@ fn run_connection_command(command: &Command, json_output: bool) -> i32 {
 fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
     let mut input = String::new();
     if let Err(error) = std::io::stdin().read_to_string(&mut input) {
-        eprintln!("dock hook: cannot read stdin: {error}");
+        eprintln!("orb hook: cannot read stdin: {error}");
         return;
     }
     let payload: Value = match serde_json::from_str(&input) {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("dock hook: invalid JSON ({error})");
+            eprintln!("orb hook: invalid JSON ({error})");
             return;
         }
     };
@@ -487,7 +479,7 @@ fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
                 );
             }
         }
-        Err(error) => eprintln!("dock hook: cannot reach Dock: {error}"),
+        Err(error) => eprintln!("orb hook: cannot reach Dock: {error}"),
     }
 }
 
@@ -789,13 +781,13 @@ fn linux_pid_is_dead(pid: u32, starttime: u64) -> Option<bool> {
 fn run_liveness_check() -> i32 {
     let mut input = String::new();
     if let Err(error) = std::io::stdin().read_to_string(&mut input) {
-        eprintln!("dock liveness-check: cannot read stdin: {error}");
+        eprintln!("orb liveness-check: cannot read stdin: {error}");
         return 2;
     }
     let queries: Vec<Value> = match serde_json::from_str(input.trim()) {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("dock liveness-check: invalid JSON ({error})");
+            eprintln!("orb liveness-check: invalid JSON ({error})");
             return 2;
         }
     };
@@ -826,7 +818,7 @@ fn run_liveness_check() -> i32 {
 }
 
 fn resolve_terminal_id() -> Option<String> {
-    match std::env::var("AGENT_ACTIVITY_DOCK_TERMINAL_ID") {
+    match std::env::var("ORBCUE_TERMINAL_ID") {
         Ok(value) => {
             let trimmed = value.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_owned())
@@ -931,7 +923,7 @@ fn should_set_terminal_title(event: &DockEvent) -> bool {
 }
 
 fn title_setting_suppressed() -> bool {
-    std::env::var("AGENT_ACTIVITY_DOCK_NO_TITLE")
+    std::env::var("ORBCUE_NO_TITLE")
         .ok()
         .is_some_and(|value| value == "1")
 }
@@ -1177,13 +1169,13 @@ fn stays_on_agent_os(command: &Command) -> bool {
 }
 
 fn explicit_wsl_forward() -> bool {
-    std::env::var("AGENT_ACTIVITY_DOCK_FORWARD")
+    std::env::var("ORBCUE_FORWARD")
         .ok()
         .is_some_and(|value| value.eq_ignore_ascii_case("wsl"))
 }
 
 fn hop_token() -> Option<String> {
-    std::env::var("AGENT_ACTIVITY_DOCK_HOP")
+    std::env::var("ORBCUE_HOP")
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
@@ -1192,7 +1184,7 @@ fn hop_token() -> Option<String> {
 fn looks_like_wsl() -> bool {
     env_nonempty("WSL_DISTRO_NAME")
         || env_nonempty("WSL_INTEROP")
-        || env_nonempty("AGENT_ACTIVITY_DOCK_WINDOWS_DOCK")
+        || env_nonempty("ORBCUE_WINDOWS_ORB")
 }
 
 fn env_nonempty(key: &str) -> bool {
@@ -1251,10 +1243,10 @@ fn should_forward_to_wsl(command: &Command, endpoint: &Path) -> bool {
             local_daemon_present(endpoint),
         )
     {
-        eprintln!("dock: refusing hop, AGENT_ACTIVITY_DOCK_HOP already set");
+        eprintln!("orb: refusing hop, ORBCUE_HOP already set");
     }
     if backend == DockBackend::Local && explicit_wsl_forward() && !hop_set && cfg!(windows) {
-        eprintln!("dock: AGENT_ACTIVITY_DOCK_FORWARD=wsl with BACKEND=local is unsupported");
+        eprintln!("orb: ORBCUE_FORWARD=wsl with BACKEND=local is unsupported");
     }
     forward_to_wsl_predicate(
         is_forwardable_command(command),
@@ -1276,7 +1268,7 @@ fn should_trampoline_to_windows(command: &Command) -> bool {
         stays_on_agent_os(command),
     );
     if hop_set && would {
-        eprintln!("dock: refusing hop, AGENT_ACTIVITY_DOCK_HOP already set");
+        eprintln!("orb: refusing hop, ORBCUE_HOP already set");
     }
     trampoline_to_windows_predicate(
         cfg!(unix),
@@ -1308,13 +1300,13 @@ fn needs_local_event_prep(command: &Command) -> bool {
 }
 
 fn inject_wsl_backend(command: &mut ProcessCommand, backend: DockBackend) {
-    command.env("AGENT_ACTIVITY_DOCK_BACKEND", backend.as_str());
-    let extra = "AGENT_ACTIVITY_DOCK_BACKEND/u";
+    command.env("ORBCUE_BACKEND", backend.as_str());
+    let extra = "ORBCUE_BACKEND/u";
     match std::env::var("WSLENV") {
         Ok(existing)
             if existing
                 .split(':')
-                .any(|part| part.starts_with("AGENT_ACTIVITY_DOCK_BACKEND")) => {}
+                .any(|part| part.starts_with("ORBCUE_BACKEND")) => {}
         Ok(existing) if !existing.is_empty() => {
             command.env("WSLENV", format!("{existing}:{extra}"));
         }
@@ -1350,7 +1342,7 @@ fn forward_to_wsl() -> i32 {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let mut command = ProcessCommand::new("wsl.exe");
     hide_windows_console(&mut command);
-    if let Ok(distro) = std::env::var("AGENT_ACTIVITY_DOCK_WSL_DISTRO") {
+    if let Ok(distro) = std::env::var("ORBCUE_WSL_DISTRO") {
         if !distro.is_empty() {
             command.args(["-d", &distro]);
         }
@@ -1359,32 +1351,32 @@ fn forward_to_wsl() -> i32 {
         "-e",
         "sh",
         "-c",
-        r#"exec "$HOME/.local/bin/dock" "$@""#,
+        r#"exec "$HOME/.local/bin/orb" "$@""#,
         "sh",
     ]);
     command.args(&args);
-    command.env_remove("AGENT_ACTIVITY_DOCK_FORWARD");
-    command.env("AGENT_ACTIVITY_DOCK_HOP", "wsl");
+    command.env_remove("ORBCUE_FORWARD");
+    command.env("ORBCUE_HOP", "wsl");
     inject_wsl_backend(&mut command, DockBackend::Wsl);
-    if std::env::var_os("AGENT_ACTIVITY_DOCK_SOCKET")
+    if std::env::var_os("ORBCUE_SOCKET")
         .as_ref()
         .is_some_and(looks_like_windows_pipe)
     {
-        command.env_remove("AGENT_ACTIVITY_DOCK_SOCKET");
+        command.env_remove("ORBCUE_SOCKET");
     }
     match command.status() {
         Ok(status) => status.code().unwrap_or(1),
         Err(error) => {
-            eprintln!("dock: cannot forward to WSL via wsl.exe ({error})");
+            eprintln!("orb: cannot forward to WSL via wsl.exe ({error})");
             2
         }
     }
 }
 
 fn apply_windows_hop_env(command: &mut ProcessCommand) {
-    command.env("AGENT_ACTIVITY_DOCK_HOP", "windows");
-    command.env("AGENT_ACTIVITY_DOCK_BACKEND", resolve_backend().as_str());
-    command.env_remove("AGENT_ACTIVITY_DOCK_SOCKET");
+    command.env("ORBCUE_HOP", "windows");
+    command.env("ORBCUE_BACKEND", resolve_backend().as_str());
+    command.env_remove("ORBCUE_SOCKET");
     command.env_remove("XDG_RUNTIME_DIR");
 }
 
@@ -1392,7 +1384,7 @@ fn trampoline_to_windows() -> i32 {
     let exe = match find_windows_dock() {
         Ok(path) => path,
         Err(error) => {
-            eprintln!("dock: {error}");
+            eprintln!("orb: {error}");
             return 2;
         }
     };
@@ -1406,7 +1398,7 @@ fn trampoline_to_windows() -> i32 {
     match command.status() {
         Ok(status) => status.code().unwrap_or(1),
         Err(error) => {
-            eprintln!("dock: cannot trampoline to {}: {error}", exe.display());
+            eprintln!("orb: cannot trampoline to {}: {error}", exe.display());
             2
         }
     }
@@ -1435,7 +1427,7 @@ fn run_via_windows_terminal(
             if json_output {
                 println!("{}", serde_json::json!({ "ok": false, "error": error }));
             } else {
-                eprintln!("dock run: {error}");
+                eprintln!("orb run: {error}");
             }
             return 1;
         }
@@ -1468,11 +1460,11 @@ fn run_via_windows_terminal(
                 println!();
             } else {
                 eprintln!(
-                    "dock run: {}",
+                    "orb run: {}",
                     value
                         .get("error")
                         .and_then(Value::as_str)
-                        .unwrap_or("Windows dock.exe run failed")
+                        .unwrap_or("Windows orb.exe run failed")
                 );
             }
             if ok {
@@ -1489,7 +1481,7 @@ fn trampoline_from_wsl_run(spec: &terminal::WslRunSpec) -> Result<Value, i32> {
     let exe = match find_windows_dock() {
         Ok(path) => path,
         Err(error) => {
-            eprintln!("dock: {error}");
+            eprintln!("orb: {error}");
             return Err(2);
         }
     };
@@ -1502,24 +1494,24 @@ fn trampoline_from_wsl_run(spec: &terminal::WslRunSpec) -> Result<Value, i32> {
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            eprintln!("dock: cannot trampoline run to {}: {error}", exe.display());
+            eprintln!("orb: cannot trampoline run to {}: {error}", exe.display());
             return Err(2);
         }
     };
     let Some(mut stdin) = child.stdin.take() else {
-        eprintln!("dock: trampoline run lost stdin");
+        eprintln!("orb: trampoline run lost stdin");
         return Err(2);
     };
     match serde_json::to_vec(spec) {
         Ok(mut line) => {
             line.push(b'\n');
             if let Err(error) = stdin.write_all(&line) {
-                eprintln!("dock: cannot write run spec: {error}");
+                eprintln!("orb: cannot write run spec: {error}");
                 return Err(2);
             }
         }
         Err(error) => {
-            eprintln!("dock: cannot serialize run spec: {error}");
+            eprintln!("orb: cannot serialize run spec: {error}");
             return Err(2);
         }
     }
@@ -1527,7 +1519,7 @@ fn trampoline_from_wsl_run(spec: &terminal::WslRunSpec) -> Result<Value, i32> {
     let output = match child.wait_with_output() {
         Ok(output) => output,
         Err(error) => {
-            eprintln!("dock: trampoline run failed: {error}");
+            eprintln!("orb: trampoline run failed: {error}");
             return Err(2);
         }
     };
@@ -1535,7 +1527,7 @@ fn trampoline_from_wsl_run(spec: &terminal::WslRunSpec) -> Result<Value, i32> {
         Ok(value) => Ok(value),
         Err(error) => {
             eprintln!(
-                "dock: Windows run did not return JSON ({error}): {}",
+                "orb: Windows run did not return JSON ({error}): {}",
                 String::from_utf8_lossy(&output.stdout)
             );
             Err(output.status.code().unwrap_or(2))
@@ -1547,7 +1539,7 @@ fn trampoline_emit(event: &DockEvent) -> i32 {
     let exe = match find_windows_dock() {
         Ok(path) => path,
         Err(error) => {
-            eprintln!("dock: {error}");
+            eprintln!("orb: {error}");
             return 2;
         }
     };
@@ -1560,24 +1552,24 @@ fn trampoline_emit(event: &DockEvent) -> i32 {
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            eprintln!("dock: cannot trampoline to {}: {error}", exe.display());
+            eprintln!("orb: cannot trampoline to {}: {error}", exe.display());
             return 2;
         }
     };
     let Some(mut stdin) = child.stdin.take() else {
-        eprintln!("dock: trampoline emit lost stdin");
+        eprintln!("orb: trampoline emit lost stdin");
         return 2;
     };
     match serde_json::to_vec(event) {
         Ok(mut line) => {
             line.push(b'\n');
             if let Err(error) = stdin.write_all(&line) {
-                eprintln!("dock: cannot write emit payload: {error}");
+                eprintln!("orb: cannot write emit payload: {error}");
                 return 2;
             }
         }
         Err(error) => {
-            eprintln!("dock: cannot serialize event: {error}");
+            eprintln!("orb: cannot serialize event: {error}");
             return 2;
         }
     }
@@ -1585,14 +1577,14 @@ fn trampoline_emit(event: &DockEvent) -> i32 {
     match child.wait() {
         Ok(status) => status.code().unwrap_or(1),
         Err(error) => {
-            eprintln!("dock: trampoline emit failed: {error}");
+            eprintln!("orb: trampoline emit failed: {error}");
             2
         }
     }
 }
 
 fn find_windows_dock() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("AGENT_ACTIVITY_DOCK_WINDOWS_DOCK")
+    if let Some(path) = std::env::var_os("ORBCUE_WINDOWS_ORB")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
@@ -1600,17 +1592,14 @@ fn find_windows_dock() -> Result<PathBuf, String> {
             return Ok(path);
         }
         return Err(format!(
-            "AGENT_ACTIVITY_DOCK_WINDOWS_DOCK is not a file: {}",
+            "ORBCUE_WINDOWS_ORB is not a file: {}",
             path.display()
         ));
     }
     if let Some(path) = cached_windows_dock() {
         return Ok(path);
     }
-    Err(
-        "cannot find Windows dock.exe; install the presenter, or set AGENT_ACTIVITY_DOCK_WINDOWS_DOCK"
-            .to_owned(),
-    )
+    Err("cannot find Windows orb.exe; install the presenter, or set ORBCUE_WINDOWS_ORB".to_owned())
 }
 
 fn cached_windows_dock() -> Option<PathBuf> {
@@ -1625,11 +1614,11 @@ fn discover_windows_dock() -> Option<PathBuf> {
         .or_else(|| std::env::var("USERNAME").ok())
     {
         candidates.push(PathBuf::from(format!(
-            "/mnt/c/Users/{user}/AppData/Local/Agent Activity Dock/dock.exe"
+            "/mnt/c/Users/{user}/AppData/Local/{WINDOWS_APP_FOLDER}/orb.exe"
         )));
     }
-    if let Some(local) = agent_activity_dock_ipc::windows_app_data_dir() {
-        candidates.push(local.join("Agent Activity Dock").join("dock.exe"));
+    if let Some(local) = orbcue_ipc::windows_app_data_dir() {
+        candidates.push(local.join(WINDOWS_APP_FOLDER).join("orb.exe"));
     }
     if let Some(found) = candidates.into_iter().find(|path| path.is_file()) {
         return Some(found);
@@ -1662,8 +1651,8 @@ fn newest_windows_dock_under_mnt(mnt_root: &Path) -> Option<PathBuf> {
                 .path()
                 .join("AppData")
                 .join("Local")
-                .join("Agent Activity Dock")
-                .join("dock.exe");
+                .join(WINDOWS_APP_FOLDER)
+                .join("orb.exe");
             if !dock.is_file() {
                 continue;
             }
@@ -1682,13 +1671,13 @@ fn run_emit(endpoint: &Path, json_output: bool) -> i32 {
     }
     let mut input = String::new();
     if let Err(error) = std::io::stdin().read_to_string(&mut input) {
-        eprintln!("dock emit: cannot read stdin: {error}");
+        eprintln!("orb emit: cannot read stdin: {error}");
         return 2;
     }
     let event: DockEvent = match serde_json::from_str(input.trim()) {
         Ok(event) => event,
         Err(error) => {
-            eprintln!("dock emit: invalid event JSON ({error})");
+            eprintln!("orb emit: invalid event JSON ({error})");
             return 2;
         }
     };
@@ -1710,7 +1699,7 @@ fn run_emit(endpoint: &Path, json_output: bool) -> i32 {
         }
         Err(error) => {
             eprintln!(
-                "dock emit: cannot reach Dock at {}: {error}",
+                "orb emit: cannot reach Dock at {}: {error}",
                 endpoint.display()
             );
             2
@@ -1733,7 +1722,7 @@ fn ensure_cli_daemon(endpoint: &Path) -> Result<(), i32> {
     ) {
         Ok(_) => Ok(()),
         Err(error) => {
-            eprintln!("dock: {error}");
+            eprintln!("orb: {error}");
             Err(2)
         }
     }
@@ -1792,7 +1781,7 @@ fn print_connect_preview(preview: &ConnectionPreview) {
 
 fn print_connect_warnings(warnings: &[String]) {
     for warning in warnings {
-        eprintln!("dock connect: {warning}");
+        eprintln!("orb connect: {warning}");
     }
 }
 
@@ -1831,7 +1820,7 @@ fn start_daemon(endpoint: &Path, json_output: bool) -> i32 {
     let dockd = dockd_binary();
     if !dockd.is_file() {
         eprintln!(
-            "dock up: cannot find dockd at {}. Start the presenter or install dockd.exe.",
+            "orb up: cannot find orbd at {}. Start the presenter or install orbd.exe.",
             dockd.display()
         );
         return 1;
@@ -1839,10 +1828,10 @@ fn start_daemon(endpoint: &Path, json_output: bool) -> i32 {
 
     let state_dir = runtime_state_dir();
     if let Err(error) = fs::create_dir_all(&state_dir) {
-        eprintln!("dock up: {error}");
+        eprintln!("orb up: {error}");
         return 1;
     }
-    let log_path = state_dir.join("dockd.log");
+    let log_path = state_dir.join("orbd.log");
     let log = match fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1850,14 +1839,14 @@ fn start_daemon(endpoint: &Path, json_output: bool) -> i32 {
     {
         Ok(file) => file,
         Err(error) => {
-            eprintln!("dock up: cannot open {}: {error}", log_path.display());
+            eprintln!("orb up: cannot open {}: {error}", log_path.display());
             return 1;
         }
     };
     let log_err = match log.try_clone() {
         Ok(file) => file,
         Err(error) => {
-            eprintln!("dock up: {error}");
+            eprintln!("orb up: {error}");
             return 1;
         }
     };
@@ -1874,10 +1863,10 @@ fn start_daemon(endpoint: &Path, json_output: bool) -> i32 {
     }
     match command.spawn() {
         Ok(child) => {
-            let _ = fs::write(state_dir.join("dockd.pid"), child.id().to_string());
+            let _ = fs::write(state_dir.join("orbd.pid"), child.id().to_string());
         }
         Err(error) => {
-            eprintln!("dock up: failed to start {}: {error}", dockd.display());
+            eprintln!("orb up: failed to start {}: {error}", dockd.display());
             return 1;
         }
     }
@@ -1890,7 +1879,7 @@ fn start_daemon(endpoint: &Path, json_output: bool) -> i32 {
                     serde_json::json!({"ok":true,"already_running":false,"snapshot":response.snapshot})
                 );
             } else {
-                println!("dockd ready");
+                println!("orbd ready");
                 print_summary(&response);
             }
             return 0;
@@ -1898,7 +1887,7 @@ fn start_daemon(endpoint: &Path, json_output: bool) -> i32 {
         thread::sleep(Duration::from_millis(80));
     }
     eprintln!(
-        "dock up: daemon did not become ready; see {}",
+        "orb up: daemon did not become ready; see {}",
         log_path.display()
     );
     1
@@ -1906,7 +1895,7 @@ fn start_daemon(endpoint: &Path, json_output: bool) -> i32 {
 
 fn stop_daemon(endpoint: &Path, json_output: bool) -> i32 {
     let state_dir = runtime_state_dir();
-    let pid_path = state_dir.join("dockd.pid");
+    let pid_path = state_dir.join("orbd.pid");
     if let Ok(pid_text) = fs::read_to_string(&pid_path) {
         if let Ok(pid) = pid_text.trim().parse::<u32>() {
             #[cfg(unix)]
@@ -1926,12 +1915,12 @@ fn stop_daemon(endpoint: &Path, json_output: bool) -> i32 {
     }
     #[cfg(unix)]
     {
-        let _ = ProcessCommand::new("pkill").args(["-x", "dockd"]).status();
+        let _ = ProcessCommand::new("pkill").args(["-x", "orbd"]).status();
     }
     thread::sleep(Duration::from_millis(200));
     if send(&endpoint.to_path_buf(), &IpcRequest::Snapshot).is_ok() {
         eprintln!(
-            "dock down: daemon is still reachable at {}",
+            "orb down: daemon is still reachable at {}",
             endpoint.display()
         );
         return 1;
@@ -1950,13 +1939,13 @@ fn run_bridge(endpoint: &Path) -> i32 {
     #[cfg(windows)]
     {
         if let Err(error) = connect_or_spawn_detached(endpoint, default_state_path(), dockd) {
-            eprintln!("dock bridge: {error}");
+            eprintln!("orb bridge: {error}");
             return 2;
         }
         return match forward_stdio(endpoint) {
             Ok(()) => 0,
             Err(error) => {
-                eprintln!("dock bridge: {error}");
+                eprintln!("orb bridge: {error}");
                 2
             }
         };
@@ -1966,14 +1955,14 @@ fn run_bridge(endpoint: &Path) -> i32 {
         let session = match attach_or_listen(endpoint, default_state_path(), dockd) {
             Ok(session) => session,
             Err(error) => {
-                eprintln!("dock bridge: {error}");
+                eprintln!("orb bridge: {error}");
                 return 2;
             }
         };
         let status = match forward_stdio(endpoint) {
             Ok(()) => 0,
             Err(error) => {
-                eprintln!("dock bridge: {error}");
+                eprintln!("orb bridge: {error}");
                 2
             }
         };
@@ -2034,11 +2023,9 @@ fn forward_stdio(endpoint: &Path) -> Result<(), String> {
 }
 
 fn dockd_binary() -> PathBuf {
-    let file_name = if cfg!(windows) { "dockd.exe" } else { "dockd" };
+    let file_name = if cfg!(windows) { "orbd.exe" } else { "orbd" };
     let mut candidates = Vec::new();
-    if let Some(path) =
-        std::env::var_os("AGENT_ACTIVITY_DOCK_DOCKD").filter(|value| !value.is_empty())
-    {
+    if let Some(path) = std::env::var_os("ORBCUE_ORBD").filter(|value| !value.is_empty()) {
         candidates.push(PathBuf::from(path));
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -2050,8 +2037,8 @@ fn dockd_binary() -> PathBuf {
     if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
         candidates.push(
             PathBuf::from(local)
-                .join("Agent Activity Dock")
-                .join("dockd.exe"),
+                .join(WINDOWS_APP_FOLDER)
+                .join("orbd.exe"),
         );
     }
     if let Some(home) = std::env::var_os("HOME") {
@@ -2075,10 +2062,10 @@ mod tests {
     use super::{
         forward_to_wsl_predicate, is_forwardable_command, is_short_lived_windows_hook_parent,
         looks_like_windows_pipe, newest_windows_dock_under_mnt, resolve_windows_liveness_pid,
-        stays_on_agent_os, trampoline_to_windows_predicate, Command,
+        stays_on_agent_os, trampoline_to_windows_predicate, Command, WINDOWS_APP_FOLDER,
     };
-    use agent_activity_dock_core::{DockEvent, EventKind};
-    use agent_activity_dock_ipc::DockBackend;
+    use orbcue_core::{DockEvent, EventKind};
+    use orbcue_ipc::DockBackend;
     use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -2132,17 +2119,17 @@ mod tests {
         assert!(!is_short_lived_windows_hook_parent("WindowsTerminal.exe"));
 
         let tree = [
-            (10, 9, "dock.exe"),
+            (10, 9, "orb.exe"),
             (9, 8, "cmd.exe"),
             (8, 1, "claude.exe"),
             (1, 0, "WindowsTerminal.exe"),
         ];
         assert_eq!(resolve_windows_liveness_pid(10, &tree), Some(8));
 
-        let direct = [(10, 8, "dock.exe"), (8, 1, "cursor-agent.exe")];
+        let direct = [(10, 8, "orb.exe"), (8, 1, "cursor-agent.exe")];
         assert_eq!(resolve_windows_liveness_pid(10, &direct), Some(8));
 
-        let only_cmd = [(10, 9, "dock.exe"), (9, 0, "cmd.exe")];
+        let only_cmd = [(10, 9, "orb.exe"), (9, 0, "cmd.exe")];
         assert_eq!(resolve_windows_liveness_pid(10, &only_cmd), None);
     }
 
@@ -2214,12 +2201,7 @@ mod tests {
 
     #[test]
     fn completed_hooks_do_not_attach_liveness() {
-        let mut event = agent_activity_dock_core::DockEvent::new(
-            "e-stop",
-            EventKind::Completed,
-            "claude",
-            "s1",
-        );
+        let mut event = orbcue_core::DockEvent::new("e-stop", EventKind::Completed, "claude", "s1");
         super::attach_liveness(&mut event);
         assert!(
             !event.metadata.contains_key("agent_pid"),
@@ -2243,7 +2225,7 @@ mod tests {
             EventKind::Started,
         )
         .unwrap();
-        let agent_activity_dock_ipc::IpcRequest::Event(event) = request else {
+        let orbcue_ipc::IpcRequest::Event(event) = request else {
             panic!("expected event");
         };
         assert!(!event.metadata.contains_key("agent_pid"));
@@ -2288,13 +2270,13 @@ mod tests {
     #[test]
     fn non_windows_builds_do_not_forward() {
         let _guard = lock_env();
-        let previous = std::env::var_os("AGENT_ACTIVITY_DOCK_FORWARD");
-        std::env::set_var("AGENT_ACTIVITY_DOCK_FORWARD", "wsl");
+        let previous = std::env::var_os("ORBCUE_FORWARD");
+        std::env::set_var("ORBCUE_FORWARD", "wsl");
         let forwarded = super::should_forward_to_wsl(
             &Command::Status,
             std::path::Path::new("/tmp/unused.sock"),
         );
-        restore_env("AGENT_ACTIVITY_DOCK_FORWARD", previous);
+        restore_env("ORBCUE_FORWARD", previous);
         if !cfg!(windows) {
             assert!(!forwarded);
         }
@@ -2335,12 +2317,12 @@ mod tests {
     #[test]
     fn terminal_id_env_override_wins() {
         let _guard = lock_env();
-        let previous_override = std::env::var_os("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
+        let previous_override = std::env::var_os("ORBCUE_TERMINAL_ID");
         let previous_wt = std::env::var_os("WT_SESSION");
-        std::env::set_var("AGENT_ACTIVITY_DOCK_TERMINAL_ID", "pts-override");
+        std::env::set_var("ORBCUE_TERMINAL_ID", "pts-override");
         std::env::set_var("WT_SESSION", "wt-should-lose");
         let resolved = super::resolve_terminal_id();
-        restore_env("AGENT_ACTIVITY_DOCK_TERMINAL_ID", previous_override);
+        restore_env("ORBCUE_TERMINAL_ID", previous_override);
         restore_env("WT_SESSION", previous_wt);
         assert_eq!(resolved.as_deref(), Some("pts-override"));
     }
@@ -2348,13 +2330,13 @@ mod tests {
     #[test]
     fn terminal_id_own_tty_beats_wt_session() {
         let _guard = lock_env();
-        let previous_override = std::env::var_os("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
+        let previous_override = std::env::var_os("ORBCUE_TERMINAL_ID");
         let previous_wt = std::env::var_os("WT_SESSION");
-        std::env::remove_var("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
+        std::env::remove_var("ORBCUE_TERMINAL_ID");
         std::env::set_var("WT_SESSION", "wt-should-lose");
         let own = super::own_tty_id();
         let resolved = super::resolve_terminal_id();
-        restore_env("AGENT_ACTIVITY_DOCK_TERMINAL_ID", previous_override);
+        restore_env("ORBCUE_TERMINAL_ID", previous_override);
         restore_env("WT_SESSION", previous_wt);
         if let Some(tty) = own {
             assert_eq!(resolved.as_deref(), Some(tty.as_str()));
@@ -2365,13 +2347,13 @@ mod tests {
     #[test]
     fn terminal_id_falls_back_to_tty_without_env_ids() {
         let _guard = lock_env();
-        let previous_override = std::env::var_os("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
+        let previous_override = std::env::var_os("ORBCUE_TERMINAL_ID");
         let previous_wt = std::env::var_os("WT_SESSION");
-        std::env::remove_var("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
+        std::env::remove_var("ORBCUE_TERMINAL_ID");
         std::env::remove_var("WT_SESSION");
         let resolved = super::resolve_terminal_id();
         let expected = super::own_tty_id().or_else(super::ancestor_tty_id);
-        restore_env("AGENT_ACTIVITY_DOCK_TERMINAL_ID", previous_override);
+        restore_env("ORBCUE_TERMINAL_ID", previous_override);
         restore_env("WT_SESSION", previous_wt);
         assert_eq!(resolved, expected);
     }
@@ -2379,12 +2361,12 @@ mod tests {
     #[test]
     fn unix_ignores_wt_session_as_terminal_id() {
         let _guard = lock_env();
-        let previous_override = std::env::var_os("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
+        let previous_override = std::env::var_os("ORBCUE_TERMINAL_ID");
         let previous_wt = std::env::var_os("WT_SESSION");
-        std::env::remove_var("AGENT_ACTIVITY_DOCK_TERMINAL_ID");
+        std::env::remove_var("ORBCUE_TERMINAL_ID");
         std::env::set_var("WT_SESSION", "wt-should-lose");
         let resolved = super::resolve_terminal_id();
-        restore_env("AGENT_ACTIVITY_DOCK_TERMINAL_ID", previous_override);
+        restore_env("ORBCUE_TERMINAL_ID", previous_override);
         restore_env("WT_SESSION", previous_wt);
         if !cfg!(windows) {
             assert_ne!(resolved.as_deref(), Some("wt-should-lose"));
@@ -2400,32 +2382,28 @@ mod tests {
 
     #[test]
     fn windows_pipe_paths_are_detected() {
-        assert!(looks_like_windows_pipe(&OsString::from(
-            r"\\.\pipe\agent-activity-dock"
-        )));
-        assert!(looks_like_windows_pipe(&OsString::from(
-            "//./pipe/agent-activity-dock"
-        )));
+        assert!(looks_like_windows_pipe(&OsString::from(r"\\.\pipe\orbcue")));
+        assert!(looks_like_windows_pipe(&OsString::from("//./pipe/orbcue")));
         assert!(!looks_like_windows_pipe(&OsString::from(
-            "/tmp/agent-activity-dock.sock"
+            "/tmp/orbcue.sock"
         )));
     }
 
     #[test]
     fn title_env_skips_setting() {
         let _guard = lock_env();
-        let previous = std::env::var_os("AGENT_ACTIVITY_DOCK_NO_TITLE");
-        std::env::set_var("AGENT_ACTIVITY_DOCK_NO_TITLE", "1");
+        let previous = std::env::var_os("ORBCUE_NO_TITLE");
+        std::env::set_var("ORBCUE_NO_TITLE", "1");
         let skipped = super::title_setting_suppressed();
-        restore_env("AGENT_ACTIVITY_DOCK_NO_TITLE", previous);
+        restore_env("ORBCUE_NO_TITLE", previous);
         assert!(skipped);
     }
 
     #[test]
     fn title_only_for_main_session_lifecycle() {
         let _guard = lock_env();
-        let previous = std::env::var_os("AGENT_ACTIVITY_DOCK_NO_TITLE");
-        std::env::remove_var("AGENT_ACTIVITY_DOCK_NO_TITLE");
+        let previous = std::env::var_os("ORBCUE_NO_TITLE");
+        std::env::remove_var("ORBCUE_NO_TITLE");
         let started = DockEvent::new("e1", EventKind::Started, "grok", "s1");
         let parent = DockEvent::new("e2", EventKind::Working, "grok", "s2")
             .with_parent_session_id("parent-1");
@@ -2438,8 +2416,8 @@ mod tests {
         let allow_cancelled = super::should_set_terminal_title(&cancelled);
         let allow_waiting = super::should_set_terminal_title(&waiting);
         match previous {
-            Some(value) => std::env::set_var("AGENT_ACTIVITY_DOCK_NO_TITLE", value),
-            None => std::env::remove_var("AGENT_ACTIVITY_DOCK_NO_TITLE"),
+            Some(value) => std::env::set_var("ORBCUE_NO_TITLE", value),
+            None => std::env::remove_var("ORBCUE_NO_TITLE"),
         }
         assert!(allow_started);
         assert!(!allow_parent);
@@ -2452,10 +2430,10 @@ mod tests {
     fn lifecycle_title_is_project_then_agent_then_dock_marker() {
         let mut with_marker = DockEvent::new("e1", EventKind::Started, "grok", "s1");
         with_marker.cwd = Some("/home/qingz/projects/agent-activity-dock".to_owned());
-        with_marker.terminal_id = Some("dock:ab12cd".to_owned());
+        with_marker.terminal_id = Some("orb:ab12cd".to_owned());
         assert_eq!(
             super::lifecycle_terminal_title(&with_marker),
-            "agent-activity-dock · grok · dock:ab12cd"
+            "agent-activity-dock · grok · orb:ab12cd"
         );
 
         let mut without_marker = DockEvent::new("e2", EventKind::Started, "grok", "s2");
@@ -2466,10 +2444,10 @@ mod tests {
         );
 
         let mut marker_only = DockEvent::new("e3", EventKind::Started, "claude", "s3");
-        marker_only.terminal_id = Some("dock:00ffaa".to_owned());
+        marker_only.terminal_id = Some("orb:00ffaa".to_owned());
         assert_eq!(
             super::lifecycle_terminal_title(&marker_only),
-            "claude · dock:00ffaa"
+            "claude · orb:00ffaa"
         );
     }
 
@@ -2487,9 +2465,9 @@ mod tests {
         assert_eq!(super::parse_proc_stat(spaced), Some((99, 0, 4242)));
     }
 
-    fn write_dock_exe(path: &Path, modified: SystemTime) {
+    fn write_orb_exe(path: &Path, modified: SystemTime) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, b"dock").unwrap();
+        fs::write(path, b"orb").unwrap();
         fs::File::open(path)
             .unwrap()
             .set_modified(modified)
@@ -2501,29 +2479,29 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("aadock-mnt-dock-{nonce}"));
+        let root = std::env::temp_dir().join(format!("orbcue-mnt-orb-{nonce}"));
         fs::create_dir_all(&root).unwrap();
         root
     }
 
-    fn dock_under_user(mnt: &Path, drive: &str, user: &str) -> PathBuf {
+    fn orb_under_user(mnt: &Path, drive: &str, user: &str) -> PathBuf {
         mnt.join(drive)
             .join("Users")
             .join(user)
             .join("AppData")
             .join("Local")
-            .join("Agent Activity Dock")
-            .join("dock.exe")
+            .join(WINDOWS_APP_FOLDER)
+            .join("orb.exe")
     }
 
     #[test]
-    fn enumerates_newest_windows_dock_under_mnt() {
+    fn enumerates_newest_windows_orb_under_mnt() {
         let root = temp_mnt_root();
-        let older = dock_under_user(&root, "c", "Alice");
-        let newer = dock_under_user(&root, "c", "Bob");
+        let older = orb_under_user(&root, "c", "Alice");
+        let newer = orb_under_user(&root, "c", "Bob");
         let now = SystemTime::now();
-        write_dock_exe(&older, now - Duration::from_secs(120));
-        write_dock_exe(&newer, now);
+        write_orb_exe(&older, now - Duration::from_secs(120));
+        write_orb_exe(&newer, now);
         assert_eq!(newest_windows_dock_under_mnt(&root), Some(newer));
         fs::remove_dir_all(root).unwrap();
     }

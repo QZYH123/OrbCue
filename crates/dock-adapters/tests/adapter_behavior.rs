@@ -1,7 +1,7 @@
-use agent_activity_dock_adapters::{
+use orbcue_adapters::{
     claude_hook, codex_hook, codex_notification, cursor_hook, dsh_projection, grok_hook,
 };
-use agent_activity_dock_core::{DockState, EventKind, SessionState};
+use orbcue_core::{DockState, EventKind, SessionState};
 
 #[test]
 fn claude_adapter_uses_only_hook_metadata() {
@@ -226,7 +226,7 @@ fn grok_adapter_keeps_one_record_per_session() {
     }))
     .unwrap();
     assert_eq!(asking.kind, EventKind::WaitingInput);
-    assert_eq!(asking.severity, agent_activity_dock_core::Severity::Attention);
+    assert_eq!(asking.severity, orbcue_core::Severity::Attention);
     assert_eq!(asking.requires_user_action, Some(true));
 
     let answered = grok_hook(&serde_json::json!({

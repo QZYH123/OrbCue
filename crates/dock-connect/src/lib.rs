@@ -44,8 +44,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-const PATH_START: &str = "# >>> agent-activity-dock PATH >>>";
-const PATH_END: &str = "# <<< agent-activity-dock PATH <<<";
+const PATH_START: &str = "# >>> orbcue PATH >>>";
+const PATH_END: &str = "# <<< orbcue PATH <<<";
+const LEGACY_PATH_START: &str = "# >>> agent-activity-dock PATH >>>";
+const LEGACY_PATH_END: &str = "# <<< agent-activity-dock PATH <<<";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ConnectionMethod {
@@ -67,6 +69,42 @@ impl ConnectionMethod {
             }
             Self::CursorHook => "偶尔不会通知已经结束，任务会停在「工作中」，直到进程退出",
         }
+    }
+
+    fn capabilities(self) -> &'static [&'static str] {
+        match self {
+            Self::Wrapper => &["started", "completed", "failed"],
+            Self::ClaudeHook => &["started", "waiting", "completed", "failed"],
+            Self::GrokHook | Self::CursorHook => {
+                &["started", "waiting", "completed", "failed", "cancelled"]
+            }
+            Self::CodexHook => &["started", "waiting", "completed"],
+        }
+    }
+}
+
+fn connection_record(
+    name: &str,
+    original: &Path,
+    method: ConnectionMethod,
+    wrapper: Option<PathBuf>,
+    hook_script: Option<PathBuf>,
+    settings_backup: Option<PathBuf>,
+) -> ConnectionRecord {
+    ConnectionRecord {
+        name: name.to_owned(),
+        original: original.to_owned(),
+        method,
+        wrapper,
+        hook_script,
+        settings_backup,
+        capabilities: method
+            .capabilities()
+            .iter()
+            .map(|item| (*item).to_owned())
+            .collect(),
+        limitation: method.limitation().to_owned(),
+        installed_at: now_string(),
     }
 }
 
@@ -197,8 +235,8 @@ impl ConnectionManager {
         data_home: PathBuf,
         dock_binary: PathBuf,
     ) -> Self {
-        let config_dir = config_home.join("agent-activity-dock");
-        let data_dir = data_home.join("agent-activity-dock");
+        let config_dir = config_home.join("orbcue");
+        let data_dir = data_home.join("orbcue");
         let grok_home = home.join(".grok");
         let codex_home = home.join(".codex");
         Self {
@@ -226,9 +264,7 @@ impl ConnectionManager {
         }
         let found = discover::agents_in_dir(dir);
         if found.is_empty() {
-            return Err(
-                "这个文件夹里没有支持的工具（Claude、Grok、Codex、Cursor 或 DSH）".to_owned(),
-            );
+            return Err("这个文件夹里没有支持的工具（Claude、Grok、Codex 或 Cursor）".to_owned());
         }
         let mut file = self.load();
         if !file.extra_dirs.iter().any(|existing| existing == dir) {
@@ -309,115 +345,31 @@ impl ConnectionManager {
         let mut file = self.load();
         if let Some(existing) = file.agents.get(name) {
             if existing.original == original && existing.method == method {
-                match method {
-                    ConnectionMethod::GrokHook => {
-                        self.install_grok_hook()?;
-                    }
-                    ConnectionMethod::ClaudeHook => {
-                        self.install_claude_hook()?;
-                    }
-                    ConnectionMethod::CodexHook => {
-                        self.install_codex_hook()?;
-                    }
-                    ConnectionMethod::CursorHook => {
-                        self.install_cursor_hook()?;
-                    }
-                    ConnectionMethod::Wrapper => {}
-                }
-                if !file.agents.values().any(|item| item.wrapper.is_some()) {
-                    self.remove_path_snippet()?;
-                    self.remove_empty_data_dir();
-                }
+                self.reinstall_artifacts(method)?;
+                self.drop_wrapper_path_if_unused(&file)?;
                 return Ok(existing.clone());
             }
         }
         let record = match method {
             ConnectionMethod::Wrapper => {
                 let wrapper = self.install_wrapper(name, original)?;
-                ConnectionRecord {
-                    name: name.to_owned(),
-                    original: original.to_owned(),
-                    method,
-                    wrapper: Some(wrapper),
-                    hook_script: None,
-                    settings_backup: None,
-                    capabilities: vec!["started".into(), "completed".into(), "failed".into()],
-                    limitation: method.limitation().to_owned(),
-                    installed_at: now_string(),
-                }
+                connection_record(name, original, method, Some(wrapper), None, None)
             }
             ConnectionMethod::ClaudeHook => {
                 let (hook, settings_backup) = self.install_claude_hook()?;
-                ConnectionRecord {
-                    name: name.to_owned(),
-                    original: original.to_owned(),
-                    method,
-                    wrapper: None,
-                    hook_script: Some(hook),
-                    settings_backup,
-                    capabilities: vec![
-                        "started".into(),
-                        "waiting".into(),
-                        "completed".into(),
-                        "failed".into(),
-                    ],
-                    limitation: method.limitation().to_owned(),
-                    installed_at: now_string(),
-                }
+                connection_record(name, original, method, None, Some(hook), settings_backup)
             }
             ConnectionMethod::GrokHook => {
                 let hook = self.install_grok_hook()?;
-                ConnectionRecord {
-                    name: name.to_owned(),
-                    original: original.to_owned(),
-                    method,
-                    wrapper: None,
-                    hook_script: Some(hook),
-                    settings_backup: None,
-                    capabilities: vec![
-                        "started".into(),
-                        "waiting".into(),
-                        "completed".into(),
-                        "failed".into(),
-                        "cancelled".into(),
-                    ],
-                    limitation: method.limitation().to_owned(),
-                    installed_at: now_string(),
-                }
+                connection_record(name, original, method, None, Some(hook), None)
             }
             ConnectionMethod::CodexHook => {
                 let (hook, settings_backup) = self.install_codex_hook()?;
-                ConnectionRecord {
-                    name: name.to_owned(),
-                    original: original.to_owned(),
-                    method,
-                    wrapper: None,
-                    hook_script: Some(hook),
-                    settings_backup,
-                    capabilities: vec!["started".into(), "waiting".into(), "completed".into()],
-                    limitation: method.limitation().to_owned(),
-                    installed_at: now_string(),
-                }
+                connection_record(name, original, method, None, Some(hook), settings_backup)
             }
             ConnectionMethod::CursorHook => {
                 let (hook, settings_backup) = self.install_cursor_hook()?;
-                ConnectionRecord {
-                    name: name.to_owned(),
-                    original: original.to_owned(),
-                    method,
-                    wrapper: None,
-                    hook_script: Some(hook),
-                    settings_backup,
-                    capabilities: vec![
-                        "started".into(),
-                        "waiting".into(),
-                        "completed".into(),
-                        "failed".into(),
-                        "cancelled".into(),
-                    ],
-                    limitation: method.limitation().to_owned(),
-                    installed_at: now_string(),
-                }
+                connection_record(name, original, method, None, Some(hook), settings_backup)
             }
         };
         if let Some(existing) = file.agents.get(name) {
@@ -426,16 +378,13 @@ impl ConnectionManager {
             // invalidate the newly working connection.
             if existing.method != record.method {
                 if let Err(error) = self.remove_artifacts(existing) {
-                    eprintln!("Agent Activity Dock could not remove old connection: {error}");
+                    eprintln!("OrbCue could not remove old connection: {error}");
                 }
             }
         }
         file.agents.insert(name.to_owned(), record.clone());
         self.save(&file)?;
-        if !file.agents.values().any(|item| item.wrapper.is_some()) {
-            self.remove_path_snippet()?;
-            self.remove_empty_data_dir();
-        }
+        self.drop_wrapper_path_if_unused(&file)?;
         Ok(record)
     }
 
@@ -446,10 +395,7 @@ impl ConnectionManager {
         };
         self.remove_artifacts(&record)?;
         self.save(&file)?;
-        if !file.agents.values().any(|item| item.wrapper.is_some()) {
-            self.remove_path_snippet()?;
-            self.remove_empty_data_dir();
-        }
+        self.drop_wrapper_path_if_unused(&file)?;
         Ok(true)
     }
 
@@ -475,7 +421,7 @@ impl ConnectionManager {
         ];
         for profile in self.profile_targets() {
             let existing = fs::read_to_string(&profile).unwrap_or_default();
-            if existing.contains(PATH_START) {
+            if existing.contains(PATH_START) || existing.contains(LEGACY_PATH_START) {
                 continue;
             }
             files.push(PreviewFile {
@@ -504,7 +450,7 @@ impl ConnectionManager {
             },
         ];
         if settings.is_file() {
-            let backup = settings.with_file_name("settings.json.agent-activity-dock.bak");
+            let backup = settings.with_file_name("settings.json.orbcue.bak");
             let mut entries = Vec::new();
             if backup.is_file() {
                 entries.push("仅在备份不存在时创建".to_owned());
@@ -576,7 +522,7 @@ impl ConnectionManager {
         if hooks.is_file() {
             files.push(PreviewFile {
                 path: hooks.with_file_name(format!(
-                    "{}.agent-activity-dock.bak",
+                    "{}.orbcue.bak",
                     hooks
                         .file_name()
                         .and_then(|name| name.to_str())
@@ -609,9 +555,11 @@ impl ConnectionManager {
         }
         if wrapper.exists() {
             let existing = fs::read_to_string(&wrapper).map_err(|error| error.to_string())?;
-            if !existing.contains("Agent Activity Dock generated wrapper") {
+            if !existing.contains("Agent Activity Dock generated wrapper")
+                && !existing.contains("OrbCue generated wrapper")
+            {
                 return Err(format!(
-                    "refusing to overwrite non-Dock file {}",
+                    "refusing to overwrite non-OrbCue file {}",
                     wrapper.display()
                 ));
             }
@@ -622,28 +570,50 @@ impl ConnectionManager {
         Ok(wrapper)
     }
 
-    fn install_claude_hook(&self) -> Result<(PathBuf, Option<PathBuf>), String> {
+    fn write_hook_script(&self, name: &str) -> Result<PathBuf, String> {
         fs::create_dir_all(&self.config_dir).map_err(|error| error.to_string())?;
         set_mode(&self.config_dir, 0o700)?;
-        let hook = hook_path(&self.config_dir, "claude");
-        let script = hook_script(&self.dock_binary, "claude");
-        atomic_write(&hook, script.as_bytes(), 0o700)?;
-        let settings_backup = match install_claude_settings(&hook) {
-            Ok(path) => path,
+        let hook = hook_path(&self.config_dir, name);
+        atomic_write(
+            &hook,
+            hook_script(&self.dock_binary, name).as_bytes(),
+            0o700,
+        )?;
+        Ok(hook)
+    }
+
+    fn reinstall_artifacts(&self, method: ConnectionMethod) -> Result<(), String> {
+        match method {
+            ConnectionMethod::Wrapper => Ok(()),
+            ConnectionMethod::ClaudeHook => self.install_claude_hook().map(|_| ()),
+            ConnectionMethod::GrokHook => self.install_grok_hook().map(|_| ()),
+            ConnectionMethod::CodexHook => self.install_codex_hook().map(|_| ()),
+            ConnectionMethod::CursorHook => self.install_cursor_hook().map(|_| ()),
+        }
+    }
+
+    fn drop_wrapper_path_if_unused(&self, file: &ConnectionFile) -> Result<(), String> {
+        if file.agents.values().any(|item| item.wrapper.is_some()) {
+            return Ok(());
+        }
+        self.remove_path_snippet()?;
+        self.remove_empty_data_dir();
+        Ok(())
+    }
+
+    fn install_claude_hook(&self) -> Result<(PathBuf, Option<PathBuf>), String> {
+        let hook = self.write_hook_script("claude")?;
+        match install_claude_settings(&hook) {
+            Ok(path) => Ok((hook, path)),
             Err(error) => {
                 let _ = fs::remove_file(&hook);
-                return Err(format!("cannot update Claude settings: {error}"));
+                Err(format!("cannot update Claude settings: {error}"))
             }
-        };
-        Ok((hook, settings_backup))
+        }
     }
 
     fn install_grok_hook(&self) -> Result<PathBuf, String> {
-        fs::create_dir_all(&self.config_dir).map_err(|error| error.to_string())?;
-        set_mode(&self.config_dir, 0o700)?;
-        let hook = hook_path(&self.config_dir, "grok");
-        let script = hook_script(&self.dock_binary, "grok");
-        atomic_write(&hook, script.as_bytes(), 0o700)?;
+        let hook = self.write_hook_script("grok")?;
         if let Err(error) = install_grok_hooks(&self.grok_hooks_file(), &hook) {
             let _ = fs::remove_file(&hook);
             return Err(format!("cannot update Grok hooks: {error}"));
@@ -652,46 +622,34 @@ impl ConnectionManager {
     }
 
     fn grok_hooks_file(&self) -> PathBuf {
-        self.grok_home
-            .join("hooks")
-            .join("agent-activity-dock.json")
+        self.grok_home.join("hooks").join("orbcue.json")
     }
 
     fn install_codex_hook(&self) -> Result<(PathBuf, Option<PathBuf>), String> {
-        fs::create_dir_all(&self.config_dir).map_err(|error| error.to_string())?;
-        set_mode(&self.config_dir, 0o700)?;
-        let hook = hook_path(&self.config_dir, "codex");
-        let script = hook_script(&self.dock_binary, "codex");
-        atomic_write(&hook, script.as_bytes(), 0o700)?;
-        let settings_backup = match install_nested_hooks_at(
+        let hook = self.write_hook_script("codex")?;
+        match install_nested_hooks_at(
             &self.codex_hooks_file(),
             &hook,
             codex_hook_specs(),
-            "hooks.json.agent-activity-dock.bak",
+            "hooks.json.orbcue.bak",
         ) {
-            Ok(path) => path,
+            Ok(path) => Ok((hook, path)),
             Err(error) => {
                 let _ = fs::remove_file(&hook);
-                return Err(format!("cannot update Codex hooks: {error}"));
+                Err(format!("cannot update Codex hooks: {error}"))
             }
-        };
-        Ok((hook, settings_backup))
+        }
     }
 
     fn install_cursor_hook(&self) -> Result<(PathBuf, Option<PathBuf>), String> {
-        fs::create_dir_all(&self.config_dir).map_err(|error| error.to_string())?;
-        set_mode(&self.config_dir, 0o700)?;
-        let hook = hook_path(&self.config_dir, "cursor");
-        let script = hook_script(&self.dock_binary, "cursor");
-        atomic_write(&hook, script.as_bytes(), 0o700)?;
-        let settings_backup = match install_cursor_hooks_at(&self.cursor_hooks_file(), &hook) {
-            Ok(path) => path,
+        let hook = self.write_hook_script("cursor")?;
+        match install_cursor_hooks_at(&self.cursor_hooks_file(), &hook) {
+            Ok(path) => Ok((hook, path)),
             Err(error) => {
                 let _ = fs::remove_file(&hook);
-                return Err(format!("cannot update Cursor hooks: {error}"));
+                Err(format!("cannot update Cursor hooks: {error}"))
             }
-        };
-        Ok((hook, settings_backup))
+        }
     }
 
     fn codex_hooks_file(&self) -> PathBuf {
@@ -735,7 +693,7 @@ impl ConnectionManager {
     fn ensure_path_snippet(&self) -> Result<(), String> {
         if let Err(error) = crate::ensure_dir_on_user_path(&self.data_dir) {
             eprintln!(
-                "Agent Activity Dock: could not add {} to user PATH: {error}",
+                "OrbCue: could not add {} to user PATH: {error}",
                 self.data_dir.display()
             );
         }
@@ -744,9 +702,11 @@ impl ConnectionManager {
             if old.contains(PATH_START) {
                 continue;
             }
+            let stripped =
+                strip_path_block(&old, LEGACY_PATH_START, LEGACY_PATH_END).unwrap_or(old);
             let block = snippet_for(&profile, &self.data_dir);
             let mode = existing_mode(&profile, 0o600);
-            atomic_write(&profile, format!("{old}{block}").as_bytes(), mode)?;
+            atomic_write(&profile, format!("{stripped}{block}").as_bytes(), mode)?;
         }
         Ok(())
     }
@@ -756,25 +716,11 @@ impl ConnectionManager {
             let Ok(old) = fs::read_to_string(&profile) else {
                 continue;
             };
-            let Some(marker_start) = old.find(PATH_START) else {
+            let Some(cleaned) = strip_path_block(&old, PATH_START, PATH_END)
+                .or_else(|| strip_path_block(&old, LEGACY_PATH_START, LEGACY_PATH_END))
+            else {
                 continue;
             };
-            let line_start = old[..marker_start]
-                .rfind('\n')
-                .map(|position| position + 1)
-                .unwrap_or(marker_start);
-            let Some(marker_end) = old[marker_start..].find(PATH_END) else {
-                continue;
-            };
-            let mut end = marker_start + marker_end + PATH_END.len();
-            if old.as_bytes().get(end) == Some(&b'\r') {
-                end += 1;
-            }
-            if old.as_bytes().get(end) == Some(&b'\n') {
-                end += 1;
-            }
-            let mut cleaned = old;
-            cleaned.replace_range(line_start..end, "");
             atomic_write(&profile, cleaned.as_bytes(), existing_mode(&profile, 0o600))?;
         }
         Ok(())
@@ -942,7 +888,7 @@ fn install_claude_settings_at(
         settings_path,
         hook,
         claude_hook_specs(),
-        "settings.json.agent-activity-dock.bak",
+        "settings.json.orbcue.bak",
     )
 }
 
@@ -1087,7 +1033,7 @@ fn install_cursor_hooks_at(hooks_path: &Path, hook: &Path) -> Result<Option<Path
     }
     strip_unwanted_dock_hooks(hooks, &hook_spec_names(cursor_hook_specs()), hook);
     let backup = existing.map(|bytes| {
-        let backup = hooks_path.with_file_name("hooks.json.agent-activity-dock.bak");
+        let backup = hooks_path.with_file_name("hooks.json.orbcue.bak");
         (backup, bytes)
     });
     if let Some((backup_path, bytes)) = &backup {
@@ -1204,6 +1150,7 @@ fn is_dock_managed_hook(entry: &Value, hook: &Path) -> bool {
     let text = entry.to_string();
     let hook = hook.to_string_lossy();
     text.contains(hook.as_ref())
+        || text.contains("orbcue")
         || text.contains("agent-activity-dock")
         || text.contains("claude-hook")
         || text.contains("codex-hook")
@@ -1423,7 +1370,7 @@ fn wrapper_script(name: &str, dock_binary: &Path, original: &Path) -> String {
         let original = windows_batch_quote(&original.to_string_lossy());
         let source = windows_batch_quote(name);
         return format!(
-            "@echo off\r\nrem Agent Activity Dock generated wrapper; never reads Agent content.\r\nsetlocal\r\nif not defined AGENT_ACTIVITY_DOCK_TASK_ID set \"AGENT_ACTIVITY_DOCK_TASK_ID={name}-%RANDOM%\"\r\n{dock} start \"%AGENT_ACTIVITY_DOCK_TASK_ID%\" --source {source} >nul 2>&1\r\ncall {original} %*\r\nset \"CODE=%ERRORLEVEL%\"\r\nif \"%CODE%\"==\"0\" ({dock} complete \"%AGENT_ACTIVITY_DOCK_TASK_ID%\" --source {source} >nul 2>&1) else ({dock} fail \"%AGENT_ACTIVITY_DOCK_TASK_ID%\" --source {source} >nul 2>&1)\r\nexit /b %CODE%\r\n",
+            "@echo off\r\nrem OrbCue generated wrapper; never reads Agent content.\r\nsetlocal\r\nif not defined ORBCUE_TASK_ID set \"ORBCUE_TASK_ID={name}-%RANDOM%\"\r\n{dock} start \"%ORBCUE_TASK_ID%\" --source {source} >nul 2>&1\r\ncall {original} %*\r\nset \"CODE=%ERRORLEVEL%\"\r\nif \"%CODE%\"==\"0\" ({dock} complete \"%ORBCUE_TASK_ID%\" --source {source} >nul 2>&1) else ({dock} fail \"%ORBCUE_TASK_ID%\" --source {source} >nul 2>&1)\r\nexit /b %CODE%\r\n",
             name = name,
             dock = dock,
             original = original,
@@ -1436,7 +1383,7 @@ fn wrapper_script(name: &str, dock_binary: &Path, original: &Path) -> String {
         let original = shell_quote(&original.to_string_lossy());
         let source = shell_quote(name);
         format!(
-            "#!/bin/sh\n# Agent Activity Dock generated wrapper; never reads Agent content.\nset -u\nTASK_ID=${{AGENT_ACTIVITY_DOCK_TASK_ID:-{source}-$$-$(date +%s%N)}}\n{dock} start \"$TASK_ID\" --source {source} >/dev/null 2>&1 || true\nCHILD=\"\"\nforward_signal() {{\n  SIGNAL=\"$1\"\n  if [ -n \"${{CHILD:-}}\" ]; then kill -$SIGNAL \"$CHILD\" 2>/dev/null || true; fi\n}}\ntrap 'forward_signal TERM' TERM\ntrap 'forward_signal INT' INT\ntrap 'forward_signal HUP' HUP\ntrap 'forward_signal QUIT' QUIT\n{original} \"$@\" &\nCHILD=$!\nwait \"$CHILD\"\nCODE=$?\ntrap - TERM INT HUP QUIT\nif [ $CODE -eq 0 ]; then {dock} complete \"$TASK_ID\" --source {source} >/dev/null 2>&1 || true; else {dock} fail \"$TASK_ID\" --source {source} >/dev/null 2>&1 || true; fi\nexit $CODE\n",
+            "#!/bin/sh\n# OrbCue generated wrapper; never reads Agent content.\nset -u\nTASK_ID=${{ORBCUE_TASK_ID:-{source}-$$-$(date +%s%N)}}\n{dock} start \"$TASK_ID\" --source {source} >/dev/null 2>&1 || true\nCHILD=\"\"\nforward_signal() {{\n  SIGNAL=\"$1\"\n  if [ -n \"${{CHILD:-}}\" ]; then kill -$SIGNAL \"$CHILD\" 2>/dev/null || true; fi\n}}\ntrap 'forward_signal TERM' TERM\ntrap 'forward_signal INT' INT\ntrap 'forward_signal HUP' HUP\ntrap 'forward_signal QUIT' QUIT\n{original} \"$@\" &\nCHILD=$!\nwait \"$CHILD\"\nCODE=$?\ntrap - TERM INT HUP QUIT\nif [ $CODE -eq 0 ]; then {dock} complete \"$TASK_ID\" --source {source} >/dev/null 2>&1 || true; else {dock} fail \"$TASK_ID\" --source {source} >/dev/null 2>&1 || true; fi\nexit $CODE\n",
             source = source,
             dock = dock,
             original = original,
@@ -1448,14 +1395,14 @@ fn hook_script(dock_binary: &Path, provider: &str) -> String {
     #[cfg(windows)]
     {
         return format!(
-            "@echo off\r\nrem Agent Activity Dock generated {provider} hook.\r\n{} hook {provider}\r\nexit /b 0\r\n",
+            "@echo off\r\nrem OrbCue generated {provider} hook.\r\n{} hook {provider}\r\nexit /b 0\r\n",
             windows_batch_quote(&dock_binary.to_string_lossy())
         );
     }
     #[cfg(not(windows))]
     {
         format!(
-            "#!/bin/sh\n# Agent Activity Dock generated {provider} hook.\n# exec so dock's PPID is the agent; liveness reaps that PID.\nexec {} hook {provider}\n",
+            "#!/bin/sh\n# OrbCue generated {provider} hook.\n# exec so orb's PPID is the agent; liveness reaps that PID.\nexec {} hook {provider}\n",
             shell_quote(&dock_binary.to_string_lossy())
         )
     }
@@ -1463,7 +1410,10 @@ fn hook_script(dock_binary: &Path, provider: &str) -> String {
 
 fn install_grok_hooks(hooks_path: &Path, hook: &Path) -> Result<(), String> {
     if let Ok(existing) = fs::read_to_string(hooks_path) {
-        if !existing.contains("agent-activity-dock") && !existing.contains("hook grok") {
+        if !existing.contains("orbcue")
+            && !existing.contains("agent-activity-dock")
+            && !existing.contains("hook grok")
+        {
             return Err(format!(
                 "refusing to overwrite non-Dock file {}",
                 hooks_path.display()
@@ -1484,7 +1434,7 @@ fn install_grok_hooks(hooks_path: &Path, hook: &Path) -> Result<(), String> {
         hooks.insert(spec.event.to_owned(), json!([group]));
     }
     let document = json!({
-        "name": "agent-activity-dock",
+        "name": "orbcue",
         "hooks": hooks
     });
     let bytes = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
@@ -1499,6 +1449,25 @@ fn snippet_for(profile: &Path, data_dir: &Path) -> String {
     } else {
         posix_path_snippet(data_dir)
     }
+}
+
+fn strip_path_block(old: &str, start: &str, end: &str) -> Option<String> {
+    let marker_start = old.find(start)?;
+    let line_start = old[..marker_start]
+        .rfind('\n')
+        .map(|position| position + 1)
+        .unwrap_or(marker_start);
+    let marker_end = old[marker_start..].find(end)?;
+    let mut end_pos = marker_start + marker_end + end.len();
+    if old.as_bytes().get(end_pos) == Some(&b'\r') {
+        end_pos += 1;
+    }
+    if old.as_bytes().get(end_pos) == Some(&b'\n') {
+        end_pos += 1;
+    }
+    let mut cleaned = old.to_owned();
+    cleaned.replace_range(line_start..end_pos, "");
+    Some(cleaned)
 }
 
 fn wrap_path_block(body: &str) -> String {
@@ -1598,7 +1567,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock is after epoch")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("aadock-settings-{nonce}"));
+        let root = std::env::temp_dir().join(format!("orbcue-settings-{nonce}"));
         fs::create_dir_all(&root).expect("create temporary settings directory");
         root
     }
@@ -1613,9 +1582,7 @@ mod tests {
         let error = install_claude_settings_at(&settings, &hook).unwrap_err();
         assert!(error.contains("not valid JSON"));
         assert_eq!(fs::read(&settings).unwrap(), b"{not-json");
-        assert!(!settings
-            .with_file_name("settings.json.agent-activity-dock.bak")
-            .exists());
+        assert!(!settings.with_file_name("settings.json.orbcue.bak").exists());
         fs::remove_dir_all(root).unwrap();
     }
 

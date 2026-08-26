@@ -13,7 +13,7 @@
   import { onMount } from 'svelte';
   import { playChime, unlockAudio, type ChimeSettings } from './chime';
   import { ensureNotificationPermission } from './notifications';
-  import type { AgentInventory, AgentSide, AuditEntry, ConnectionPreview, DiscoveredAgent, FocusResult, SessionSnapshot, Snapshot, SnapshotMessage } from './types';
+  import type { AgentInventory, AgentSide, ConnectionPreview, DiscoveredAgent, FocusResult, SessionSnapshot, Snapshot, SnapshotMessage } from './types';
   import { emptySnapshot } from './types';
   import {
     highlightFromNotificationExtra,
@@ -69,15 +69,14 @@
   let autostartHintDismissed = localStorage.getItem('autostart-hint-dismissed') === 'true';
   let connectSuccess = '';
   let shortcutEnabled = localStorage.getItem('shortcut-enabled') !== 'false';
-  let hideBallBadge = localStorage.getItem('dock-hide-ball-badge') === 'true';
+  let hideBallBadge = localStorage.getItem('orbcue-hide-ball-badge') === 'true';
   let theme: DockTheme = initialTheme();
   let runAlias = '';
   let runAliasDraft = '';
   let runAliasHint = '';
   let runAliasError = '';
   const shortcut = 'CommandOrControl+Shift+Space';
-  const BADGE_KEY = 'dock-hide-ball-badge';
-  const BADGE_CHANNEL = 'dock-hide-ball-badge';
+  const BADGE_KEY = 'orbcue-hide-ball-badge';
   let badgeChannel: BroadcastChannel | null = null;
   let unsubscribe: (() => void) | undefined;
   let dragging = false;
@@ -108,7 +107,7 @@
         : snapshot.working_count > 0
           ? 'working'
           : 'idle';
-  $: matrixDots = theme === 'glyph' ? matrixTones(snapshot.working_count, snapshot.tracked_count, ballKind, '') : [];
+  $: matrixDots = theme === 'glyph' ? matrixTones(snapshot.working_count, snapshot.tracked_count, ballKind) : [];
   $: heroBar = theme === 'glyph' ? barTones(snapshot.working_count, snapshot.tracked_count, 8) : [];
   $: showAutostartHint =
     !previewMode && label === 'panel' && autostartChecked && !autostartEnabled && !autostartHintDismissed;
@@ -130,7 +129,7 @@
 
   function listenBadgePref() {
     if (typeof BroadcastChannel === 'undefined' || badgeChannel) return;
-    badgeChannel = new BroadcastChannel(BADGE_CHANNEL);
+    badgeChannel = new BroadcastChannel(BADGE_KEY);
     badgeChannel.onmessage = (event) => {
       hideBallBadge = event.data === true;
     };
@@ -189,7 +188,7 @@
       } catch (error) {
         console.warn('Desktop preferences are unavailable', error);
       }
-      const stopListening = await listen<SnapshotMessage>('dock:snapshot', (event) => {
+      const stopListening = await listen<SnapshotMessage>('orb:snapshot', (event) => {
         if (!active) return;
         snapshot = event.payload.snapshot;
         if (event.payload.attention && label === 'ball') {
@@ -198,13 +197,13 @@
           void playChime(event.payload.attention.severity, currentChimeSettings());
         }
       });
-      const stopInventory = await listen<AgentInventory>('dock:inventory', (event) => {
+      const stopInventory = await listen<AgentInventory>('orb:inventory', (event) => {
         if (!active) return;
         inventory = event.payload;
         inventoryRefreshing = false;
         maybeOpenOnboarding();
       });
-      const stopHighlight = await listen<{ source: string; session_id: string }>('dock:highlight', (event) => {
+      const stopHighlight = await listen<{ source: string; session_id: string }>('orb:highlight', (event) => {
         if (!active || label === 'ball') return;
         page = 'activity';
         highlightedKey = sessionHighlightKey(event.payload.source, event.payload.session_id);
@@ -614,7 +613,7 @@
   async function loadRunAlias() {
     runAliasError = '';
     if (previewMode) {
-      runAlias = localStorage.getItem('dock-run-alias') || '';
+      runAlias = localStorage.getItem('orbcue-run-alias') || '';
       runAliasDraft = runAlias;
       return;
     }
@@ -633,10 +632,10 @@
     runAliasError = '';
     runAliasHint = '';
     if (previewMode) {
-      if (name) localStorage.setItem('dock-run-alias', name);
-      else localStorage.removeItem('dock-run-alias');
+      if (name) localStorage.setItem('orbcue-run-alias', name);
+      else localStorage.removeItem('orbcue-run-alias');
       runAlias = name;
-      runAliasHint = name ? `预览：${name} grok 等于 dock run grok` : '已清除别名';
+      runAliasHint = name ? `预览：${name} grok 等于 orb run grok` : '已清除别名';
       return;
     }
     try {
@@ -700,10 +699,6 @@
     }
   }
 
-  function focusErrorKey(source: string, sessionId: string) {
-    return `${source}\0${sessionId}`;
-  }
-
   function clearFocusNote(key: string) {
     if (focusNoteTimers[key]) {
       window.clearTimeout(focusNoteTimers[key]);
@@ -728,7 +723,7 @@
   }
 
   async function jumpBack(session: SessionSnapshot) {
-    const key = focusErrorKey(session.source, session.session_id);
+    const key = sessionHighlightKey(session.source, session.session_id);
     try {
       const result = await invoke<FocusResult>('focus_source', {
         source: session.source,
@@ -764,27 +759,15 @@
     return 'idle';
   }
 
-  function stateLabel(session: SessionSnapshot) {
-    if (session.state === 'idle') return '空闲';
-    if (session.state === 'working') return '工作中';
-    if (session.state === 'needs_attention') {
-      return session.attention_reason === 'permission' ? '等待授权' : '等待输入';
+  function stateLabel(item: { state: SessionSnapshot['state']; attention_reason: string | null }) {
+    if (item.state === 'idle') return '空闲';
+    if (item.state === 'working') return '工作中';
+    if (item.state === 'needs_attention') {
+      return item.attention_reason === 'permission' ? '等待授权' : '等待输入';
     }
-    if (session.state === 'failed') return '失败';
-    if (session.state === 'completed') return '已完成';
-    if (session.state === 'closed') return '已关闭';
-    return '已取消';
-  }
-
-  function auditStateLabel(entry: AuditEntry) {
-    if (entry.state === 'idle') return '空闲';
-    if (entry.state === 'working') return '工作中';
-    if (entry.state === 'needs_attention') {
-      return entry.attention_reason === 'permission' ? '等待授权' : '等待输入';
-    }
-    if (entry.state === 'failed') return '失败';
-    if (entry.state === 'completed') return '已完成';
-    if (entry.state === 'closed') return '已关闭';
+    if (item.state === 'failed') return '失败';
+    if (item.state === 'completed') return '已完成';
+    if (item.state === 'closed') return '已关闭';
     return '已取消';
   }
 
@@ -798,7 +781,7 @@
     class:attention={ballKind === 'wait' || ballKind === 'fail'}
     class:pulse
     class:working={ballKind === 'working'}
-    aria-label="Agent Activity Dock"
+    aria-label="OrbCue"
   >
     <button
       class="ball {ballKind}"
@@ -855,7 +838,7 @@
     {#if snapshot.pending_mark && !hideBallBadge}<span class="badge mark-{markClass(snapshot.pending_mark)}" aria-label={snapshot.pending_mark}>{snapshot.pending_mark}</span>{/if}
   </main>
 {:else}
-  <main class="panel tone-{ballKind}" aria-label="Agent Activity Dock 任务列表">
+  <main class="panel tone-{ballKind}" aria-label="OrbCue 任务列表">
     <header class="hero">
       <div class="hero-main">
         <div class="hero-count lcd" aria-live="polite">
@@ -887,7 +870,7 @@
       <div class="panel-body">
       {#if showAutostartHint}
         <div class="hint-banner" role="note">
-          <p><strong>建议开启开机自启</strong><small>Dock 保持运行才能收到任务状态；开启后登录 Windows 即自动待命</small></p>
+          <p><strong>建议开启开机自启</strong><small>OrbCue 保持运行才能收到任务状态；开启后登录 Windows 即自动待命</small></p>
           <div class="hint-actions">
             <button class="primary-button" onclick={() => void acceptAutostartHint()}>开启</button>
             <button class="text-button" onclick={dismissAutostartHint}>不再提示</button>
@@ -933,8 +916,8 @@
                       {#if !session.acknowledged}<button onclick={() => acknowledge(session.source, session.session_id, session.terminal_id)}>已读</button>{/if}
                       <button onclick={() => resetSession(session.source, session.session_id, session.terminal_id)}>清除</button>
                     </div>
-                    {#if focusNotes[focusErrorKey(session.source, session.session_id)]}<p class="session-focus-note">{focusNotes[focusErrorKey(session.source, session.session_id)]}</p>{/if}
-                    {#if focusErrors[focusErrorKey(session.source, session.session_id)]}<p class="session-focus-error">{focusErrors[focusErrorKey(session.source, session.session_id)]}</p>{/if}
+                    {#if focusNotes[sessionHighlightKey(session.source, session.session_id)]}<p class="session-focus-note">{focusNotes[sessionHighlightKey(session.source, session.session_id)]}</p>{/if}
+                    {#if focusErrors[sessionHighlightKey(session.source, session.session_id)]}<p class="session-focus-error">{focusErrors[sessionHighlightKey(session.source, session.session_id)]}</p>{/if}
                   </div>
                   <button
                     class="jump-btn"
@@ -979,7 +962,7 @@
                   <time datetime={row.entry.occurred_at}>{formatAuditTime(row.entry.occurred_at)}</time>
                 </div>
                 <div class="audit-meta">
-                  <span>{auditStateLabel(row.entry)}</span>
+                  <span>{stateLabel(row.entry)}</span>
                   {#if row.project}<span class="audit-project" title={row.entry.project_path}>{row.project}</span>{/if}
                 </div>
               </div>
@@ -1016,7 +999,7 @@
       {#if showDetectingPlaceholder(inventory, inventoryRefreshing)}
         <div class="empty compact"><span>…</span><p>正在检测本机 Agent</p></div>
       {:else if connectionAgents.length === 0}
-        <div class="empty compact"><span>○</span><p>没有检测到支持的工具</p><small>目前支持 Claude、Grok Build、Codex、Cursor 和 DSH。可点「从文件夹添加」。没有 WSL 也可以只连 Windows 上的工具</small></div>
+        <div class="empty compact"><span>○</span><p>没有检测到支持的工具</p><small>目前支持 Claude、Grok、Codex 和 Cursor。可点「从文件夹添加」。没有 WSL 也可以只连 Windows 上的工具</small></div>
       {:else}
         <div class="panel-body">
         <div class="connection-list">
@@ -1049,7 +1032,7 @@
         <div class="modal-backdrop" role="presentation" onclick={(event) => event.target === event.currentTarget && closeConnectDialog()}>
           <dialog open class="confirm-dialog" aria-labelledby="connect-title">
             <h2 id="connect-title">连接 {displayAgent(pendingAgent.name)}<span class="side-badge side-{pendingAgent.side}">{sideLabel(pendingAgent.side)}</span></h2>
-            <p>Dock 将在 {sideLabel(pendingAgent.side)} 侧使用现有可执行文件：</p>
+            <p>OrbCue 将在 {sideLabel(pendingAgent.side)} 侧使用现有可执行文件：</p>
             <code>{pendingAgent.path}</code>
             {#if previewLoading}
               <p class="dialog-note">正在生成预览</p>
@@ -1099,7 +1082,7 @@
         <div class="setting-row alias-row">
           <span>
             <strong>启动别名</strong>
-            <small>把 dock run 收成短命令，空则删除</small>
+            <small>把 orb run 收成短命令，空则删除</small>
           </span>
           <form onsubmit={saveRunAlias}>
             <input bind:value={runAliasDraft} maxlength="24" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="dr" aria-label="启动别名" />
@@ -1124,16 +1107,16 @@
           <span><strong>系统通知</strong><small>等待输入、授权或失败时弹出一次；已完成只走提示音</small></span><span class:enabled={notificationsEnabled} class="switch"><i></i></span>
         </button>
         <button class="setting-row" aria-pressed={autostartEnabled} onclick={toggleAutostart}>
-          <span><strong>开机自启</strong><small>登录 Windows 后自动打开 Dock，不必先手动启动才能接收 Agent 状态</small></span><span class:enabled={autostartEnabled} class="switch"><i></i></span>
+          <span><strong>开机自启</strong><small>登录 Windows 后自动打开 OrbCue，不必先手动启动才能接收 Agent 状态</small></span><span class:enabled={autostartEnabled} class="switch"><i></i></span>
         </button>
         <button class="setting-row" aria-pressed={shortcutEnabled} onclick={toggleShortcut}>
           <span><strong>全局快捷键</strong><small>{shortcut} 打开或收起任务面板</small></span><span class:enabled={shortcutEnabled} class="switch"><i></i></span>
         </button>
       </div>
       </div>
-      <div class="privacy-note"><strong>本地与隐私优先</strong><p>Dock 默认不联网，不读取 transcript、prompt、命令或代码；持久化状态也不包含摘要。</p></div>
+      <div class="privacy-note"><strong>本地与隐私优先</strong><p>OrbCue 默认不联网，不读取 transcript、prompt、命令或代码；持久化状态也不包含摘要。</p></div>
     {/if}
-    <nav class="dock-nav" aria-label="Dock 页面">
+    <nav class="dock-nav" aria-label="OrbCue 页面">
       <button aria-pressed={page === 'activity'} class:active={page === 'activity'} onclick={() => selectPage('activity')}>
         <span class="nav-key" aria-hidden="true">
           <svg class="nav-icon" viewBox="0 0 16 16"><path d="M1.5 8.5h2.3l1.5-4.2 2.6 8.4L10 8.5h4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>

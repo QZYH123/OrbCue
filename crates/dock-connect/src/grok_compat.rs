@@ -40,7 +40,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock is after epoch")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("aadock-grok-compat-{nonce}"));
+        let root = std::env::temp_dir().join(format!("orbcue-grok-compat-{nonce}"));
         fs::create_dir_all(&root).expect("create temporary grok home");
         root
     }

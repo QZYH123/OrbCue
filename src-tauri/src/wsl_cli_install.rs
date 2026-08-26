@@ -1,5 +1,5 @@
 use crate::wsl_session;
-use agent_activity_dock_connect::{
+use orbcue_connect::{
     choose_packaged_linux_dock, decode_console_output, dock_version_matches,
     is_infrastructure_wsl_distro, packaged_linux_dock_candidates, packaged_linux_dock_is_usable,
     parse_wsl_distro_list, wsl_dock_cli_is_missing, wsl_dock_install_shell, wsl_runtime_is_absent,
@@ -19,7 +19,7 @@ static INSTALL_STATE: Mutex<Option<InstallOutcome>> = Mutex::new(None);
 
 pub fn spawn(app: AppHandle) {
     let _ = std::thread::Builder::new()
-        .name("dock-wsl-cli-install".to_owned())
+        .name("orb-wsl-cli-install".to_owned())
         .spawn(move || {
             let _ = ensure_installed(&app);
         });
@@ -39,7 +39,7 @@ pub fn ensure_installed(app: &AppHandle) -> Option<String> {
             None
         }
         Err(error) => {
-            eprintln!("Agent Activity Dock: cannot install WSL dock CLI: {error}");
+            eprintln!("OrbCue: cannot install WSL orb CLI: {error}");
             *state = Some(InstallOutcome::Failed);
             Some(error)
         }
@@ -48,9 +48,7 @@ pub fn ensure_installed(app: &AppHandle) -> Option<String> {
 
 fn install(app: &AppHandle) -> Result<(), String> {
     let Some(source) = find_packaged_linux_dock(app) else {
-        eprintln!(
-            "Agent Activity Dock: packaged Linux dock (dock-wsl) was not found; skipping WSL CLI install"
-        );
+        eprintln!("OrbCue: packaged Linux orb (orb-wsl) was not found; skipping WSL CLI install");
         return Ok(());
     };
     match probe_wsl() {
@@ -59,7 +57,7 @@ fn install(app: &AppHandle) -> Result<(), String> {
         WslPresence::Present => {}
     }
     let expected = env!("CARGO_PKG_VERSION");
-    let pinned = env::var("AGENT_ACTIVITY_DOCK_WSL_DISTRO")
+    let pinned = env::var("ORBCUE_WSL_DISTRO")
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
@@ -105,7 +103,7 @@ fn install_into_listed_distros(
     }
     if !other_errors.is_empty() {
         eprintln!(
-            "Agent Activity Dock: WSL CLI install failed in non-default distros: {}",
+            "OrbCue: WSL CLI install failed in non-default distros: {}",
             other_errors.join("; ")
         );
     }
@@ -146,7 +144,7 @@ fn probe_wsl() -> WslPresence {
     command.args(["-e", "sh", "-c", "exit 0"]);
     match run_wsl(&mut command) {
         Err(error) => {
-            let message = format!("cannot start WSL dock via wsl.exe ({error})");
+            let message = format!("cannot start WSL orb via wsl.exe ({error})");
             if wsl_runtime_is_absent(&message) {
                 WslPresence::Absent
             } else {
@@ -167,12 +165,7 @@ fn probe_wsl() -> WslPresence {
 
 fn installed_version_output(distro: Option<&str>) -> Result<Option<String>, String> {
     let mut command = wsl_command(distro);
-    command.args([
-        "-e",
-        "sh",
-        "-c",
-        r#"exec "$HOME/.local/bin/dock" --version"#,
-    ]);
+    command.args(["-e", "sh", "-c", r#"exec "$HOME/.local/bin/orb" --version"#]);
     let output = run_wsl(&mut command)
         .map_err(|error| format!("cannot query WSL dock version via wsl.exe ({error})"))?;
     let stdout = decode_console_output(&output.stdout);

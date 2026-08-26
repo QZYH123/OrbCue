@@ -1,7 +1,7 @@
 use crate::PresenterSession;
-use agent_activity_dock_connect::{ConnectionPreview, ConnectionRecord, DiscoveredAgent};
-use agent_activity_dock_ipc::{encode_request, IpcRequest, SnapshotView, WireResponse};
-use agent_activity_dock_service::SnapshotMessage;
+use orbcue_connect::{ConnectionPreview, ConnectionRecord, DiscoveredAgent};
+use orbcue_ipc::{encode_request, IpcRequest, SnapshotView, WireResponse};
+use orbcue_service::SnapshotMessage;
 use serde::Deserialize;
 use std::env;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -76,9 +76,7 @@ struct DisconnectJson {
 pub fn raw_inventory() -> Result<(Vec<DiscoveredAgent>, Vec<ConnectionRecord>), String> {
     match wsl_dock_json::<InventoryJson>(&["agents", "--json"]) {
         Ok(inventory) => Ok((inventory.discovered, inventory.connected)),
-        Err(error) if agent_activity_dock_connect::wsl_side_is_absent(&error) => {
-            Ok((Vec::new(), Vec::new()))
-        }
+        Err(error) if orbcue_connect::wsl_side_is_absent(&error) => Ok((Vec::new(), Vec::new())),
         Err(error) => Err(error),
     }
 }
@@ -143,7 +141,7 @@ fn subscribe_bridge() -> mpsc::Receiver<SnapshotMessage> {
                 match subscribe_once(&sender) {
                     Ok(()) => break,
                     Err(error) => {
-                        eprintln!("Agent Activity Dock bridge: {error}");
+                        eprintln!("OrbCue bridge: {error}");
                         thread::sleep(backoff);
                         backoff = (backoff * 2).min(Duration::from_secs(2));
                     }
@@ -158,30 +156,30 @@ fn subscribe_once(sender: &mpsc::Sender<SnapshotMessage>) -> Result<(), String> 
     let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| "dock bridge stdin is unavailable".to_owned())?;
+        .ok_or_else(|| "orb bridge stdin is unavailable".to_owned())?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "dock bridge stdout is unavailable".to_owned())?;
+        .ok_or_else(|| "orb bridge stdout is unavailable".to_owned())?;
     stdin
         .write_all(b"{\"query\":\"subscribe\"}\n")
-        .map_err(|error| format!("cannot write subscribe to dock bridge: {error}"))?;
+        .map_err(|error| format!("cannot write subscribe to orb bridge: {error}"))?;
     stdin
         .flush()
-        .map_err(|error| format!("cannot flush dock bridge subscribe: {error}"))?;
+        .map_err(|error| format!("cannot flush orb bridge subscribe: {error}"))?;
     let mut reader = BufReader::new(stdout);
     loop {
         let mut line = String::new();
         let read = reader
             .read_line(&mut line)
-            .map_err(|error| format!("dock bridge subscribe closed: {error}"))?;
+            .map_err(|error| format!("orb bridge subscribe closed: {error}"))?;
         if read == 0 {
             let detail = wait_bridge_detail(&mut child);
             drop(stdin);
             return Err(format!("Dock subscribe closed{detail}"));
         }
         let message: SnapshotMessage = serde_json::from_str(line.trim())
-            .map_err(|error| format!("invalid dock bridge snapshot ({error}): {}", line.trim()))?;
+            .map_err(|error| format!("invalid orb bridge snapshot ({error}): {}", line.trim()))?;
         if sender.send(message).is_err() {
             drop(stdin);
             let _ = child.kill();
@@ -196,16 +194,16 @@ fn query_bridge(request: &IpcRequest) -> Result<WireResponse, String> {
     let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| "dock bridge stdin is unavailable".to_owned())?;
+        .ok_or_else(|| "orb bridge stdin is unavailable".to_owned())?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "dock bridge stdout is unavailable".to_owned())?;
+        .ok_or_else(|| "orb bridge stdout is unavailable".to_owned())?;
     let mut stderr = child.stderr.take();
     let line = encode_request(request).map_err(|error| error.to_string())?;
     stdin
         .write_all(&line)
-        .map_err(|error| format!("cannot write to dock bridge: {error}"))?;
+        .map_err(|error| format!("cannot write to orb bridge: {error}"))?;
     drop(stdin);
     let mut response = String::new();
     BufReader::new(stdout)
@@ -216,12 +214,8 @@ fn query_bridge(request: &IpcRequest) -> Result<WireResponse, String> {
         let stderr_text = stderr.as_mut().map(read_utf8).unwrap_or_default();
         return Err(bridge_failure(detail, &stderr_text));
     }
-    let parsed = serde_json::from_str(response.trim()).map_err(|error| {
-        format!(
-            "invalid dock bridge response ({error}): {}",
-            response.trim()
-        )
-    })?;
+    let parsed = serde_json::from_str(response.trim())
+        .map_err(|error| format!("invalid orb bridge response ({error}): {}", response.trim()))?;
     let _ = child.wait();
     Ok(parsed)
 }
@@ -230,8 +224,8 @@ fn wsl_dock_json<T: for<'de> Deserialize<'de>>(args: &[&str]) -> Result<T, Strin
     let output = wsl_dock_command(args)?
         .output()
         .map_err(|error| missing_wsl_or_dock(error))?;
-    let stdout = agent_activity_dock_connect::decode_console_output(&output.stdout);
-    let stderr = agent_activity_dock_connect::decode_console_output(&output.stderr);
+    let stdout = orbcue_connect::decode_console_output(&output.stdout);
+    let stderr = orbcue_connect::decode_console_output(&output.stderr);
     if !output.status.success() {
         return Err(bridge_failure(format_exit_status(output.status), &stderr));
     }
@@ -266,13 +260,13 @@ fn spawn_bridge(stderr: Stdio) -> Result<Child, String> {
 
 fn bridge_command() -> Result<Command, String> {
     if let Some(override_cmd) =
-        env::var_os("AGENT_ACTIVITY_DOCK_BRIDGE_COMMAND").filter(|value| !value.is_empty())
+        env::var_os("ORBCUE_BRIDGE_COMMAND").filter(|value| !value.is_empty())
     {
         let line = override_cmd.to_string_lossy();
         let parts = split_command_line(&line);
         let (program, args) = parts
             .split_first()
-            .ok_or_else(|| "AGENT_ACTIVITY_DOCK_BRIDGE_COMMAND is empty".to_owned())?;
+            .ok_or_else(|| "ORBCUE_BRIDGE_COMMAND is empty".to_owned())?;
         let mut command = Command::new(program);
         command.args(args);
         return Ok(command);
@@ -281,7 +275,7 @@ fn bridge_command() -> Result<Command, String> {
 }
 
 pub(crate) fn wsl_base_command() -> Command {
-    if let Ok(distro) = env::var("AGENT_ACTIVITY_DOCK_WSL_DISTRO") {
+    if let Ok(distro) = env::var("ORBCUE_WSL_DISTRO") {
         if !distro.is_empty() {
             return wsl_command_for_distro(&distro);
         }
@@ -313,18 +307,18 @@ fn wsl_dock_command(args: &[&str]) -> Result<Command, String> {
         "-e",
         "sh",
         "-c",
-        r#"exec "$HOME/.local/bin/dock" "$@""#,
+        r#"exec "$HOME/.local/bin/orb" "$@""#,
         "sh",
     ]);
     command.args(args);
-    let backend = agent_activity_dock_ipc::resolve_backend();
-    command.env("AGENT_ACTIVITY_DOCK_BACKEND", backend.as_str());
-    let extra = "AGENT_ACTIVITY_DOCK_BACKEND/u";
+    let backend = orbcue_ipc::resolve_backend();
+    command.env("ORBCUE_BACKEND", backend.as_str());
+    let extra = "ORBCUE_BACKEND/u";
     match env::var("WSLENV") {
         Ok(existing)
             if existing
                 .split(':')
-                .any(|part| part.starts_with("AGENT_ACTIVITY_DOCK_BACKEND")) => {}
+                .any(|part| part.starts_with("ORBCUE_BACKEND")) => {}
         Ok(existing) if !existing.is_empty() => {
             command.env("WSLENV", format!("{existing}:{extra}"));
         }
@@ -380,20 +374,20 @@ fn format_exit_status(status: std::process::ExitStatus) -> String {
 fn read_utf8(reader: &mut impl Read) -> String {
     let mut bytes = Vec::new();
     let _ = reader.read_to_end(&mut bytes);
-    agent_activity_dock_connect::decode_console_output(&bytes)
+    orbcue_connect::decode_console_output(&bytes)
 }
 
 fn missing_wsl_or_dock(error: std::io::Error) -> String {
     format!(
-        "cannot start WSL dock via wsl.exe ({error}). Install WSL and run `bash scripts/install-cli.sh`, or set AGENT_ACTIVITY_DOCK_BRIDGE_COMMAND"
+        "cannot start WSL orb via wsl.exe ({error}). Install WSL and run `bash scripts/install-cli.sh`, or set ORBCUE_BRIDGE_COMMAND"
     )
 }
 
 fn bridge_failure(status: String, stderr: &str) -> String {
     let stderr = stderr.trim();
     if stderr.is_empty() {
-        format!("WSL dock bridge failed{status}")
+        format!("WSL orb bridge failed{status}")
     } else {
-        format!("WSL dock bridge failed{status}: {stderr}")
+        format!("WSL orb bridge failed{status}: {stderr}")
     }
 }

@@ -11,19 +11,19 @@ fn isolated_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("aadock-setsid-{nonce}"));
+    let root = std::env::temp_dir().join(format!("orbcue-setsid-{nonce}"));
     fs::create_dir_all(&root).unwrap();
     root
 }
 
 fn isolate<'a>(command: &'a mut Command, root: &Path, socket: &Path) -> &'a mut Command {
     command
-        .env("AGENT_ACTIVITY_DOCK_SOCKET", socket)
-        .env("AGENT_ACTIVITY_DOCK_BACKEND", "wsl")
+        .env("ORBCUE_SOCKET", socket)
+        .env("ORBCUE_BACKEND", "wsl")
         .env("XDG_STATE_HOME", root.join("state"))
         .env("HOME", root.join("home"))
-        .env("AGENT_ACTIVITY_DOCK_DOCKD", root.join("missing-dockd"))
-        .env_remove("AGENT_ACTIVITY_DOCK_TERMINAL_ID")
+        .env("ORBCUE_ORBD", root.join("missing-orbd"))
+        .env_remove("ORBCUE_TERMINAL_ID")
         .env_remove("WT_SESSION")
         .env_remove("XDG_RUNTIME_DIR")
 }
@@ -80,11 +80,11 @@ fn read_json(path: &Path) -> Value {
 #[test]
 fn setsid_hooks_share_ancestor_pty_without_wt_session() {
     let root = isolated_root();
-    let socket = root.join("dock.sock");
+    let socket = root.join("orb.sock");
     fs::create_dir_all(root.join("home")).unwrap();
     let state_path = root.join("state.json");
-    let service = agent_activity_dock_service::spawn_persistent(&socket, &state_path)
-        .expect("spawn isolated dockd");
+    let service =
+        orbcue_service::spawn_persistent(&socket, &state_path).expect("spawn isolated orbd");
 
     let payload_a = root.join("a.json");
     let payload_prompt = root.join("prompt.json");
@@ -105,7 +105,7 @@ fn setsid_hooks_share_ancestor_pty_without_wt_session() {
     )
     .unwrap();
 
-    let dock = env!("CARGO_BIN_EXE_dock");
+    let orb = env!("CARGO_BIN_EXE_orb");
     let pty_file = root.join("pty");
     let out_a = root.join("out-a.json");
     let out_prompt = root.join("out-prompt.json");
@@ -113,7 +113,7 @@ fn setsid_hooks_share_ancestor_pty_without_wt_session() {
     let inner = format!(
         "set -eu\ntty > {pty}\nsetsid -w {dock} --socket {sock} --json hook grok < {a} > {oa}\nsetsid -w {dock} --socket {sock} --json hook grok < {p} > {op}\nsetsid -w {dock} --socket {sock} --json hook grok < {b} > {ob}\n",
         pty = pty_file.display(),
-        dock = dock,
+        dock = orb,
         sock = socket.display(),
         a = payload_a.display(),
         oa = out_a.display(),
@@ -156,11 +156,11 @@ fn setsid_hooks_share_ancestor_pty_without_wt_session() {
 #[test]
 fn wrapper_start_and_setsid_hook_share_the_same_pty_id() {
     let root = isolated_root();
-    let socket = root.join("dock.sock");
+    let socket = root.join("orb.sock");
     fs::create_dir_all(root.join("home")).unwrap();
     let state_path = root.join("state.json");
-    let service = agent_activity_dock_service::spawn_persistent(&socket, &state_path)
-        .expect("spawn isolated dockd");
+    let service =
+        orbcue_service::spawn_persistent(&socket, &state_path).expect("spawn isolated orbd");
 
     let payload_b = root.join("b.json");
     fs::write(
@@ -169,14 +169,14 @@ fn wrapper_start_and_setsid_hook_share_the_same_pty_id() {
     )
     .unwrap();
 
-    let dock = env!("CARGO_BIN_EXE_dock");
+    let orb = env!("CARGO_BIN_EXE_orb");
     let pty_file = root.join("pty");
     let out_start = root.join("out-start.json");
     let out_hook = root.join("out-hook.json");
     let inner = format!(
         "set -eu\ntty > {pty}\n{dock} --socket {sock} --json start wrapper-sess --source probe > {os}\nsetsid -w {dock} --socket {sock} --json hook grok < {b} > {oh}\n",
         pty = pty_file.display(),
-        dock = dock,
+        dock = orb,
         sock = socket.display(),
         os = out_start.display(),
         b = payload_b.display(),

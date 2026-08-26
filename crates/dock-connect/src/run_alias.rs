@@ -1,13 +1,15 @@
-//! User-chosen short command that execs `dock run`.
+//! User-chosen short command that execs `orb run`.
 
-use agent_activity_dock_ipc::default_state_path;
+use orbcue_ipc::default_state_path;
 use serde::Serialize;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const MARKER: &str = "agent-activity-dock run-alias";
+const MARKER: &str = "orbcue run-alias";
 const RESERVED: &[&str] = &[
+    "orb",
+    "orbd",
     "dock",
     "dockd",
     "wsl",
@@ -124,7 +126,7 @@ fn wsl_runtime_missing(error: &str) -> bool {
         "the system cannot find the file",
         "系统找不到指定的文件",
         "wsl.exe is not recognized",
-        "cannot start wsl dock via wsl.exe",
+        "cannot start wsl orb via wsl.exe",
     ]
     .iter()
     .any(|needle| error.contains(needle))
@@ -163,7 +165,7 @@ fn state_path() -> PathBuf {
 }
 
 fn bin_dir() -> PathBuf {
-    if let Some(path) = env::var_os("AGENT_ACTIVITY_DOCK_BIN").filter(|value| !value.is_empty()) {
+    if let Some(path) = env::var_os("ORBCUE_BIN").filter(|value| !value.is_empty()) {
         return PathBuf::from(path);
     }
     #[cfg(windows)]
@@ -193,7 +195,7 @@ fn shim_path(name: &str) -> PathBuf {
 
 fn is_ours(path: &Path) -> bool {
     fs::read_to_string(path)
-        .map(|text| text.contains(MARKER))
+        .map(|text| text.contains(MARKER) || text.contains("agent-activity-dock run-alias"))
         .unwrap_or(false)
 }
 
@@ -236,12 +238,12 @@ fn write_state(name: &str) -> Result<(), String> {
 fn shim_bytes() -> Vec<u8> {
     #[cfg(windows)]
     {
-        format!("@echo off\r\nrem {MARKER}\r\n\"%~dp0dock.exe\" run %*\r\n").into_bytes()
+        format!("@echo off\r\nrem {MARKER}\r\n\"%~dp0orb.exe\" run %*\r\n").into_bytes()
     }
     #[cfg(not(windows))]
     {
         format!(
-            "#!/bin/sh\n# {MARKER}\nbindir=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nif [ -x \"$bindir/dock\" ]; then\n  exec \"$bindir/dock\" run \"$@\"\nfi\nexec dock run \"$@\"\n"
+            "#!/bin/sh\n# {MARKER}\nbindir=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nif [ -x \"$bindir/orb\" ]; then\n  exec \"$bindir/orb\" run \"$@\"\nfi\nexec orb run \"$@\"\n"
         )
         .into_bytes()
     }
@@ -260,8 +262,10 @@ mod tests {
 
     #[test]
     fn rejects_reserved_and_junk() {
+        assert!(validate("orb").is_err());
         assert!(validate("dock").is_err());
         assert!(validate("1dr").is_err());
+        assert!(validate("orb run").is_err());
         assert!(validate("dock run").is_err());
         assert!(validate("../x").is_err());
         assert!(validate("").is_err());
@@ -270,11 +274,11 @@ mod tests {
     #[test]
     fn windows_alias_wins_when_wsl_is_missing() {
         assert_eq!(
-            super::preferred(Some("dr".into()), Err("cannot start WSL dock".into())),
+            super::preferred(Some("dr".into()), Err("cannot start WSL orb".into())),
             Some("dr".into())
         );
         assert_eq!(
-            super::preferred(None, Err("cannot start WSL dock".into())),
+            super::preferred(None, Err("cannot start WSL orb".into())),
             None
         );
         assert_eq!(
@@ -290,33 +294,33 @@ mod tests {
     #[test]
     fn missing_wsl_or_dock_is_treated_as_absent_not_fatal() {
         assert!(super::wsl_side_is_absent(
-            "cannot start WSL dock via wsl.exe (os error 2)"
+            "cannot start WSL orb via wsl.exe (os error 2)"
         ));
         assert!(super::wsl_side_is_absent(
             "There is no distribution with the supplied name. Error code: 0x80040326"
         ));
         assert!(super::wsl_side_is_absent(
-            "sh: /home/u/.local/bin/dock: not found"
+            "sh: /home/u/.local/bin/orb: not found"
         ));
         assert!(super::wsl_side_is_absent(
-            "WSL dock bridge failed (exit status: 127): sh: /home/u/.local/bin/dock: not found"
+            "WSL orb bridge failed (exit status: 127): sh: /home/u/.local/bin/orb: not found"
         ));
         assert!(super::wsl_side_is_absent(
-            "WSL dock bridge failed (exit status: 127)"
+            "WSL orb bridge failed (exit status: 127)"
         ));
         assert!(super::wsl_side_is_absent(
-            "/home/u/.local/bin/dock: command not found"
+            "/home/u/.local/bin/orb: command not found"
         ));
         assert!(super::wsl_side_is_absent(
-            "bash: /home/u/.local/bin/dock: No such file or directory"
+            "bash: /home/u/.local/bin/orb: No such file or directory"
         ));
-        assert!(!super::wsl_side_is_absent("invalid dock bridge response"));
+        assert!(!super::wsl_side_is_absent("invalid orb bridge response"));
     }
 
     #[test]
     fn real_wsl_dock_failures_are_not_treated_as_absent() {
         assert!(!super::wsl_side_is_absent(
-            "WSL dock bridge failed (exit status: 1). Is `$HOME/.local/bin/dock` installed inside WSL?"
+            "WSL orb bridge failed (exit status: 1). Is `$HOME/.local/bin/orb` installed inside WSL?"
         ));
         assert!(!super::wsl_side_is_absent("session not found"));
         assert!(!super::wsl_side_is_absent("profile not found"));

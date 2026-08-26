@@ -1,8 +1,8 @@
 //! Presenter jump-back decisions. These are not lifecycle rules.
 
-pub const DOCK_TERMINAL_PREFIX: &str = "dock:";
+pub const DOCK_TERMINAL_PREFIX: &str = "orb:";
 pub const DOCK_MARKER_HEX_LEN: usize = 6;
-pub const JUMP_WINDOW_MISSING: &str = "找不到该会话的窗口。用 dock run 启动可获得精确跳回";
+pub const JUMP_WINDOW_MISSING: &str = "找不到该会话的窗口。用 orb run 启动可获得精确跳回";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FocusRequest {
@@ -30,7 +30,7 @@ pub fn focus_decision(request: &FocusRequest) -> FocusDecision {
         .unwrap_or(FocusDecision::UseCapturedWindow)
 }
 
-/// Ordered attempts for one jump-back click. `dock:` is precise; captured HWND
+/// Ordered attempts for one jump-back click. `orb:` is precise; captured HWND
 /// is only a fallback after that channel misses.
 pub fn focus_attempts(request: &FocusRequest) -> Vec<FocusDecision> {
     if let Some(url) = nonempty(request.deep_link.as_deref()) {
@@ -51,7 +51,7 @@ pub fn focus_attempts(request: &FocusRequest) -> Vec<FocusDecision> {
     vec![FocusDecision::UseCapturedWindow]
 }
 
-/// `dock:` + 6 hex digits. Used as both `terminal_id` and the WT tab title marker.
+/// `orb:` + 6 hex digits. Used as both `terminal_id` and the WT tab title marker.
 pub fn dock_terminal_marker(terminal_id: &str) -> Option<&str> {
     let trimmed = terminal_id.trim();
     let rest = trimmed.strip_prefix(DOCK_TERMINAL_PREFIX)?;
@@ -202,7 +202,7 @@ mod tests {
         assert_eq!(
             focus_decision(&request(
                 Some("https://example.invalid/session"),
-                Some("dock:ab12cd"),
+                Some("orb:ab12cd"),
             )),
             FocusDecision::OpenDeepLink("https://example.invalid/session".to_owned())
         );
@@ -214,17 +214,17 @@ mod tests {
     #[test]
     fn dock_marker_is_the_precise_channel() {
         assert_eq!(
-            focus_decision(&request(None, Some("dock:ab12cd"))),
+            focus_decision(&request(None, Some("orb:ab12cd"))),
             FocusDecision::FocusDockMarker {
-                marker: "dock:ab12cd".to_owned(),
+                marker: "orb:ab12cd".to_owned(),
             }
         );
-        assert!(focus_decision(&request(None, Some("dock:AB12CD"))).is_precise());
-        assert_eq!(dock_terminal_marker("dock:ab12cd"), Some("dock:ab12cd"));
-        assert_eq!(dock_terminal_marker(" dock:00ffaa "), Some("dock:00ffaa"));
-        assert_eq!(dock_terminal_marker("dock:abc"), None);
+        assert!(focus_decision(&request(None, Some("orb:AB12CD"))).is_precise());
+        assert_eq!(dock_terminal_marker("orb:ab12cd"), Some("orb:ab12cd"));
+        assert_eq!(dock_terminal_marker(" orb:00ffaa "), Some("orb:00ffaa"));
+        assert_eq!(dock_terminal_marker("orb:abc"), None);
         assert_eq!(dock_terminal_marker("pts/3"), None);
-        assert_eq!(format_dock_marker(0x00ab_12cd), "dock:ab12cd");
+        assert_eq!(format_dock_marker(0x00ab_12cd), "orb:ab12cd");
     }
 
     #[test]
@@ -242,16 +242,16 @@ mod tests {
             focus_decision(&request(None, Some("pts/5"))),
             FocusDecision::UseCapturedWindow
         );
-        assert!(JUMP_WINDOW_MISSING.contains("dock run"));
+        assert!(JUMP_WINDOW_MISSING.contains("orb run"));
     }
 
     #[test]
     fn dock_marker_falls_back_to_captured_window() {
         assert_eq!(
-            focus_attempts(&request(None, Some("dock:ab12cd"))),
+            focus_attempts(&request(None, Some("orb:ab12cd"))),
             [
                 FocusDecision::FocusDockMarker {
-                    marker: "dock:ab12cd".to_owned(),
+                    marker: "orb:ab12cd".to_owned(),
                 },
                 FocusDecision::UseCapturedWindow,
             ]
@@ -259,7 +259,7 @@ mod tests {
         assert_eq!(
             focus_attempts(&request(
                 Some("https://example.invalid/s"),
-                Some("dock:ab12cd")
+                Some("orb:ab12cd")
             )),
             [FocusDecision::OpenDeepLink(
                 "https://example.invalid/s".to_owned()
@@ -283,11 +283,11 @@ mod tests {
     fn unique_title_match_returns_that_title() {
         let titles = [
             "Visual Studio Code",
-            "agent-activity-dock · grok · dock:ab12cd",
+            "agent-activity-dock · grok · orb:ab12cd",
         ];
         assert_eq!(
-            select_unique_window_title(&titles, "dock:ab12cd").unwrap(),
-            "agent-activity-dock · grok · dock:ab12cd"
+            select_unique_window_title(&titles, "orb:ab12cd").unwrap(),
+            "agent-activity-dock · grok · orb:ab12cd"
         );
     }
 
@@ -359,8 +359,8 @@ mod tests {
             "agent-activity-dock · grok"
         );
         assert_eq!(
-            dock_tab_title("grok", Some(path), "dock:ab12cd"),
-            "agent-activity-dock · grok · dock:ab12cd"
+            dock_tab_title("grok", Some(path), "orb:ab12cd"),
+            "agent-activity-dock · grok · orb:ab12cd"
         );
         assert_eq!(
             session_terminal_title("claude", Some(r"C:\Users\qingz\work\repo\")),
@@ -372,8 +372,8 @@ mod tests {
         assert_eq!(session_terminal_title("grok", None), "grok");
         assert_eq!(session_terminal_title("grok", Some("")), "grok");
         assert_eq!(
-            dock_tab_title("claude", None, "dock:00ffaa"),
-            "claude · dock:00ffaa"
+            dock_tab_title("claude", None, "orb:00ffaa"),
+            "claude · orb:00ffaa"
         );
     }
 }

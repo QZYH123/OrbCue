@@ -9,62 +9,62 @@ const target = process.env.TAURI_ENV_TARGET_TRIPLE || '';
 const profile = debug ? 'debug' : 'release';
 const windowsTarget = /windows/i.test(target) || (!target && process.platform === 'win32');
 const useXwin = windowsTarget && process.platform !== 'win32';
-const skipWslDockBuild = process.env.AGENT_ACTIVITY_DOCK_SKIP_WSL_DOCK_BUILD === '1';
-const wslDockDest = join(root, 'src-tauri', 'resources', 'dock-wsl');
+const skipWslOrbBuild = process.env.ORBCUE_SKIP_WSL_ORB_BUILD === '1';
+const wslOrbDest = join(root, 'src-tauri', 'resources', 'orb-wsl');
 
 const cargoArgs = useXwin ? ['xwin', 'build'] : ['build'];
-cargoArgs.push('-p', 'agent-activity-dock-cli');
+cargoArgs.push('-p', 'orbcue-cli');
 if (!debug) cargoArgs.push('--release');
 if (target) cargoArgs.push('--target', target);
 
 execFileSync('cargo', cargoArgs, { cwd: root, stdio: 'inherit' });
 
 const exe = windowsTarget ? '.exe' : '';
-const binaryName = `dock${exe}`;
+const binaryName = `orb${exe}`;
 const binaryRoot = target ? join(root, 'target', target, profile) : join(root, 'target', profile);
 const source = join(binaryRoot, binaryName);
 const sidecarDir = join(root, 'src-tauri', 'binaries');
 const suffix = target || hostTarget();
-const destination = join(sidecarDir, `dock-${suffix}${exe}`);
+const destination = join(sidecarDir, `orb-${suffix}${exe}`);
 
 mkdirSync(sidecarDir, { recursive: true });
 rmSync(destination, { force: true });
 copyFileSync(source, destination);
-console.log(`Prepared Dock CLI sidecar: ${destination}`);
-prepareWslDock(source);
+console.log(`Prepared OrbCue CLI sidecar: ${destination}`);
+prepareWslOrb(source);
 
-function prepareWslDock(sidecarSource) {
-  mkdirSync(dirname(wslDockDest), { recursive: true });
-  if (isLinuxElf(wslDockDest)) {
-    console.log(`Using existing WSL dock resource: ${wslDockDest}`);
+function prepareWslOrb(sidecarSource) {
+  mkdirSync(dirname(wslOrbDest), { recursive: true });
+  if (isLinuxElf(wslOrbDest)) {
+    console.log(`Using existing WSL orb resource: ${wslOrbDest}`);
     return;
   }
-  if (skipWslDockBuild) {
+  if (skipWslOrbBuild) {
     throw new Error(
-      `Missing ${wslDockDest}. Place a Linux dock binary there (CI linux-cli artifact) before the Windows bundle.`,
+      `Missing ${wslOrbDest}. Place a Linux orb binary there (CI linux-cli artifact) before the Windows bundle.`,
     );
   }
   if (process.platform === 'win32') {
     console.warn(
-      `WSL dock resource missing at ${wslDockDest}; WSL auto-install will be unavailable`,
+      `WSL orb resource missing at ${wslOrbDest}; WSL auto-install will be unavailable`,
     );
     return;
   }
 
   let linuxSource = sidecarSource;
   if (windowsTarget || linuxSource.endsWith('.exe')) {
-    execFileSync('cargo', ['build', '-p', 'agent-activity-dock-cli', '--release'], {
+    execFileSync('cargo', ['build', '-p', 'orbcue-cli', '--release'], {
       cwd: root,
       stdio: 'inherit',
     });
-    linuxSource = join(root, 'target', 'release', 'dock');
+    linuxSource = join(root, 'target', 'release', 'orb');
   }
   if (!existsSync(linuxSource)) {
-    throw new Error(`Linux dock binary not found: ${linuxSource}`);
+    throw new Error(`Linux orb binary not found: ${linuxSource}`);
   }
-  rmSync(wslDockDest, { force: true });
-  copyFileSync(linuxSource, wslDockDest);
-  console.log(`Prepared WSL dock resource: ${wslDockDest}`);
+  rmSync(wslOrbDest, { force: true });
+  copyFileSync(linuxSource, wslOrbDest);
+  console.log(`Prepared WSL orb resource: ${wslOrbDest}`);
 }
 
 function isLinuxElf(path) {

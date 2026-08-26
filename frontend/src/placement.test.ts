@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  clampToWorkArea,
-  panelFollowStrategy,
-  panelPositionNearBall,
-  shouldHidePanelOnBallDrag,
-} from './placement';
+import { clampToWorkArea, panelPositionNearBall, shouldHidePanelOnBallDrag } from './placement';
 
 const workArea = { x: 0, y: 0, width: 1000, height: 800 };
 
@@ -59,7 +54,6 @@ describe('panelPositionNearBall', () => {
 
 describe('panel follow', () => {
   it('hides the panel when the ball drag starts so it cannot stay behind', () => {
-    expect(panelFollowStrategy()).toBe('hide-on-drag');
     expect(shouldHidePanelOnBallDrag(true)).toBe(true);
     expect(shouldHidePanelOnBallDrag(false)).toBe(false);
   });

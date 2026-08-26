@@ -10,9 +10,9 @@ import {
 
 describe('isDockTerminalId', () => {
   it('accepts dock markers and rejects tty ids', () => {
-    expect(isDockTerminalId('dock:ab12cd')).toBe(true);
-    expect(isDockTerminalId('dock:AB12CD')).toBe(true);
-    expect(isDockTerminalId('dock:abc')).toBe(false);
+    expect(isDockTerminalId('orb:ab12cd')).toBe(true);
+    expect(isDockTerminalId('orb:AB12CD')).toBe(true);
+    expect(isDockTerminalId('orb:abc')).toBe(false);
     expect(isDockTerminalId('/dev/pts/3')).toBe(false);
     expect(isDockTerminalId(null)).toBe(false);
   });
@@ -47,11 +47,11 @@ describe('jumpFeedback', () => {
   });
 });
 
-describe('dock run copy', () => {
-  it('recommends dock run on empty activity and the connections page', () => {
-    expect(EMPTY_TRACKING_HINT).toContain('dock run');
-    expect(CONNECTIONS_INTRO).toContain('dock run');
-    expect(JUMP_WINDOW_MISSING).toContain('dock run');
+describe('orb run copy', () => {
+  it('recommends orb run on empty activity and the connections page', () => {
+    expect(EMPTY_TRACKING_HINT).toContain('orb run');
+    expect(CONNECTIONS_INTRO).toContain('orb run');
+    expect(JUMP_WINDOW_MISSING).toContain('orb run');
   });
 
   it('says Windows-only users can connect without WSL', () => {

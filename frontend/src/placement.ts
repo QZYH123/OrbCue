@@ -47,12 +47,8 @@ export function panelPositionNearBall(input: {
   );
 }
 
-export function panelFollowStrategy(): 'hide-on-drag' {
-  return 'hide-on-drag';
-}
-
 export function shouldHidePanelOnBallDrag(dragStarted: boolean): boolean {
-  return dragStarted && panelFollowStrategy() === 'hide-on-drag';
+  return dragStarted;
 }
 
 function clamp(value: number, min: number, max: number): number {

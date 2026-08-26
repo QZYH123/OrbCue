@@ -1,4 +1,4 @@
-use agent_activity_dock_core::{NotificationSink, ToastSpec};
+use orbcue_core::{NotificationSink, ToastSpec};
 use tauri::AppHandle;
 
 /// Unpackaged Win32 toasts can use this identity when our AUMID is not yet
@@ -49,7 +49,7 @@ pub(crate) fn show_with_fallback(
         Err(first) => match show(POWERSHELL_TOAST_APP_ID) {
             Ok(()) => {
                 eprintln!(
-                    "Agent Activity Dock: toast app id {identifier} failed ({first}); used PowerShell identity"
+                    "OrbCue: toast app id {identifier} failed ({first}); used PowerShell identity"
                 );
                 Ok(())
             }
@@ -70,7 +70,7 @@ mod windows_toast {
             .config()
             .product_name
             .clone()
-            .unwrap_or_else(|| "Agent Activity Dock".into());
+            .unwrap_or_else(|| "OrbCue".into());
         register_aumid(&identifier, &name, toast_icon_path(app).as_deref());
         set_process_aumid(&identifier);
     }
@@ -125,16 +125,16 @@ mod windows_toast {
         match windows_registry::CURRENT_USER.create(&path) {
             Ok(key) => {
                 if let Err(error) = key.set_string("DisplayName", name) {
-                    eprintln!("Agent Activity Dock: cannot set toast DisplayName: {error}");
+                    eprintln!("OrbCue: cannot set toast DisplayName: {error}");
                 }
                 if let Some(icon) = icon {
                     if let Err(error) = key.set_string("IconUri", &icon.to_string_lossy()) {
-                        eprintln!("Agent Activity Dock: cannot set toast IconUri: {error}");
+                        eprintln!("OrbCue: cannot set toast IconUri: {error}");
                     }
                 }
             }
             Err(error) => {
-                eprintln!("Agent Activity Dock: cannot register toast AppUserModelId: {error}");
+                eprintln!("OrbCue: cannot register toast AppUserModelId: {error}");
             }
         }
     }
@@ -149,7 +149,7 @@ mod windows_toast {
         if let Err(error) =
             unsafe { SetCurrentProcessExplicitAppUserModelID(PCWSTR(wide.as_ptr())) }
         {
-            eprintln!("Agent Activity Dock: cannot set process AppUserModelId: {error}");
+            eprintln!("OrbCue: cannot set process AppUserModelId: {error}");
         }
     }
 }
@@ -162,18 +162,18 @@ mod tests {
     #[test]
     fn uses_app_identifier_when_it_shows() {
         let seen = RefCell::new(Vec::new());
-        show_with_fallback("dev.agentactivitydock", |id| {
+        show_with_fallback("dev.orbcue", |id| {
             seen.borrow_mut().push(id.to_owned());
             Ok(())
         })
         .unwrap();
-        assert_eq!(*seen.borrow(), ["dev.agentactivitydock"]);
+        assert_eq!(*seen.borrow(), ["dev.orbcue"]);
     }
 
     #[test]
     fn falls_back_to_powershell_identity() {
         let seen = RefCell::new(Vec::new());
-        show_with_fallback("dev.agentactivitydock", |id| {
+        show_with_fallback("dev.orbcue", |id| {
             seen.borrow_mut().push(id.to_owned());
             if id == POWERSHELL_TOAST_APP_ID {
                 Ok(())
@@ -184,18 +184,14 @@ mod tests {
         .unwrap();
         assert_eq!(
             *seen.borrow(),
-            [
-                "dev.agentactivitydock".to_owned(),
-                POWERSHELL_TOAST_APP_ID.to_owned()
-            ]
+            ["dev.orbcue".to_owned(), POWERSHELL_TOAST_APP_ID.to_owned()]
         );
     }
 
     #[test]
     fn surfaces_both_errors_when_nothing_shows() {
-        let error = show_with_fallback("dev.agentactivitydock", |id| Err(format!("fail {id}")))
-            .unwrap_err();
-        assert!(error.contains("fail dev.agentactivitydock"));
+        let error = show_with_fallback("dev.orbcue", |id| Err(format!("fail {id}"))).unwrap_err();
+        assert!(error.contains("fail dev.orbcue"));
         assert!(error.contains(POWERSHELL_TOAST_APP_ID));
     }
 }

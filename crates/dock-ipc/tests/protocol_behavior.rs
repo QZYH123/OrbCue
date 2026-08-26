@@ -1,5 +1,5 @@
-use agent_activity_dock_core::{AuditEntry, DockEvent, EventKind, SessionState};
-use agent_activity_dock_ipc::{encode_request, parse_request, IpcRequest, SnapshotView};
+use orbcue_core::{AuditEntry, DockEvent, EventKind, SessionState};
+use orbcue_ipc::{encode_request, parse_request, IpcRequest, SnapshotView};
 
 #[test]
 fn event_json_round_trips_without_exposing_core_types_to_callers() {
@@ -34,7 +34,7 @@ fn queries_are_explicit_and_oversized_frames_are_rejected() {
 
 #[test]
 fn snapshot_view_contains_stable_display_fields() {
-    let view = SnapshotView::from(&agent_activity_dock_core::DockSnapshot {
+    let view = SnapshotView::from(&orbcue_core::DockSnapshot {
         working_count: 2,
         tracked_count: 3,
         pending_count: 1,

@@ -1,17 +1,17 @@
 [package]
-name = "agent-activity-dock-service"
+name = "orbcue-service"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "dockd"
+name = "orbd"
 path = "src/main.rs"
 
 [dependencies]
-agent-activity-dock-core = { path = "../dock-core" }
-agent-activity-dock-ipc = { path = "../dock-ipc" }
+orbcue-core = { path = "../dock-core" }
+orbcue-ipc = { path = "../dock-ipc" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -1,24 +1,24 @@
 [package]
-name = "agent-activity-dock"
+name = "orbcue"
 version.workspace = true
-description = "A calm local attention layer for Agent sessions"
-authors = ["Agent Activity Dock contributors"]
+description = "The orb that cues you when an agent needs you"
+authors = ["OrbCue contributors"]
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "agent_activity_dock_lib"
+name = "orbcue_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-agent-activity-dock-core = { path = "../crates/dock-core" }
-agent-activity-dock-ipc = { path = "../crates/dock-ipc" }
-agent-activity-dock-connect = { path = "../crates/dock-connect" }
-agent-activity-dock-service = { path = "../crates/dock-service" }
+orbcue-core = { path = "../crates/dock-core" }
+orbcue-ipc = { path = "../crates/dock-ipc" }
+orbcue-connect = { path = "../crates/dock-connect" }
+orbcue-service = { path = "../crates/dock-service" }
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = ["tray-icon", "unstable"] }

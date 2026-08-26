@@ -1,4 +1,4 @@
-use agent_activity_dock_core::{DockEvent, DockState, EventKind, SessionState};
+use orbcue_core::{DockEvent, DockState, EventKind, SessionState};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 fn event(id: &str, kind: EventKind, session: &str) -> DockEvent {
@@ -174,11 +174,11 @@ fn restart_state_excludes_ephemeral_content_and_does_not_replay_attention() {
 #[test]
 fn old_state_files_without_project_path_still_load() {
     let restored = DockState::from_persisted(serde_json::from_str(
-        r#"{"version":1,"sessions":[{"source":"grok","session_id":"s1","state":"idle","attention_reason":null,"requires_user_action":false,"acknowledged":true,"occurred_at":"2026-08-23T00:00:00Z","terminal_id":"dock:ab12cd"}]}"#,
+        r#"{"version":1,"sessions":[{"source":"grok","session_id":"s1","state":"idle","attention_reason":null,"requires_user_action":false,"acknowledged":true,"occurred_at":"2026-08-23T00:00:00Z","terminal_id":"orb:ab12cd"}]}"#,
     ).unwrap());
     assert_eq!(
         restored.snapshot().sessions[0].terminal_id.as_deref(),
-        Some("dock:ab12cd")
+        Some("orb:ab12cd")
     );
     assert_eq!(restored.snapshot().sessions[0].project_path, None);
 }
@@ -922,10 +922,10 @@ fn terminal_replacement_is_recorded_in_audit() {
 #[test]
 fn snapshot_exposes_terminal_id() {
     let mut state = DockState::new();
-    state.apply(event("e1", EventKind::Started, "keep").with_terminal_id("dock:ab12cd"));
+    state.apply(event("e1", EventKind::Started, "keep").with_terminal_id("orb:ab12cd"));
     assert_eq!(
         state.snapshot().sessions[0].terminal_id.as_deref(),
-        Some("dock:ab12cd")
+        Some("orb:ab12cd")
     );
 }
 
@@ -1078,11 +1078,11 @@ fn old_state_files_without_liveness_still_load() {
 
 #[test]
 fn hashed_liveness_event_id_fits_a_256_byte_session_id() {
-    use agent_activity_dock_core::{liveness_closed_event_id, MAX_EVENT_ID_LEN};
+    use orbcue_core::{liveness_closed_event_id, MAX_EVENT_ID_LEN};
     let session_id = "s".repeat(256);
     let event_id = liveness_closed_event_id("grok", &session_id, 7, 11);
     assert!(event_id.len() <= MAX_EVENT_ID_LEN);
-    assert!(event_id.starts_with("dock-liveness-"));
+    assert!(event_id.starts_with("orb-liveness-"));
     let mut state = DockState::new();
     state.apply(event("e1", EventKind::Started, &session_id));
     let closed = state.apply(DockEvent::new(

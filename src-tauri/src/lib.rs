@@ -7,16 +7,16 @@ mod wsl_cli_install;
 #[cfg(windows)]
 mod wsl_session;
 
-use agent_activity_dock_connect::{
+use focus::FocusResult;
+use orbcue_connect::{
     AgentOrigin, ConnectionManager, ConnectionPreview, ConnectionRecord, DiscoveredAgent,
 };
-use agent_activity_dock_core::{
+use orbcue_core::{
     attention_click_followup, attention_jump, dispatch_attention_toast, highlight_target,
     AttentionClickFollowup, AttentionJump, ToastDispatch,
 };
-use agent_activity_dock_ipc::{DockBackend, SnapshotView};
-use agent_activity_dock_service::{attach_or_listen, DockSession, SnapshotMessage};
-use focus::FocusResult;
+use orbcue_ipc::{DockBackend, SnapshotView};
+use orbcue_service::{attach_or_listen, DockSession, SnapshotMessage};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -144,7 +144,7 @@ fn connection_manager(app: &AppHandle) -> ConnectionManager {
 }
 
 fn dock_binary_path(app: &AppHandle) -> PathBuf {
-    if let Some(path) = std::env::var_os("AGENT_ACTIVITY_DOCK_DOCK_BINARY")
+    if let Some(path) = std::env::var_os("ORBCUE_ORB_BINARY")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
@@ -154,24 +154,24 @@ fn dock_binary_path(app: &AppHandle) -> PathBuf {
     let mut candidates = Vec::new();
     if let Ok(resource_dir) = app.path().resource_dir() {
         candidates.push(resource_dir.join("binaries").join(sidecar_name()));
-        candidates.push(resource_dir.join("dock").join(sidecar_name()));
-        candidates.push(resource_dir.join("dock.exe"));
-        candidates.push(resource_dir.join("dock"));
+        candidates.push(resource_dir.join("orb").join(sidecar_name()));
+        candidates.push(resource_dir.join("orb.exe"));
+        candidates.push(resource_dir.join("orb"));
     }
     if let Ok(executable) = std::env::current_exe() {
         if let Some(parent) = executable.parent() {
             candidates.push(parent.join(sidecar_name()));
-            candidates.push(parent.join("dock.exe"));
-            candidates.push(parent.join("dock"));
+            candidates.push(parent.join("orb.exe"));
+            candidates.push(parent.join("orb"));
             candidates.push(parent.join("binaries").join(sidecar_name()));
         }
     }
-    candidates.push(PathBuf::from("dock.exe"));
-    candidates.push(PathBuf::from("dock"));
+    candidates.push(PathBuf::from("orb.exe"));
+    candidates.push(PathBuf::from("orb"));
     candidates
         .into_iter()
         .find(|candidate| candidate.is_file())
-        .unwrap_or_else(|| PathBuf::from("dock"))
+        .unwrap_or_else(|| PathBuf::from("orb"))
 }
 
 fn install_windows_trampoline_cli(app: &AppHandle) {
@@ -181,8 +181,8 @@ fn install_windows_trampoline_cli(app: &AppHandle) {
         if !source.is_file() {
             return;
         }
-        if let Err(error) = agent_activity_dock_connect::install_windows_cli(&source) {
-            eprintln!("Agent Activity Dock: cannot install dock CLI: {error}");
+        if let Err(error) = orbcue_connect::install_windows_cli(&source) {
+            eprintln!("OrbCue: cannot install orb CLI: {error}");
         }
     }
     let _ = app;
@@ -190,11 +190,11 @@ fn install_windows_trampoline_cli(app: &AppHandle) {
 
 fn sidecar_name() -> String {
     let target = if cfg!(all(windows, target_arch = "x86_64")) {
-        return "dock-x86_64-pc-windows-msvc.exe".to_owned();
+        return "orb-x86_64-pc-windows-msvc.exe".to_owned();
     } else if cfg!(all(windows, target_arch = "aarch64")) {
-        return "dock-aarch64-pc-windows-msvc.exe".to_owned();
+        return "orb-aarch64-pc-windows-msvc.exe".to_owned();
     } else if cfg!(windows) {
-        return "dock.exe".to_owned();
+        return "orb.exe".to_owned();
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         "x86_64-unknown-linux-gnu"
     } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
@@ -204,21 +204,19 @@ fn sidecar_name() -> String {
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         "aarch64-apple-darwin"
     } else {
-        "dock"
+        "orb"
     };
-    if target == "dock" {
+    if target == "orb" {
         target.to_owned()
     } else {
-        format!("dock-{target}")
+        format!("orb-{target}")
     }
 }
 
 fn dockd_binary_path() -> Option<PathBuf> {
-    let file_name = if cfg!(windows) { "dockd.exe" } else { "dockd" };
+    let file_name = if cfg!(windows) { "orbd.exe" } else { "orbd" };
     let mut candidates = Vec::new();
-    if let Some(value) =
-        std::env::var_os("AGENT_ACTIVITY_DOCK_DOCKD").filter(|value| !value.is_empty())
-    {
+    if let Some(value) = std::env::var_os("ORBCUE_ORBD").filter(|value| !value.is_empty()) {
         candidates.push(PathBuf::from(value));
     }
     if let Ok(executable) = std::env::current_exe() {
@@ -231,8 +229,8 @@ fn dockd_binary_path() -> Option<PathBuf> {
     if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
         candidates.push(
             PathBuf::from(local)
-                .join("Agent Activity Dock")
-                .join("dockd.exe"),
+                .join(orbcue_ipc::WINDOWS_APP_FOLDER)
+                .join("orbd.exe"),
         );
     }
     if let Some(home) = std::env::var_os("HOME") {
@@ -247,11 +245,11 @@ fn dockd_binary_path() -> Option<PathBuf> {
 }
 
 fn dockd_sidecar_name() -> String {
-    sidecar_name().replacen("dock", "dockd", 1)
+    sidecar_name().replacen("orb", "orbd", 1)
 }
 
 fn presenter_backend() -> DockBackend {
-    agent_activity_dock_ipc::resolve_backend()
+    orbcue_ipc::resolve_backend()
 }
 
 fn current_session(state: &AppService) -> Result<Arc<dyn PresenterSession>, String> {
@@ -289,7 +287,7 @@ fn publish_inventory(app: &AppHandle, inventory: AgentInventory) {
     if let Ok(mut cache) = INVENTORY_CACHE.lock() {
         *cache = Some(inventory.clone());
     }
-    let _ = app.emit("dock:inventory", &inventory);
+    let _ = app.emit("orb:inventory", &inventory);
 }
 
 fn load_fresh_inventory(app: &AppHandle) -> AgentInventory {
@@ -329,7 +327,7 @@ fn load_fresh_inventory(app: &AppHandle) -> AgentInventory {
                 );
             }
             Err(error) => {
-                eprintln!("Agent Activity Dock: {error}");
+                eprintln!("OrbCue: {error}");
                 wsl_error = Some(error);
             }
         }
@@ -474,7 +472,7 @@ fn connect_agent(
 
 #[tauri::command]
 fn run_alias() -> Result<Option<String>, String> {
-    let local = agent_activity_dock_connect::current_run_alias();
+    let local = orbcue_connect::current_run_alias();
     let remote = {
         #[cfg(windows)]
         {
@@ -485,9 +483,7 @@ fn run_alias() -> Result<Option<String>, String> {
             Err("wsl unavailable".to_owned())
         }
     };
-    Ok(agent_activity_dock_connect::preferred_run_alias(
-        local, remote,
-    ))
+    Ok(orbcue_connect::preferred_run_alias(local, remote))
 }
 
 #[tauri::command]
@@ -495,14 +491,14 @@ fn set_run_alias(name: String) -> Result<Option<String>, String> {
     let parsed = if name.trim().is_empty() {
         None
     } else {
-        Some(agent_activity_dock_connect::validate_run_alias(&name)?)
+        Some(orbcue_connect::validate_run_alias(&name)?)
     };
-    let local = agent_activity_dock_connect::set_run_alias(parsed.as_deref())?;
+    let local = orbcue_connect::set_run_alias(parsed.as_deref())?;
     #[cfg(windows)]
     {
         if let Err(error) = wsl_session::set_run_alias(parsed.as_deref()) {
-            if !agent_activity_dock_connect::wsl_side_is_absent(&error) {
-                eprintln!("Agent Activity Dock: WSL 启动别名未更新: {error}");
+            if !orbcue_connect::wsl_side_is_absent(&error) {
+                eprintln!("OrbCue: WSL 启动别名未更新: {error}");
             }
         }
     }
@@ -632,7 +628,7 @@ pub(crate) fn activate_attention_session(app: &AppHandle, source: &str, session_
 fn open_and_highlight(app: &AppHandle, source: &str, session_id: &str) {
     show_panel(app);
     if let Some(target) = highlight_target(Some(source), Some(session_id)) {
-        let _ = app.emit("dock:highlight", &target);
+        let _ = app.emit("orb:highlight", &target);
     }
 }
 
@@ -668,7 +664,7 @@ fn refresh_presenter_snapshot(app: &AppHandle) {
     let Ok(snapshot) = current_session(&state).and_then(|session| session.snapshot()) else {
         return;
     };
-    let _ = app.emit("dock:snapshot", SnapshotMessage::snapshot(snapshot, None));
+    let _ = app.emit("orb:snapshot", SnapshotMessage::snapshot(snapshot, None));
 }
 
 #[tauri::command]
@@ -720,18 +716,18 @@ fn start_local_session() -> (
     mpsc::Receiver<SnapshotMessage>,
     SnapshotMessage,
 ) {
-    agent_activity_dock_ipc::persist_default_backend_file();
+    orbcue_ipc::persist_default_backend_file();
     let session = attach_or_listen(
-        agent_activity_dock_ipc::default_endpoint(),
-        agent_activity_dock_ipc::default_state_path(),
+        orbcue_ipc::default_endpoint(),
+        orbcue_ipc::default_state_path(),
         dockd_binary_path(),
     )
     .unwrap_or_else(|error| {
-        eprintln!("Agent Activity Dock service failed to start: {error}");
+        eprintln!("OrbCue service failed to start: {error}");
         std::process::exit(1);
     });
     eprintln!(
-        "Agent Activity Dock {} on {}",
+        "OrbCue {} on {}",
         if session.owns_daemon() {
             "listening"
         } else {
@@ -761,12 +757,12 @@ fn start_wsl_bridge_session() -> (
     let updates = session.subscribe();
     let initial = match updates.recv_timeout(Duration::from_secs(8)) {
         Ok(message) => {
-            eprintln!("Agent Activity Dock attached via WSL dock bridge");
+            eprintln!("OrbCue attached via WSL dock bridge");
             message
         }
         Err(_) => {
             eprintln!(
-                "Agent Activity Dock: cannot reach WSL dock via wsl.exe. Install WSL and run `bash scripts/install-cli.sh`, or set AGENT_ACTIVITY_DOCK_BRIDGE_COMMAND"
+                "OrbCue: cannot reach WSL orb via wsl.exe. Install WSL and run `bash scripts/install-cli.sh`, or set ORBCUE_BRIDGE_COMMAND"
             );
             SnapshotMessage::subscribed(empty_snapshot())
         }
@@ -793,7 +789,7 @@ fn start_session() -> (
     SnapshotMessage,
 ) {
     if presenter_backend() == DockBackend::Wsl {
-        eprintln!("Agent Activity Dock: AGENT_ACTIVITY_DOCK_BACKEND=wsl is ignored on this OS");
+        eprintln!("OrbCue: ORBCUE_BACKEND=wsl is ignored on this OS");
     }
     start_local_session()
 }
@@ -823,7 +819,7 @@ pub fn run() {
             install_tray(app);
 
             let handle = app.handle().clone();
-            handle.emit("dock:snapshot", &initial)?;
+            handle.emit("orb:snapshot", &initial)?;
             let mut previous_sessions = initial.snapshot.sessions.clone();
             std::thread::Builder::new()
                 .name("dock-ui-updates".to_owned())
@@ -835,7 +831,7 @@ pub fn run() {
                         );
                         previous_sessions = update.snapshot.sessions.clone();
                         let attention = update.attention.clone();
-                        if handle.emit("dock:snapshot", &update).is_err() {
+                        if handle.emit("orb:snapshot", &update).is_err() {
                             break;
                         }
                         let sink = PresenterToastSink {
@@ -847,9 +843,7 @@ pub fn run() {
                             NOTIFICATIONS_ENABLED.load(Ordering::Relaxed),
                         ) {
                             if !NOTIFICATION_FAIL_LOGGED.swap(true, Ordering::Relaxed) {
-                                eprintln!(
-                                    "Agent Activity Dock: cannot show system notification: {error}"
-                                );
+                                eprintln!("OrbCue: cannot show system notification: {error}");
                             }
                         }
                     }
@@ -879,7 +873,7 @@ pub fn run() {
             set_run_alias
         ])
         .build(tauri::generate_context!())
-        .expect("error while building Agent Activity Dock")
+        .expect("error while building OrbCue")
         .run(move |app, event| match event {
             tauri::RunEvent::Exit => {
                 if let Some(ball) = app.get_webview_window("ball") {
@@ -896,85 +890,60 @@ pub fn run() {
                     }
                 }
             }
-            tauri::RunEvent::WindowEvent {
-                label,
-                event: tauri::WindowEvent::Moved(position),
-                ..
-            } if label == "ball" => {
-                throttle_save_ball_position(position);
-            }
-            tauri::RunEvent::WindowEvent {
-                label,
-                event: tauri::WindowEvent::Resized(_),
-                ..
-            } if label == "ball" => {
-                region::apply_ball_region_for(app);
-            }
-            tauri::RunEvent::WindowEvent {
-                label,
-                event: tauri::WindowEvent::ScaleFactorChanged { .. },
-                ..
-            } if label == "ball" => {
-                region::apply_ball_region_for(app);
-            }
-            tauri::RunEvent::WindowEvent {
-                label,
-                event: tauri::WindowEvent::CloseRequested { api, .. },
-                ..
-            } if label == "ball" => {
-                api.prevent_close();
-                hide_panel_window(app);
-            }
-            tauri::RunEvent::WindowEvent {
-                label,
-                event: tauri::WindowEvent::Focused(true),
-                ..
-            } if label == "panel" => {
-                refresh_presenter_snapshot(app);
-            }
+            tauri::RunEvent::WindowEvent { label, event, .. } => match (label.as_str(), event) {
+                ("ball", tauri::WindowEvent::Moved(position)) => {
+                    throttle_save_ball_position(position);
+                }
+                (
+                    "ball",
+                    tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. },
+                ) => {
+                    region::apply_ball_region_for(app);
+                }
+                ("ball", tauri::WindowEvent::CloseRequested { api, .. }) => {
+                    api.prevent_close();
+                    hide_panel_window(app);
+                }
+                ("panel", tauri::WindowEvent::Focused(true)) => {
+                    refresh_presenter_snapshot(app);
+                }
+                _ => {}
+            },
             _ => {}
         });
 }
 
+fn tray_item(app: &tauri::App, id: &str, text: &str) -> Option<MenuItem<tauri::Wry>> {
+    match MenuItem::with_id(app, id, text, true, None::<&str>) {
+        Ok(item) => Some(item),
+        Err(error) => {
+            eprintln!("OrbCue tray is unavailable: {error}");
+            None
+        }
+    }
+}
+
 fn install_tray(app: &mut tauri::App) {
-    let toggle = match MenuItem::with_id(
-        app,
-        "toggle-ball",
-        tray::ball_toggle_label(false),
-        true,
-        None::<&str>,
-    ) {
-        Ok(item) => item,
-        Err(error) => {
-            eprintln!("Agent Activity Dock tray is unavailable: {error}");
-            return;
-        }
+    let Some(toggle) = tray_item(app, "toggle-ball", tray::ball_toggle_label(false)) else {
+        return;
     };
-    let show = match MenuItem::with_id(app, "show", "打开 Dock", true, None::<&str>) {
-        Ok(item) => item,
-        Err(error) => {
-            eprintln!("Agent Activity Dock tray is unavailable: {error}");
-            return;
-        }
+    let Some(show) = tray_item(app, "show", "打开 OrbCue") else {
+        return;
     };
-    let quit = match MenuItem::with_id(app, "quit", "退出", true, None::<&str>) {
-        Ok(item) => item,
-        Err(error) => {
-            eprintln!("Agent Activity Dock tray is unavailable: {error}");
-            return;
-        }
+    let Some(quit) = tray_item(app, "quit", "退出") else {
+        return;
     };
     let menu = match Menu::with_items(app, &[&toggle, &show, &quit]) {
         Ok(menu) => menu,
         Err(error) => {
-            eprintln!("Agent Activity Dock tray is unavailable: {error}");
+            eprintln!("OrbCue tray is unavailable: {error}");
             return;
         }
     };
     app.manage(TrayBallItem(toggle));
     let mut builder = TrayIconBuilder::new()
         .menu(&menu)
-        .tooltip("Agent Activity Dock")
+        .tooltip("OrbCue")
         .on_menu_event(|app, event| match event.id().as_ref() {
             "toggle-ball" => toggle_ball_visibility(app),
             "show" => show_panel(app),
@@ -985,7 +954,7 @@ fn install_tray(app: &mut tauri::App) {
         builder = builder.icon(icon.clone());
     }
     if let Err(error) = builder.build(app) {
-        eprintln!("Agent Activity Dock tray is unavailable: {error}");
+        eprintln!("OrbCue tray is unavailable: {error}");
     }
 }
 
@@ -1099,7 +1068,7 @@ fn clamp_to_monitor(
 }
 
 fn ball_position_path() -> PathBuf {
-    agent_activity_dock_ipc::default_state_path().with_file_name("ball-position.json")
+    orbcue_ipc::default_state_path().with_file_name("ball-position.json")
 }
 
 fn load_saved_ball_position() -> Option<PhysicalPosition<i32>> {

@@ -4,11 +4,13 @@
 
 ## 术语
 
+- **OrbCue**：对外产品名。命令行是 `orb`。
 - **Agent**：能向 Dock 发出状态事件的外部工具（Claude、Codex、Cursor、DSH、Grok 等）。
-- **Dock**：独立的本地状态提示层；只收明确事件，不读 Agent 内容、不控制 Agent、不扫进程猜状态。
-- **小球**：收缩呈现；尽量不占空间，不是桌宠或完整桌面壳。
+- **Dock**：独立的本地状态提示层；只收明确事件，不读 Agent 内容、不控制 Agent、不扫进程猜状态。内部类型仍用这个词，命令行是 `orb`。
+- **小球 / orb**：收缩呈现；尽量不占空间，不是桌宠或完整桌面壳。
+- **cue**：从工作中切走后、需要用户出手时的一次提示。
 - **工作中 / 不在工作**：主状态只有这两种。结束、出错、等待输入都算不在工作，小球不要求再拆一套主视觉。
-- **提示**：从工作中切走后的一次可感知提醒。不要通知轰炸。
+- **提示**：即 cue。不要通知轰炸。
 - **状态事件**：Agent 或其 hook **主动发送**的状态变化。Dock 不从终端输出或全进程表推断 working/waiting。允许的唯一进程派生事件是：对 hook 已记录的那一个 PID+starttime 查询「是否仍是原进程」，若已死亡则补发 `session.closed`。
 - **主会话 / 子代理**：主会话对应终端里的一次 Agent 调用并参与计数；带 `parent_session_id` 的子代理事件折叠进父会话，不单独计数。
 - **手动重置**：事件丢失或强制终止后，把陈旧「工作中」清掉的显式操作。
@@ -22,4 +24,4 @@
 - 不把声音、窗口和 Agent adapter 的失败传播回事件发送方；
 - 不把摘要或原始 payload 写入默认持久化；
 - 修改 Claude `settings.json`、Codex `~/.codex/hooks.json`、Cursor `~/.cursor/hooks.json` 前保留一次用户可恢复的备份，断开时只清理 Dock 自己的 Hook；
-- 不让两个 `dockd` 同时服务同一用户。Presenter 在 GUI OS 上 `attach_or_listen`；没有 WSL 时也是这条路径。仅当 Agent 跑在另一 OS（WSL）时由该 OS 的 `dock` trampoline 把事件送到这个 daemon。`AGENT_ACTIVITY_DOCK_BACKEND=wsl` 可显式回滚。禁止在 WSL-canonical 与 GUI-OS-canonical 之间静默探测切换。
+- 不让两个 `orbd` 同时服务同一用户。Presenter 在 GUI OS 上 `attach_or_listen`；没有 WSL 时也是这条路径。仅当 Agent 跑在另一 OS（WSL）时由该 OS 的 `orb` trampoline 把事件送到这个 daemon。`ORBCUE_BACKEND=wsl` 可显式回滚。禁止在 WSL-canonical 与 GUI-OS-canonical 之间静默探测切换。

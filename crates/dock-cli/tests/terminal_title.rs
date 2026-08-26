@@ -14,27 +14,27 @@ fn isolated_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("aadock-title-{nonce}"));
+    let root = std::env::temp_dir().join(format!("orbcue-title-{nonce}"));
     fs::create_dir_all(&root).unwrap();
     root
 }
 
 fn isolate<'a>(command: &'a mut Command, root: &Path, socket: &Path) -> &'a mut Command {
     command
-        .env("AGENT_ACTIVITY_DOCK_SOCKET", socket)
-        .env("AGENT_ACTIVITY_DOCK_BACKEND", "wsl")
+        .env("ORBCUE_SOCKET", socket)
+        .env("ORBCUE_BACKEND", "wsl")
         .env("XDG_STATE_HOME", root.join("state"))
         .env("HOME", root.join("home"))
-        .env("AGENT_ACTIVITY_DOCK_DOCKD", root.join("missing-dockd"))
+        .env("ORBCUE_ORBD", root.join("missing-orbd"))
         .env_remove("XDG_RUNTIME_DIR")
-        .env_remove("AGENT_ACTIVITY_DOCK_NO_TITLE")
-        .env_remove("AGENT_ACTIVITY_DOCK_TERMINAL_ID")
+        .env_remove("ORBCUE_NO_TITLE")
+        .env_remove("ORBCUE_TERMINAL_ID")
         .env_remove("WT_SESSION")
 }
 
-fn dock_status(root: &Path, socket: &Path) -> Value {
+fn orb_status(root: &Path, socket: &Path) -> Value {
     let output = isolate(
-        Command::new(env!("CARGO_BIN_EXE_dock"))
+        Command::new(env!("CARGO_BIN_EXE_orb"))
             .args(["--socket", socket.to_str().unwrap(), "--json", "status"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -74,7 +74,7 @@ fn run_hook_in_pty(
     fs::write(&payload, hook_payload()).unwrap();
     let inner = format!(
         "{} --socket {} --json hook grok < {}",
-        env!("CARGO_BIN_EXE_dock"),
+        env!("CARGO_BIN_EXE_orb"),
         socket.display(),
         payload.display()
     );
@@ -89,7 +89,7 @@ fn run_hook_in_pty(
         socket,
     );
     if no_title {
-        command.env("AGENT_ACTIVITY_DOCK_NO_TITLE", "1");
+        command.env("ORBCUE_NO_TITLE", "1");
     }
     let output = command.output().expect("script pty hook");
     assert!(
@@ -104,9 +104,9 @@ fn run_hook_in_pty(
 #[test]
 fn hook_writes_osc_title_on_a_real_pty() {
     let root = isolated_root();
-    let socket = root.join("dock.sock");
+    let socket = root.join("orb.sock");
     fs::create_dir_all(root.join("home")).unwrap();
-    let service = agent_activity_dock_service::spawn(&socket).expect("spawn isolated dockd");
+    let service = orbcue_service::spawn(&socket).expect("spawn isolated orbd");
 
     let capture = root.join("title-capture");
     let status = run_hook_in_pty(&root, &socket, &capture, false);
@@ -119,7 +119,7 @@ fn hook_writes_osc_title_on_a_real_pty() {
         "PTY capture should contain OSC title {OSC_NEEDLE:?}, got:\n{text}"
     );
 
-    let snapshot = dock_status(&root, &socket);
+    let snapshot = orb_status(&root, &socket);
     let ids: Vec<&str> = snapshot["snapshot"]["sessions"]
         .as_array()
         .unwrap()
@@ -158,7 +158,7 @@ fn run_setsid_hook_in_pty(
     fs::write(&payload, payload_body).unwrap();
     let inner = format!(
         "setsid -w {} --socket {} --json hook grok < {}",
-        env!("CARGO_BIN_EXE_dock"),
+        env!("CARGO_BIN_EXE_orb"),
         socket.display(),
         payload.display()
     );
@@ -173,7 +173,7 @@ fn run_setsid_hook_in_pty(
         socket,
     );
     if no_title {
-        command.env("AGENT_ACTIVITY_DOCK_NO_TITLE", "1");
+        command.env("ORBCUE_NO_TITLE", "1");
     }
     let output = command.output().expect("script setsid hook");
     assert!(
@@ -188,9 +188,9 @@ fn run_setsid_hook_in_pty(
 #[test]
 fn setsid_hook_writes_osc_via_ancestor_tty() {
     let root = isolated_root();
-    let socket = root.join("dock.sock");
+    let socket = root.join("orb.sock");
     fs::create_dir_all(root.join("home")).unwrap();
-    let service = agent_activity_dock_service::spawn(&socket).expect("spawn isolated dockd");
+    let service = orbcue_service::spawn(&socket).expect("spawn isolated orbd");
 
     let capture = root.join("title-setsid");
     let status = run_setsid_hook_in_pty(&root, &socket, &capture, &hook_payload(), false);
@@ -219,9 +219,9 @@ fn setsid_hook_writes_osc_via_ancestor_tty() {
 #[test]
 fn setsid_stop_hook_writes_osc_via_ancestor_tty() {
     let root = isolated_root();
-    let socket = root.join("dock.sock");
+    let socket = root.join("orb.sock");
     fs::create_dir_all(root.join("home")).unwrap();
-    let service = agent_activity_dock_service::spawn(&socket).expect("spawn isolated dockd");
+    let service = orbcue_service::spawn(&socket).expect("spawn isolated orbd");
 
     let capture = root.join("title-stop");
     let status = run_setsid_hook_in_pty(&root, &socket, &capture, &stop_payload(), false);

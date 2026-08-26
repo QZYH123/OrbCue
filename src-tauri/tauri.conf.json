@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Agent Activity Dock",
+  "productName": "OrbCue",
   "version": "0.2.0",
-  "identifier": "dev.agentactivitydock",
+  "identifier": "dev.orbcue",
   "build": {
     "beforeDevCommand": "node ../scripts/tauri-dev.mjs",
     "beforeBuildCommand": "node ../scripts/tauri-build.mjs",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "ball",
-        "title": "Agent Activity Dock",
+        "title": "OrbCue",
         "width": 56,
         "height": 56,
         "decorations": false,
@@ -29,7 +29,7 @@
       },
       {
         "label": "panel",
-        "title": "Agent Activity Dock",
+        "title": "OrbCue",
         "width": 300,
         "height": 400,
         "decorations": false,
@@ -50,9 +50,9 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": false,
-    "externalBin": ["binaries/dock"],
+    "externalBin": ["binaries/orb"],
     "resources": {
-      "resources/dock-wsl": "dock-wsl"
+      "resources/orb-wsl": "orb-wsl"
     },
     "icon": ["icons/icon.png", "icons/icon.ico"]
   }

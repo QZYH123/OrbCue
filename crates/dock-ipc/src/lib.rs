@@ -1,12 +1,10 @@
 //! Versioned local wire protocol shared by the desktop process and emitters.
 
-use agent_activity_dock_core::{
-    ApplyResult, Attention, AuditEntry, DockEvent, DockSnapshot, SessionSnapshot,
-};
 use interprocess::local_socket::{
     prelude::*, GenericFilePath, ListenerOptions, Stream as InterprocessStream,
 };
 use interprocess::TryClone;
+use orbcue_core::{ApplyResult, Attention, AuditEntry, DockEvent, DockSnapshot, SessionSnapshot};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
@@ -17,7 +15,9 @@ use std::time::Duration;
 use thiserror::Error;
 
 pub const MAX_FRAME_BYTES: usize = 16 * 1024;
-pub const SOCKET_FILE_NAME: &str = "agent-activity-dock.sock";
+pub const SOCKET_FILE_NAME: &str = "orbcue.sock";
+/// User-visible Windows product folder under LOCALAPPDATA.
+pub const WINDOWS_APP_FOLDER: &str = "OrbCue";
 
 pub type LocalListener = interprocess::local_socket::Listener;
 pub type LocalStream = InterprocessStream;
@@ -167,6 +167,37 @@ fn optional_query_terminal(value: &serde_json::Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn parse_session_query(value: &Value, query: &str) -> Result<IpcRequest, FrameError> {
+    let source = value
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or("*")
+        .to_owned();
+    let session_id = value
+        .get("session_id")
+        .or_else(|| value.get("task_id"))
+        .and_then(Value::as_str)
+        .unwrap_or("*")
+        .to_owned();
+    if source.is_empty() || session_id.is_empty() {
+        return Err(FrameError::InvalidRequest);
+    }
+    let terminal_id = optional_query_terminal(value);
+    match query {
+        "acknowledge" => Ok(IpcRequest::Acknowledge {
+            source,
+            session_id,
+            terminal_id,
+        }),
+        "reset" => Ok(IpcRequest::Reset {
+            source,
+            session_id,
+            terminal_id,
+        }),
+        _ => Err(FrameError::UnknownQuery),
+    }
+}
+
 pub fn parse_request(frame: &[u8]) -> Result<IpcRequest, FrameError> {
     if frame.len() > MAX_FRAME_BYTES {
         return Err(FrameError::MessageTooLarge);
@@ -180,50 +211,7 @@ pub fn parse_request(frame: &[u8]) -> Result<IpcRequest, FrameError> {
         return match query {
             "snapshot" => Ok(IpcRequest::Snapshot),
             "subscribe" => Ok(IpcRequest::Subscribe),
-            "acknowledge" => {
-                let source = value
-                    .get("source")
-                    .and_then(Value::as_str)
-                    .unwrap_or("*")
-                    .to_owned();
-                let session_id = value
-                    .get("session_id")
-                    .or_else(|| value.get("task_id"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("*")
-                    .to_owned();
-                if source.is_empty() || session_id.is_empty() {
-                    Err(FrameError::InvalidRequest)
-                } else {
-                    Ok(IpcRequest::Acknowledge {
-                        source,
-                        session_id,
-                        terminal_id: optional_query_terminal(&value),
-                    })
-                }
-            }
-            "reset" => {
-                let source = value
-                    .get("source")
-                    .and_then(Value::as_str)
-                    .unwrap_or("*")
-                    .to_owned();
-                let session_id = value
-                    .get("session_id")
-                    .or_else(|| value.get("task_id"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("*")
-                    .to_owned();
-                if source.is_empty() || session_id.is_empty() {
-                    Err(FrameError::InvalidRequest)
-                } else {
-                    Ok(IpcRequest::Reset {
-                        source,
-                        session_id,
-                        terminal_id: optional_query_terminal(&value),
-                    })
-                }
-            }
+            "acknowledge" | "reset" => parse_session_query(&value, query),
             _ => Err(FrameError::UnknownQuery),
         };
     }
@@ -267,20 +255,16 @@ pub fn encode_request(request: &IpcRequest) -> Result<Vec<u8>, serde_json::Error
 }
 
 pub fn default_endpoint() -> PathBuf {
-    if let Some(endpoint) =
-        env::var_os("AGENT_ACTIVITY_DOCK_SOCKET").filter(|value| !value.is_empty())
-    {
+    if let Some(endpoint) = env::var_os("ORBCUE_SOCKET").filter(|value| !value.is_empty()) {
         return PathBuf::from(endpoint);
     }
     #[cfg(windows)]
     {
-        return PathBuf::from(r"\\.\pipe\agent-activity-dock");
+        return PathBuf::from(r"\\.\pipe\orbcue");
     }
     #[cfg(not(windows))]
     if let Some(runtime) = env::var_os("XDG_RUNTIME_DIR").filter(|value| !value.is_empty()) {
-        return PathBuf::from(runtime)
-            .join("agent-activity-dock")
-            .join(SOCKET_FILE_NAME);
+        return PathBuf::from(runtime).join("orbcue").join(SOCKET_FILE_NAME);
     }
     #[cfg(not(windows))]
     let home = env::var_os("HOME")
@@ -289,7 +273,7 @@ pub fn default_endpoint() -> PathBuf {
     #[cfg(not(windows))]
     home.join(".local")
         .join("state")
-        .join("agent-activity-dock")
+        .join("orbcue")
         .join(SOCKET_FILE_NAME)
 }
 
@@ -303,9 +287,7 @@ pub fn default_state_path() -> PathBuf {
                     .map(|home| PathBuf::from(home).join("AppData").join("Local"))
             })
             .unwrap_or_else(|| PathBuf::from("."));
-        return local_app_data
-            .join("Agent Activity Dock")
-            .join("state.json");
+        return local_app_data.join(WINDOWS_APP_FOLDER).join("state.json");
     }
     #[cfg(not(windows))]
     let state_home = env::var_os("XDG_STATE_HOME")
@@ -318,7 +300,7 @@ pub fn default_state_path() -> PathBuf {
         })
         .unwrap_or_else(|| PathBuf::from("."));
     #[cfg(not(windows))]
-    state_home.join("agent-activity-dock").join("state.json")
+    state_home.join("orbcue").join("state.json")
 }
 
 /// Canonical daemon topology. Compile default is GUI-OS local listen.
@@ -363,7 +345,7 @@ fn should_read_windows_backend_file() -> bool {
     cfg!(windows)
         || env_nonempty("WSL_DISTRO_NAME")
         || env_nonempty("WSL_INTEROP")
-        || env_nonempty("AGENT_ACTIVITY_DOCK_WINDOWS_DOCK")
+        || env_nonempty("ORBCUE_WINDOWS_ORB")
 }
 
 pub fn windows_app_data_dir() -> Option<PathBuf> {
@@ -391,11 +373,11 @@ fn discover_windows_app_data_dir() -> Option<PathBuf> {
 }
 
 pub fn backend_file_path() -> Option<PathBuf> {
-    windows_app_data_dir().map(|dir| dir.join("Agent Activity Dock").join("backend"))
+    windows_app_data_dir().map(|dir| dir.join(WINDOWS_APP_FOLDER).join("backend"))
 }
 
 pub fn resolve_backend_from_env() -> DockBackend {
-    env::var("AGENT_ACTIVITY_DOCK_BACKEND")
+    env::var("ORBCUE_BACKEND")
         .ok()
         .as_deref()
         .and_then(parse_backend)
@@ -403,7 +385,7 @@ pub fn resolve_backend_from_env() -> DockBackend {
 }
 
 pub fn resolve_backend() -> DockBackend {
-    if let Some(value) = env::var("AGENT_ACTIVITY_DOCK_BACKEND")
+    if let Some(value) = env::var("ORBCUE_BACKEND")
         .ok()
         .as_deref()
         .and_then(parse_backend)
@@ -425,7 +407,7 @@ pub fn resolve_backend() -> DockBackend {
 }
 
 pub fn persist_default_backend_file() {
-    if env::var("AGENT_ACTIVITY_DOCK_BACKEND")
+    if env::var("ORBCUE_BACKEND")
         .ok()
         .as_deref()
         .and_then(parse_backend)

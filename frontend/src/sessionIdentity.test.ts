@@ -142,14 +142,14 @@ describe('auditProjectLabel', () => {
 
 describe('cleanWindowTitle', () => {
   it('strips terminal chrome and dock markers', () => {
-    expect(cleanWindowTitle('Windows Terminal - dock:ab12cd · grok · dock')).toBe(
+    expect(cleanWindowTitle('Windows Terminal - orb:ab12cd · grok · dock')).toBe(
       'grok · dock',
     );
-    expect(cleanWindowTitle('dock:ff00aa · claude · app')).toBe('claude · app');
+    expect(cleanWindowTitle('orb:ff00aa · claude · app')).toBe('claude · app');
     expect(
-      cleanWindowTitle('Windows Terminal - agent-activity-dock · grok · dock:ab12cd'),
+      cleanWindowTitle('Windows Terminal - agent-activity-dock · grok · orb:ab12cd'),
     ).toBe('agent-activity-dock · grok');
-    expect(cleanWindowTitle('app · claude · dock:ff00aa')).toBe('app · claude');
+    expect(cleanWindowTitle('app · claude · orb:ff00aa')).toBe('app · claude');
     expect(cleanWindowTitle('just a title')).toBe('just a title');
   });
 });
@@ -160,7 +160,7 @@ describe('sessionDetail', () => {
       sessionDetail({
         source: 'claude',
         session_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
-        terminal_id: 'dock:ab12cd',
+        terminal_id: 'orb:ab12cd',
       }),
     ).toBe('ab12cd');
     expect(
@@ -204,13 +204,13 @@ describe('presentSessionSections', () => {
         source: 'claude',
         session_id: 'aaa-111',
         project_path: '/proj/dock',
-        terminal_id: 'dock:ab12cd',
+        terminal_id: 'orb:ab12cd',
       },
       {
         source: 'claude',
         session_id: 'bbb-222',
         project_path: '/proj/dock',
-        terminal_id: 'dock:ff00aa',
+        terminal_id: 'orb:ff00aa',
       },
     ]);
     expect(sections[0]?.rows.map((row) => `${row.title} ${row.index}`)).toEqual([

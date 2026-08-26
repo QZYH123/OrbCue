@@ -1,4 +1,4 @@
-name: Agent Activity Dock CI
+name: OrbCue CI
 
 on:
   push:
@@ -27,8 +27,8 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
       - run: cargo fmt --all -- --check
-      - run: cargo test --workspace --exclude agent-activity-dock
-      - run: cargo check -p agent-activity-dock
+      - run: cargo test --workspace --exclude orbcue
+      - run: cargo check -p orbcue
 
   windows-rust:
     name: Windows Rust and Tauri checks
@@ -44,8 +44,8 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: cargo fmt --all -- --check
-      - run: cargo test --workspace --exclude agent-activity-dock
-      - run: cargo check --workspace --exclude agent-activity-dock --target x86_64-pc-windows-msvc
+      - run: cargo test --workspace --exclude orbcue
+      - run: cargo check --workspace --exclude orbcue --target x86_64-pc-windows-msvc
       - run: npm ci --prefix frontend
       - run: npm run tauri -- build --debug --no-bundle
 
@@ -91,7 +91,7 @@ jobs:
       - run: npm run tauri -- build --bundles deb,appimage
       - uses: actions/upload-artifact@v4
         with:
-          name: agent-activity-dock-linux-bundles
+          name: orbcue-linux-bundles
           path: target/release/bundle/
           if-no-files-found: error
 
@@ -107,15 +107,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
-      - run: cargo build -p agent-activity-dock-cli --release --target x86_64-unknown-linux-musl
-      - name: Stage dock-wsl artifact
+      - run: cargo build -p orbcue-cli --release --target x86_64-unknown-linux-musl
+      - name: Stage orb-wsl artifact
         run: |
           mkdir -p src-tauri/resources
-          cp target/x86_64-unknown-linux-musl/release/dock src-tauri/resources/dock-wsl
+          cp target/x86_64-unknown-linux-musl/release/orb src-tauri/resources/orb-wsl
       - uses: actions/upload-artifact@v4
         with:
-          name: dock-wsl
-          path: src-tauri/resources/dock-wsl
+          name: orb-wsl
+          path: src-tauri/resources/orb-wsl
           if-no-files-found: error
 
   package-windows:
@@ -132,14 +132,14 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - uses: actions/download-artifact@v4
         with:
-          name: dock-wsl
+          name: orb-wsl
           path: src-tauri/resources
       - run: npm ci --prefix frontend
       - run: npm run tauri -- build --bundles nsis
         env:
-          AGENT_ACTIVITY_DOCK_SKIP_WSL_DOCK_BUILD: "1"
+          ORBCUE_SKIP_WSL_ORB_BUILD: "1"
       - uses: actions/upload-artifact@v4
         with:
-          name: agent-activity-dock-windows-nsis
+          name: orbcue-windows-nsis
           path: target/release/bundle/nsis/
           if-no-files-found: error

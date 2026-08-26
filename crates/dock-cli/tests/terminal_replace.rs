@@ -12,29 +12,29 @@ fn isolated_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("aadock-terminal-{nonce}"));
+    let root = std::env::temp_dir().join(format!("orbcue-terminal-{nonce}"));
     fs::create_dir_all(&root).unwrap();
     root
 }
 
-fn dock_cmd() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_dock"))
+fn orb_cmd() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_orb"))
 }
 
 fn isolated_env<'a>(command: &'a mut Command, root: &Path, socket: &Path) -> &'a mut Command {
     command
-        .env("AGENT_ACTIVITY_DOCK_SOCKET", socket)
-        .env("AGENT_ACTIVITY_DOCK_BACKEND", "wsl")
-        .env("AGENT_ACTIVITY_DOCK_TERMINAL_ID", "pts-test")
+        .env("ORBCUE_SOCKET", socket)
+        .env("ORBCUE_BACKEND", "wsl")
+        .env("ORBCUE_TERMINAL_ID", "pts-test")
         .env("XDG_STATE_HOME", root.join("state"))
         .env("HOME", root.join("home"))
-        .env("AGENT_ACTIVITY_DOCK_DOCKD", root.join("missing-dockd"))
+        .env("ORBCUE_ORBD", root.join("missing-orbd"))
         .env_remove("XDG_RUNTIME_DIR")
 }
 
 fn hook_grok(root: &Path, socket: &Path, payload: &str) -> Value {
     let mut child = isolated_env(
-        dock_cmd()
+        orb_cmd()
             .args([
                 "--socket",
                 socket.to_str().unwrap(),
@@ -70,7 +70,7 @@ fn hook_grok(root: &Path, socket: &Path, payload: &str) -> Value {
 
 fn emit(root: &Path, socket: &Path, args: &[&str]) -> Value {
     let output = isolated_env(
-        dock_cmd()
+        orb_cmd()
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -106,9 +106,9 @@ fn session_ids(value: &Value) -> Vec<String> {
 #[test]
 fn hook_and_start_replace_sessions_on_the_same_terminal() {
     let root = isolated_root();
-    let socket = root.join("dock.sock");
+    let socket = root.join("orb.sock");
     fs::create_dir_all(root.join("home")).unwrap();
-    let service = agent_activity_dock_service::spawn(&socket).expect("spawn isolated dockd");
+    let service = orbcue_service::spawn(&socket).expect("spawn isolated orbd");
 
     let first = hook_grok(
         &root,

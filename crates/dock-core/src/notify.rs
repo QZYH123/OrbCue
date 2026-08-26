@@ -93,7 +93,7 @@ pub enum AttentionClickFollowup {
     OpenPanel,
 }
 
-/// Toast click looks up the live session so jump-back can use `dock:` / deep_link.
+/// Toast click looks up the live session so jump-back can use `orb:` / deep_link.
 /// A vanished session only opens the panel.
 pub fn attention_jump(
     sessions: &[AttentionJump],
@@ -277,17 +277,17 @@ mod tests {
     fn toast_click_jumps_the_matching_session() {
         let sessions = [
             jump("codex", "other", None),
-            jump("claude", "s1", Some("dock:ab12cd")),
+            jump("claude", "s1", Some("orb:ab12cd")),
         ];
         assert_eq!(
             attention_jump(&sessions, "claude", "s1"),
-            Some(jump("claude", "s1", Some("dock:ab12cd")))
+            Some(jump("claude", "s1", Some("orb:ab12cd")))
         );
     }
 
     #[test]
     fn toast_click_opens_panel_when_the_session_is_gone() {
-        let sessions = [jump("claude", "s1", Some("dock:ab12cd"))];
+        let sessions = [jump("claude", "s1", Some("orb:ab12cd"))];
         assert_eq!(attention_jump(&sessions, "claude", "missing"), None);
     }
 

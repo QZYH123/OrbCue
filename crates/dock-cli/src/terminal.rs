@@ -1,10 +1,10 @@
-//! Windows Terminal adapter for `dock run`.
+//! Windows Terminal adapter for `orb run`.
 //!
-//! Spawn lives in this process. Focus of the same `dock:` marker lives in the
+//! Spawn lives in this process. Focus of the same `orb:` marker lives in the
 //! Windows presenter (`src-tauri/src/focus.rs`).
 
-use agent_activity_dock_connect::ConnectionManager;
-use agent_activity_dock_core::{dock_tab_title, dock_terminal_marker, format_dock_marker};
+use orbcue_connect::ConnectionManager;
+use orbcue_core::{dock_tab_title, dock_terminal_marker, format_dock_marker};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
@@ -114,7 +114,7 @@ fn launch_wt_via_wscript(plan: &SpawnPlan) -> Result<(), String> {
         "CreateObject(\"WScript.Shell\").Run {}, 0, False\n",
         vbs_string_literal(&command)
     );
-    let script = windows_temp_script("aadock-wt", "vbs")?;
+    let script = windows_temp_script("orbcue-wt", "vbs")?;
     write_utf16_le_bom(&script, &vbs)?;
     let windows_script = to_windows_path(&script);
     let wscript = find_wscript()
@@ -240,7 +240,7 @@ pub fn run_command(
             if json_output {
                 println!("{}", json!({ "ok": false, "error": error }));
             } else {
-                eprintln!("dock run: {error}");
+                eprintln!("orb run: {error}");
             }
             1
         }
@@ -328,7 +328,7 @@ pub fn prepare_wsl_run(
     let marker = allocate_dock_marker();
     let profile = resolve_wt_profile(profile)?;
     let InnerCommand::Wsl(inner) = wsl_inner(agent, args, &cwd, &marker)? else {
-        return Err("WSL dock run produced a native inner command".to_owned());
+        return Err("WSL orb run produced a native inner command".to_owned());
     };
     Ok(WslRunSpec {
         agent: agent.to_owned(),
@@ -372,13 +372,13 @@ pub fn spawn_from_wsl_spec(spec: &WslRunSpec) -> Result<StartedTab, String> {
 pub fn run_from_wsl_stdin(json_output: bool) -> i32 {
     let mut input = String::new();
     if let Err(error) = std::io::stdin().read_to_string(&mut input) {
-        eprintln!("dock run: cannot read WSL spec: {error}");
+        eprintln!("orb run: cannot read WSL spec: {error}");
         return 2;
     }
     let spec: WslRunSpec = match serde_json::from_str(input.trim()) {
         Ok(spec) => spec,
         Err(error) => {
-            eprintln!("dock run: invalid WSL spec ({error})");
+            eprintln!("orb run: invalid WSL spec ({error})");
             return 2;
         }
     };
@@ -408,7 +408,7 @@ pub fn run_from_wsl_stdin(json_output: bool) -> i32 {
             if json_output {
                 println!("{}", json!({ "ok": false, "error": error }));
             } else {
-                eprintln!("dock run: {error}");
+                eprintln!("orb run: {error}");
             }
             1
         }
@@ -457,10 +457,7 @@ fn native_inner(
         program,
         args: args.to_vec(),
         cwd: cwd.to_path_buf(),
-        extra_env: vec![(
-            "AGENT_ACTIVITY_DOCK_TERMINAL_ID".to_owned(),
-            marker.to_owned(),
-        )],
+        extra_env: vec![("ORBCUE_TERMINAL_ID".to_owned(), marker.to_owned())],
     }))
 }
 
@@ -494,7 +491,7 @@ pub fn spawn_plan(
     match &request.inner {
         InnerCommand::Wsl(inner) => {
             let wsl =
-                wsl.ok_or_else(|| "找不到 wsl.exe。WSL 侧 dock run 需要 Win+WSL。".to_owned())?;
+                wsl.ok_or_else(|| "找不到 wsl.exe。WSL 侧 orb run 需要 Win+WSL。".to_owned())?;
             args.extend(wsl_inner_args(wsl, inner)?);
         }
         InnerCommand::Native(inner) => args.extend(native_inner_args(inner)?),
@@ -515,9 +512,7 @@ fn inner_cwd(inner: &InnerCommand) -> &Path {
 
 pub fn wsl_inner_args(wsl: &Path, inner: &WslInner) -> Result<Vec<String>, String> {
     if inner.distro.trim().is_empty() {
-        return Err(
-            "缺少 WSL 发行版名。在 WSL 里运行，或设置 AGENT_ACTIVITY_DOCK_WSL_DISTRO。".to_owned(),
-        );
+        return Err("缺少 WSL 发行版名。在 WSL 里运行，或设置 ORBCUE_WSL_DISTRO。".to_owned());
     }
     let cwd = inner
         .cwd
@@ -554,7 +549,7 @@ pub fn native_inner_args(inner: &NativeInner) -> Result<Vec<String>, String> {
     args.push(inner.program.display().to_string());
     args.extend(inner.args.iter().cloned());
     if args.iter().any(|arg| arg.contains(';')) {
-        return Err("native dock run arguments cannot contain ';'".to_owned());
+        return Err("native orb run arguments cannot contain ';'".to_owned());
     }
     Ok(args)
 }
@@ -586,7 +581,7 @@ pub fn inner_script(
         lines.push(format!("export {key}={}", posix_single_quote(value)));
     }
     lines.push(format!(
-        "export AGENT_ACTIVITY_DOCK_TERMINAL_ID={}",
+        "export ORBCUE_TERMINAL_ID={}",
         posix_single_quote(marker)
     ));
     lines.push(command);
@@ -606,7 +601,7 @@ fn write_wsl_run_script(
         .map(PathBuf::from)
         .filter(|path| path.is_dir())
         .unwrap_or_else(|| PathBuf::from("/tmp"));
-    let name = format!("aadock-{}.sh", marker.replace(':', "-"));
+    let name = format!("orbcue-{}.sh", marker.replace(':', "-"));
     let path = dir.join(name);
     fs::write(
         &path,
@@ -645,13 +640,13 @@ fn next_marker_suffix() -> u32 {
     (nanos ^ ((std::process::id() as u64) << 16) ^ seq.wrapping_mul(0x9E37_79B9)) as u32
 }
 
-const CURSOR_EDITOR_ON_PATH: &str = "cursor 在 PATH 上是 Cursor 编辑器，不是命令行工具。Dock 需要 cursor-agent；先安装 Cursor CLI 再运行 dock run cursor。";
+const CURSOR_EDITOR_ON_PATH: &str = "cursor 在 PATH 上是 Cursor 编辑器，不是命令行工具。Dock 需要 cursor-agent；先安装 Cursor CLI 再运行 orb run cursor。";
 
 fn resolve_agent(name: &str) -> Result<String, String> {
     if !valid_run_agent_name(name) {
         return Err("agent 名只能包含字母、数字、'.'、'_' 或 '-'".to_owned());
     }
-    let dock_binary = env::current_exe().unwrap_or_else(|_| PathBuf::from("dock"));
+    let dock_binary = env::current_exe().unwrap_or_else(|_| PathBuf::from("orb"));
     let manager = ConnectionManager::from_environment(dock_binary);
     resolve_agent_with(name, env::var_os("PATH").as_deref(), &manager)
 }
@@ -688,7 +683,7 @@ fn resolve_agent_with(
         return Err(CURSOR_EDITOR_ON_PATH.to_owned());
     }
     Err(format!(
-        "`{name}` 未连接，也不在 PATH 上。先执行 `dock connect {name}`，或确认该命令可用。"
+        "`{name}` 未连接，也不在 PATH 上。先执行 `orb connect {name}`，或确认该命令可用。"
     ))
 }
 
@@ -709,7 +704,7 @@ fn is_cursor_cli_binary(path: &Path) -> bool {
 fn resolve_wt_profile(explicit: Option<&str>) -> Result<Option<String>, String> {
     choose_wt_profile(
         explicit,
-        env::var("AGENT_ACTIVITY_DOCK_WT_PROFILE").ok().as_deref(),
+        env::var("ORBCUE_WT_PROFILE").ok().as_deref(),
         env::var("WT_PROFILE_ID").ok().as_deref(),
     )
 }
@@ -758,7 +753,7 @@ fn forwarded_exports() -> Vec<(String, String)> {
     [
         "PATH",
         "HOME",
-        "AGENT_ACTIVITY_DOCK_SOCKET",
+        "ORBCUE_SOCKET",
         "XDG_STATE_HOME",
         "XDG_RUNTIME_DIR",
     ]
@@ -781,7 +776,7 @@ fn valid_export_key(key: &str) -> bool {
 }
 
 fn wsl_distro() -> Result<String, String> {
-    for key in ["WSL_DISTRO_NAME", "AGENT_ACTIVITY_DOCK_WSL_DISTRO"] {
+    for key in ["WSL_DISTRO_NAME", "ORBCUE_WSL_DISTRO"] {
         if let Ok(value) = env::var(key) {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
@@ -789,11 +784,11 @@ fn wsl_distro() -> Result<String, String> {
             }
         }
     }
-    Err("缺少 WSL 发行版名。在 WSL 里运行，或设置 AGENT_ACTIVITY_DOCK_WSL_DISTRO。".to_owned())
+    Err("缺少 WSL 发行版名。在 WSL 里运行，或设置 ORBCUE_WSL_DISTRO。".to_owned())
 }
 
 fn find_wt() -> Result<PathBuf, String> {
-    if let Some(path) = env_executable("AGENT_ACTIVITY_DOCK_WT") {
+    if let Some(path) = env_executable("ORBCUE_WT") {
         return Ok(path);
     }
     look_on_path("wt.exe")
@@ -803,14 +798,14 @@ fn find_wt() -> Result<PathBuf, String> {
 }
 
 fn find_wsl() -> Result<PathBuf, String> {
-    if let Some(path) = env_executable("AGENT_ACTIVITY_DOCK_WSL") {
+    if let Some(path) = env_executable("ORBCUE_WSL") {
         return Ok(path);
     }
     look_on_path("wsl.exe")
         .or_else(|| look_on_path("wsl"))
         .or_else(|| existing_path(PathBuf::from("/mnt/c/Windows/System32/wsl.exe")))
         .or_else(|| existing_path(PathBuf::from(r"C:\Windows\System32\wsl.exe")))
-        .ok_or_else(|| "找不到 wsl.exe。WSL 侧 dock run 需要 Win+WSL。".to_owned())
+        .ok_or_else(|| "找不到 wsl.exe。WSL 侧 orb run 需要 Win+WSL。".to_owned())
 }
 
 fn env_executable(key: &str) -> Option<PathBuf> {
@@ -867,8 +862,8 @@ mod tests {
         wt_windows_command_line, InnerCommand, NativeInner, SpawnRequest, WslInner,
         CURSOR_EDITOR_ON_PATH,
     };
-    use agent_activity_dock_connect::ConnectionManager;
-    use agent_activity_dock_core::{dock_terminal_marker, DOCK_MARKER_HEX_LEN};
+    use orbcue_connect::ConnectionManager;
+    use orbcue_core::{dock_terminal_marker, DOCK_MARKER_HEX_LEN};
     use std::collections::HashSet;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -877,13 +872,13 @@ mod tests {
     fn request() -> SpawnRequest {
         SpawnRequest {
             agent: "grok".to_owned(),
-            marker: "dock:ab12cd".to_owned(),
+            marker: "orb:ab12cd".to_owned(),
             profile: None,
             inner: InnerCommand::Wsl(WslInner {
                 distro: "Ubuntu".to_owned(),
                 shell: "/bin/zsh".to_owned(),
                 cwd: PathBuf::from("/home/qingz/projects/agent-activity-dock"),
-                run_script: PathBuf::from("/tmp/aadock-dock-ab12cd.sh"),
+                run_script: PathBuf::from("/tmp/orbcue-orb-ab12cd.sh"),
             }),
         }
     }
@@ -898,14 +893,14 @@ mod tests {
         .unwrap();
         assert_eq!(plan.program, PathBuf::from("/tmp/wt.exe"));
         assert_eq!(plan.args[..4], ["-w", "0", "nt", "--title"]);
-        assert_eq!(plan.title, "agent-activity-dock · grok · dock:ab12cd");
+        assert_eq!(plan.title, "agent-activity-dock · grok · orb:ab12cd");
         assert!(plan.args.contains(&"--suppressApplicationTitle".to_owned()));
         assert_eq!(plan.args[4], plan.title);
         assert!(plan.args.contains(&"wsl.exe".to_owned()));
         assert!(plan.args.contains(&"--cd".to_owned()));
         assert_eq!(
             &plan.args[plan.args.len() - 2..],
-            ["-l", "/tmp/aadock-dock-ab12cd.sh"]
+            ["-l", "/tmp/orbcue-orb-ab12cd.sh"]
         );
         assert!(
             !plan.args.iter().any(|arg| arg.contains(';')),
@@ -914,8 +909,8 @@ mod tests {
         );
         assert!(!plan.args.iter().any(|arg| arg == "-lc"));
         assert_eq!(
-            dock_terminal_marker("dock:ab12cd").map(str::len),
-            Some("dock:".len() + DOCK_MARKER_HEX_LEN)
+            dock_terminal_marker("orb:ab12cd").map(str::len),
+            Some("orb:".len() + DOCK_MARKER_HEX_LEN)
         );
         assert!(!plan.args.contains(&"--profile".to_owned()));
     }
@@ -967,15 +962,12 @@ mod tests {
         let script = inner_script(
             "/home/qingz/.local/bin/grok",
             &["--foo".to_owned(), "bar baz".to_owned()],
-            &[(
-                "AGENT_ACTIVITY_DOCK_SOCKET".to_owned(),
-                "/tmp/dock.sock".to_owned(),
-            )],
-            "dock:ab12cd",
+            &[("ORBCUE_SOCKET".to_owned(), "/tmp/dock.sock".to_owned())],
+            "orb:ab12cd",
             "/bin/zsh",
         );
-        assert!(script.contains("export AGENT_ACTIVITY_DOCK_SOCKET='/tmp/dock.sock'"));
-        assert!(script.contains("export AGENT_ACTIVITY_DOCK_TERMINAL_ID='dock:ab12cd'"));
+        assert!(script.contains("export ORBCUE_SOCKET='/tmp/dock.sock'"));
+        assert!(script.contains("export ORBCUE_TERMINAL_ID='orb:ab12cd'"));
         assert!(script.contains("'/home/qingz/.local/bin/grok' '--foo' 'bar baz'"));
         assert!(script.contains("rm -f -- \"$0\""));
         assert!(
@@ -985,17 +977,17 @@ mod tests {
         assert_eq!(posix_single_quote("it's"), "'it'\\''s'");
         assert_eq!(windows_quote("nt"), "nt");
         assert_eq!(
-            windows_quote("grok · dock — dock:ab12cd"),
-            "\"grok · dock — dock:ab12cd\""
+            windows_quote("grok · dock — orb:ab12cd"),
+            "\"grok · dock — orb:ab12cd\""
         );
         let line = wt_windows_command_line(&[
             "-w".to_owned(),
             "0".to_owned(),
             "nt".to_owned(),
             "--title".to_owned(),
-            "grok · app — dock:ab12cd".to_owned(),
+            "grok · app — orb:ab12cd".to_owned(),
         ]);
-        assert_eq!(line, "-w 0 nt --title \"grok · app — dock:ab12cd\""); // quoting only
+        assert_eq!(line, "-w 0 nt --title \"grok · app — orb:ab12cd\""); // quoting only
     }
 
     #[test]
@@ -1004,10 +996,7 @@ mod tests {
             program: PathBuf::from(r"C:\Users\qingz\AppData\Local\grok.exe"),
             args: vec!["--foo".to_owned()],
             cwd: PathBuf::from(r"C:\work\app"),
-            extra_env: vec![(
-                "AGENT_ACTIVITY_DOCK_TERMINAL_ID".to_owned(),
-                "dock:ab12cd".to_owned(),
-            )],
+            extra_env: vec![("ORBCUE_TERMINAL_ID".to_owned(), "orb:ab12cd".to_owned())],
         })
         .unwrap();
         assert_eq!(
@@ -1016,7 +1005,7 @@ mod tests {
                 "--startingDirectory",
                 r"C:\work\app",
                 "--env",
-                "AGENT_ACTIVITY_DOCK_TERMINAL_ID=dock:ab12cd"
+                "ORBCUE_TERMINAL_ID=orb:ab12cd"
             ]
         );
         assert_eq!(
@@ -1030,12 +1019,12 @@ mod tests {
     fn wsl_run_spec_round_trips_into_spawn_plan() {
         let spec = super::WslRunSpec {
             agent: "grok".to_owned(),
-            marker: "dock:ab12cd".to_owned(),
+            marker: "orb:ab12cd".to_owned(),
             profile: None,
             distro: "Ubuntu".to_owned(),
             shell: "/bin/zsh".to_owned(),
             cwd: "/home/qingz/app".to_owned(),
-            run_script: "/tmp/aadock-dock-ab12cd.sh".to_owned(),
+            run_script: "/tmp/orbcue-orb-ab12cd.sh".to_owned(),
         };
         let encoded = serde_json::to_string(&spec).unwrap();
         let decoded: super::WslRunSpec = serde_json::from_str(&encoded).unwrap();
@@ -1058,7 +1047,7 @@ mod tests {
         )
         .unwrap();
         assert!(plan.args.contains(&"Ubuntu".to_owned()));
-        assert!(plan.args.contains(&"/tmp/aadock-dock-ab12cd.sh".to_owned()));
+        assert!(plan.args.contains(&"/tmp/orbcue-orb-ab12cd.sh".to_owned()));
         assert!(plan.args.contains(&"wsl.exe".to_owned()));
     }
 
@@ -1066,22 +1055,19 @@ mod tests {
     fn spawn_plan_native_does_not_invoke_wsl() {
         let request = SpawnRequest {
             agent: "grok".to_owned(),
-            marker: "dock:ab12cd".to_owned(),
+            marker: "orb:ab12cd".to_owned(),
             profile: None,
             inner: InnerCommand::Native(NativeInner {
                 program: PathBuf::from(r"C:\grok.exe"),
                 args: Vec::new(),
                 cwd: PathBuf::from(r"C:\work"),
-                extra_env: vec![(
-                    "AGENT_ACTIVITY_DOCK_TERMINAL_ID".to_owned(),
-                    "dock:ab12cd".to_owned(),
-                )],
+                extra_env: vec![("ORBCUE_TERMINAL_ID".to_owned(), "orb:ab12cd".to_owned())],
             }),
         };
         let plan = spawn_plan(Path::new("/tmp/wt.exe"), None, &request).unwrap();
         assert!(!plan.args.iter().any(|arg| arg.contains("wsl")));
         assert!(plan.args.contains(&"--startingDirectory".to_owned()));
-        assert_eq!(plan.title, "work · grok · dock:ab12cd");
+        assert_eq!(plan.title, "work · grok · orb:ab12cd");
     }
 
     #[test]
@@ -1107,7 +1093,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("aadock-resolve-{nonce}"));
+        let root = std::env::temp_dir().join(format!("orbcue-resolve-{nonce}"));
         fs::create_dir_all(root.join("home")).unwrap();
         fs::create_dir_all(root.join("bin")).unwrap();
         root
@@ -1118,7 +1104,7 @@ mod tests {
             root.join("home"),
             root.join("config"),
             root.join("data"),
-            root.join("dock"),
+            root.join("orb"),
         )
     }
 

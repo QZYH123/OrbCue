@@ -9,6 +9,42 @@ permissions:
   contents: write
 
 jobs:
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+      - run: cargo fmt --all -- --check
+      - run: cargo test --workspace --exclude orbcue
+      - run: cargo check -p orbcue
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --prefix frontend
+      - run: npm run check
+      - run: npm run build
+
   linux-cli:
     name: Linux musl CLI
     runs-on: ubuntu-latest
@@ -21,21 +57,21 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
-      - run: cargo build -p agent-activity-dock-cli --release --target x86_64-unknown-linux-musl
-      - name: Stage dock-wsl artifact
+      - run: cargo build -p orbcue-cli --release --target x86_64-unknown-linux-musl
+      - name: Stage orb-wsl artifact
         run: |
           mkdir -p src-tauri/resources
-          cp target/x86_64-unknown-linux-musl/release/dock src-tauri/resources/dock-wsl
+          cp target/x86_64-unknown-linux-musl/release/orb src-tauri/resources/orb-wsl
       - uses: actions/upload-artifact@v4
         with:
-          name: dock-wsl
-          path: src-tauri/resources/dock-wsl
+          name: orb-wsl
+          path: src-tauri/resources/orb-wsl
           if-no-files-found: error
 
   package-windows:
     name: Windows installer
     runs-on: windows-latest
-    needs: [linux-cli]
+    needs: [rust, frontend, linux-cli]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -46,18 +82,21 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - uses: actions/download-artifact@v4
         with:
-          name: dock-wsl
+          name: orb-wsl
           path: src-tauri/resources
+      - run: cargo test --workspace --exclude orbcue
       - run: npm ci --prefix frontend
       - run: npm run tauri -- build --bundles nsis
         env:
-          AGENT_ACTIVITY_DOCK_SKIP_WSL_DOCK_BUILD: "1"
+          ORBCUE_SKIP_WSL_ORB_BUILD: "1"
       - uses: actions/upload-artifact@v4
         with:
-          name: agent-activity-dock-windows-nsis
+          name: orbcue-windows-nsis
           path: target/release/bundle/nsis/
           if-no-files-found: error
       - uses: softprops/action-gh-release@v2
         with:
+          draft: false
+          generate_release_notes: true
           files: target/release/bundle/nsis/*
           fail_on_unmatched_files: true

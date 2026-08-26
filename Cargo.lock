@@ -9,99 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "agent-activity-dock"
-version = "0.2.0"
-dependencies = [
- "agent-activity-dock-connect",
- "agent-activity-dock-core",
- "agent-activity-dock-ipc",
- "agent-activity-dock-service",
- "raw-window-handle",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-dialog",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tauri-winrt-notification",
- "windows",
- "windows-registry",
-]
-
-[[package]]
-name = "agent-activity-dock-adapters"
-version = "0.2.0"
-dependencies = [
- "agent-activity-dock-core",
- "serde_json",
- "time",
-]
-
-[[package]]
-name = "agent-activity-dock-cli"
-version = "0.2.0"
-dependencies = [
- "agent-activity-dock-adapters",
- "agent-activity-dock-connect",
- "agent-activity-dock-core",
- "agent-activity-dock-ipc",
- "agent-activity-dock-service",
- "clap",
- "libc",
- "serde",
- "serde_json",
- "time",
-]
-
-[[package]]
-name = "agent-activity-dock-connect"
-version = "0.2.0"
-dependencies = [
- "agent-activity-dock-ipc",
- "serde",
- "serde_json",
- "windows-registry",
-]
-
-[[package]]
-name = "agent-activity-dock-core"
-version = "0.2.0"
-dependencies = [
- "serde",
- "serde_json",
- "sha2",
- "time",
-]
-
-[[package]]
-name = "agent-activity-dock-ipc"
-version = "0.2.0"
-dependencies = [
- "agent-activity-dock-core",
- "interprocess",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "agent-activity-dock-service"
-version = "0.2.0"
-dependencies = [
- "agent-activity-dock-core",
- "agent-activity-dock-ipc",
- "ctrlc",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "time",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2702,6 +2609,99 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
+name = "orbcue"
+version = "0.2.0"
+dependencies = [
+ "orbcue-connect",
+ "orbcue-core",
+ "orbcue-ipc",
+ "orbcue-service",
+ "raw-window-handle",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-dialog",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "tauri-winrt-notification",
+ "windows",
+ "windows-registry",
+]
+
+[[package]]
+name = "orbcue-adapters"
+version = "0.2.0"
+dependencies = [
+ "orbcue-core",
+ "serde_json",
+ "time",
+]
+
+[[package]]
+name = "orbcue-cli"
+version = "0.2.0"
+dependencies = [
+ "clap",
+ "libc",
+ "orbcue-adapters",
+ "orbcue-connect",
+ "orbcue-core",
+ "orbcue-ipc",
+ "orbcue-service",
+ "serde",
+ "serde_json",
+ "time",
+]
+
+[[package]]
+name = "orbcue-connect"
+version = "0.2.0"
+dependencies = [
+ "orbcue-ipc",
+ "serde",
+ "serde_json",
+ "windows-registry",
+]
+
+[[package]]
+name = "orbcue-core"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "time",
+]
+
+[[package]]
+name = "orbcue-ipc"
+version = "0.2.0"
+dependencies = [
+ "interprocess",
+ "orbcue-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "orbcue-service"
+version = "0.2.0"
+dependencies = [
+ "ctrlc",
+ "orbcue-core",
+ "orbcue-ipc",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "time",
+]
 
 [[package]]
 name = "ordered-stream"

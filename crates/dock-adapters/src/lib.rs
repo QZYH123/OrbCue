@@ -1,6 +1,6 @@
 //! First-party payload adapters. They consume structured public payloads only.
 
-use agent_activity_dock_core::{DockEvent, EventKind, Severity};
+use orbcue_core::{DockEvent, EventKind, Severity};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -26,24 +26,15 @@ pub fn dsh_projection(payload: &Value) -> Option<DockEvent> {
         "session.cancelled" => EventKind::Cancelled,
         _ => return None,
     };
-    let session_id = payload.get("session_id").and_then(Value::as_str)?;
+    let session_id = json_str(payload, &["session_id"])?;
     Some(make_event("dsh", session_id, kind, payload))
 }
 
 pub fn grok_hook(payload: &Value) -> Option<DockEvent> {
-    if payload
-        .get("subagentType")
-        .or_else(|| payload.get("subagent_type"))
-        .and_then(Value::as_str)
-        .is_some()
-    {
+    if json_str(payload, &["subagentType", "subagent_type"]).is_some() {
         return None;
     }
-    let event_name = payload
-        .get("hookEventName")
-        .or_else(|| payload.get("hook_event_name"))
-        .or_else(|| payload.get("hook_event"))
-        .and_then(Value::as_str)
+    let event_name = json_str(payload, &["hookEventName", "hook_event_name", "hook_event"])
         .map(normalize_hook_event)?;
     let kind = match event_name.as_str() {
         "session_start" => EventKind::Idle,
@@ -68,19 +59,8 @@ pub fn grok_hook(payload: &Value) -> Option<DockEvent> {
         },
         _ => return None,
     };
-    let session_id = payload
-        .get("sessionId")
-        .or_else(|| payload.get("session_id"))
-        .and_then(Value::as_str)?;
-    let mut event = make_event("grok", session_id, kind, payload);
-    if matches!(
-        kind,
-        EventKind::PermissionRequested | EventKind::WaitingInput
-    ) {
-        event.severity = Severity::Attention;
-        event.requires_user_action = Some(true);
-    }
-    Some(event)
+    let session_id = json_str(payload, &["sessionId", "session_id"])?;
+    Some(attentive_event("grok", session_id, kind, payload))
 }
 
 fn map_cli_hook(source: &str, payload: &Value) -> Option<DockEvent> {
@@ -90,36 +70,34 @@ fn map_cli_hook(source: &str, payload: &Value) -> Option<DockEvent> {
     if is_named_subagent_hook(&event_name) && extract_parent(payload).is_none() {
         return None;
     }
-    let mut event = make_event(source, session_id, kind, payload);
-    if matches!(
-        kind,
-        EventKind::PermissionRequested | EventKind::WaitingInput
-    ) {
-        event.severity = Severity::Attention;
-        event.requires_user_action = Some(true);
-    }
-    Some(event)
+    Some(attentive_event(source, session_id, kind, payload))
 }
 
 fn extract_hook_event(payload: &Value) -> Option<String> {
-    payload
-        .get("hook_event_name")
-        .or_else(|| payload.get("hook_event"))
-        .or_else(|| payload.get("hookEventName"))
-        .or_else(|| payload.get("hookEvent"))
-        .and_then(Value::as_str)
-        .map(normalize_hook_event)
+    json_str(
+        payload,
+        &[
+            "hook_event_name",
+            "hook_event",
+            "hookEventName",
+            "hookEvent",
+        ],
+    )
+    .map(normalize_hook_event)
 }
 
 fn extract_session_id(payload: &Value) -> Option<&str> {
-    payload
-        .get("session_id")
-        .or_else(|| payload.get("sessionId"))
-        .or_else(|| payload.get("conversation_id"))
-        .or_else(|| payload.get("conversationId"))
-        .or_else(|| payload.get("thread_id"))
-        .or_else(|| payload.get("threadId"))
-        .and_then(Value::as_str)
+    json_str(
+        payload,
+        &[
+            "session_id",
+            "sessionId",
+            "conversation_id",
+            "conversationId",
+            "thread_id",
+            "threadId",
+        ],
+    )
 }
 
 fn lifecycle_kind(event_name: &str, payload: &Value) -> Option<EventKind> {
@@ -185,22 +163,15 @@ fn is_running_background_subagent(task: &Value) -> bool {
 }
 
 fn notification_type(payload: &Value) -> Option<&str> {
-    payload
-        .get("notificationType")
-        .or_else(|| payload.get("notification_type"))
-        .or_else(|| payload.get("type"))
-        .and_then(Value::as_str)
+    json_str(payload, &["notificationType", "notification_type", "type"])
 }
 
-fn grok_tool_name(payload: &Value) -> Option<&str> {
-    payload
-        .get("toolName")
-        .or_else(|| payload.get("tool_name"))
-        .and_then(Value::as_str)
+fn tool_name(payload: &Value) -> Option<&str> {
+    json_str(payload, &["toolName", "tool_name"])
 }
 
 fn is_ask_user_question(payload: &Value) -> bool {
-    grok_tool_name(payload).is_some_and(|name| {
+    tool_name(payload).is_some_and(|name| {
         matches!(
             normalize_hook_event(name).as_str(),
             "ask_user_question" | "ask_question"
@@ -220,48 +191,39 @@ pub fn codex_notification(payload: &Value) -> Option<DockEvent> {
         "session.cancelled" | "cancelled" => EventKind::Cancelled,
         _ => return None,
     };
-    let session_id = payload
-        .get("session_id")
-        .or_else(|| payload.get("id"))
-        .and_then(Value::as_str)?;
+    let session_id = json_str(payload, &["session_id", "id"])?;
     Some(make_event("codex", session_id, kind, payload))
 }
 
 fn make_event(source: &str, session_id: &str, kind: EventKind, payload: &Value) -> DockEvent {
-    let event_id = payload
-        .get("event_id")
-        .or_else(|| payload.get("id"))
-        .or_else(|| payload.get("occurred_at"))
-        .and_then(Value::as_str)
+    let event_id = json_str(payload, &["event_id", "id", "occurred_at"])
         .map(str::to_owned)
         .unwrap_or_else(|| {
-            let stamp = payload
-                .get("timestamp")
-                .or_else(|| payload.get("promptId"))
-                .or_else(|| payload.get("prompt_id"))
-                .or_else(|| payload.get("generation_id"))
-                .or_else(|| payload.get("generationId"))
-                .or_else(|| payload.get("turn_id"))
-                .or_else(|| payload.get("turnId"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(|| OffsetDateTime::now_utc().unix_timestamp_nanos().to_string());
+            let stamp = json_str(
+                payload,
+                &[
+                    "timestamp",
+                    "promptId",
+                    "prompt_id",
+                    "generation_id",
+                    "generationId",
+                    "turn_id",
+                    "turnId",
+                ],
+            )
+            .map(str::to_owned)
+            .unwrap_or_else(|| OffsetDateTime::now_utc().unix_timestamp_nanos().to_string());
             format!("{source}-{session_id}-{}-{stamp}", kind_name(kind))
         });
     let mut event = DockEvent::new(&event_id, kind, source, session_id);
-    event.occurred_at = payload
-        .get("occurred_at")
-        .and_then(Value::as_str)
+    event.occurred_at = json_str(payload, &["occurred_at"])
         .map(str::to_owned)
         .or_else(|| OffsetDateTime::now_utc().format(&Rfc3339).ok())
         .unwrap_or(event.occurred_at);
-    if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
+    if let Some(cwd) = json_str(payload, &["cwd"]) {
         event.cwd = Some(cwd.to_owned());
     }
-    if let Some(workspace_root) = payload
-        .get("workspaceRoot")
-        .or_else(|| payload.get("workspace_root"))
-        .and_then(Value::as_str)
+    if let Some(workspace_root) = json_str(payload, &["workspaceRoot", "workspace_root"])
         .map(str::to_owned)
         .or_else(|| first_workspace_root(payload))
     {
@@ -273,20 +235,40 @@ fn make_event(source: &str, session_id: &str, kind: EventKind, payload: &Value) 
     event
 }
 
+fn attentive_event(source: &str, session_id: &str, kind: EventKind, payload: &Value) -> DockEvent {
+    let mut event = make_event(source, session_id, kind, payload);
+    if matches!(
+        kind,
+        EventKind::PermissionRequested | EventKind::WaitingInput
+    ) {
+        event.severity = Severity::Attention;
+        event.requires_user_action = Some(true);
+    }
+    event
+}
+
 fn extract_parent(payload: &Value) -> Option<String> {
-    payload
-        .get("parent_session_id")
-        .or_else(|| payload.get("parentSessionId"))
-        .or_else(|| payload.get("parent_agent_id"))
-        .or_else(|| payload.get("parentAgentId"))
-        .or_else(|| payload.get("parent_id"))
-        .or_else(|| payload.get("parentId"))
-        .or_else(|| payload.get("parent_conversation_id"))
-        .or_else(|| payload.get("parentConversationId"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
+    json_str(
+        payload,
+        &[
+            "parent_session_id",
+            "parentSessionId",
+            "parent_agent_id",
+            "parentAgentId",
+            "parent_id",
+            "parentId",
+            "parent_conversation_id",
+            "parentConversationId",
+        ],
+    )
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(str::to_owned)
+}
+
+fn json_str<'a>(payload: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| payload.get(*key).and_then(Value::as_str))
 }
 
 fn first_workspace_root(payload: &Value) -> Option<String> {
