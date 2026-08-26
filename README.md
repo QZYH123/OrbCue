@@ -7,7 +7,7 @@ The orb that cues you when an agent needs you.
 OrbCue 在 Windows 桌面上放一个小球：orb 是形态，cue 是该你出手了。**工作时只显示数量，需要你处理时才提醒。** 点开小球是按项目分组的列表，点条目上的返回箭头可以跳回对应终端。命令行是 `orb`。
 
 <p align="center">
-  <img src="docs/screenshots/demo.gif" width="460" alt="工作时只显示数量，需要处理时出现问号，点开按项目分组的列表">
+  <img src="docs/screenshots/demo.gif" width="480" alt="工作时只显示数量，需要处理时出现问号，点开按项目分组的列表">
 </p>
 
 当前 **0.2.2**，桌面程序只在 Windows 上提供。安装包见 [GitHub Releases](https://github.com/QZYH123/OrbCue/releases/latest)。
