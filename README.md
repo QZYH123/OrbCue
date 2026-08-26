@@ -7,13 +7,7 @@ The orb that cues you when an agent needs you.
 OrbCue 在 Windows 桌面上放一个小球：orb 是形态，cue 是该你出手了。**工作时只显示数量，需要你处理时才提醒。** 点开小球是按项目分组的列表，点条目上的返回箭头可以跳回对应终端。命令行是 `orb`。
 
 <p align="center">
-  <img src="docs/screenshots/orb.png" width="88" alt="工作时只显示数量">
-  &nbsp;&nbsp;
-  <img src="docs/screenshots/orb-waiting.png" width="88" alt="需要处理时右上角出现问号">
-</p>
-
-<p align="center">
-  <sub>工作中只显示数量 &nbsp;·&nbsp; 需要处理时出现问号</sub>
+  <img src="docs/screenshots/demo.gif" width="460" alt="工作时只显示数量，需要处理时出现问号，点开按项目分组的列表">
 </p>
 
 当前 **0.2.2**，桌面程序只在 Windows 上提供。安装包见 [GitHub Releases](https://github.com/QZYH123/OrbCue/releases/latest)。
@@ -64,7 +58,7 @@ OrbCue 在 Windows 桌面上放一个小球：orb 是形态，cue 是该你出�
 
 - Windows 10 / 11（x64）。小球和面板只在 Windows 上运行
 - WSL 可选。装了之后，WSL 里的工具和 Windows 上的会出现在同一个小球里；没装不影响使用
-- 精确跳回某一个标签需要 [Windows Terminal](https://aka.ms/terminal)。只用 PowerShell、cmd 或编辑器内置终端时，返回箭头最多回到最近交互过的窗口
+- 精确跳到某一个标签只适用于 [Windows Terminal](https://aka.ms/terminal)，需用 `orb run` 或启动别名开出专属标签。窗口级跳回适用于 Windows Terminal、cmd / PowerShell 独立窗口、Alacritty、WezTerm、Git Bash（mintty）和 Tabby；VS Code、Cursor 等编辑器内置终端不行
 - macOS 与 Linux 桌面暂未正式支持
 
 ## 安装
