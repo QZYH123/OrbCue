@@ -297,6 +297,7 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   display: grid;
   flex: 1 1 auto;
   align-content: start;
+  grid-auto-rows: min-content;
   gap: 2px;
   min-width: 0;
   min-height: 0;
@@ -359,7 +360,7 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 .session-card.unread.failed,
 .session-card.failed.unread { background: rgba(255, 67, 67, .1); }
 .session-card.highlighted { border-color: rgba(96, 205, 255, .45); }
-.session-card { overflow: hidden; }
+.session-card { overflow: hidden; min-height: min-content; }
 .ticket-rail {
   width: 3px;
   flex: 0 0 auto;
@@ -482,7 +483,7 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
 .session-actions button { font-size: 10px; }
 .session-actions button:hover, .text-button:hover { color: var(--text); }
 
-.audit-card { overflow: hidden; }
+.audit-card { overflow: hidden; min-height: min-content; }
 .audit-content time { flex: 0 0 auto; color: var(--faint); font-size: 10px; white-space: nowrap; }
 .audit-meta { display: flex; gap: 8px; margin-top: 4px; min-width: 0; color: var(--muted); font-size: 11px; }
 .audit-meta span + span { padding-left: 8px; border-left: 1px solid var(--line); }

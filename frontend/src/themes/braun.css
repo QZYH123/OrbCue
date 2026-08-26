@@ -299,6 +299,7 @@ html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
   display: grid;
   flex: 1 1 auto;
   align-content: start;
+  grid-auto-rows: min-content;
   gap: 0;
   min-width: 0;
   min-height: 0;

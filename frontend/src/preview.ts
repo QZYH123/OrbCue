@@ -131,6 +131,19 @@ export const demoSnapshot: Snapshot = {
       occurred_at: '2026-08-22T10:08:00Z',
       project_path: '/home/qingz/projects/agent-activity-dock',
     },
+    ...Array.from({ length: 12 }, (_, index) => {
+      const source = (['claude', 'grok', 'codex', 'cursor'] as const)[index % 4];
+      const state = (['completed', 'failed', 'needs_attention', 'closed'] as const)[index % 4];
+      const minute = String(12 + index).padStart(2, '0');
+      return {
+        source,
+        session_id: `audit-row-${index}`,
+        state,
+        attention_reason: state === 'needs_attention' ? 'input' : null,
+        occurred_at: `2026-08-22T10:${minute}:00Z`,
+        project_path: '/home/qingz/projects/agent-activity-dock',
+      };
+    }),
   ],
 };
 
