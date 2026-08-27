@@ -429,11 +429,10 @@ impl ConnectionManager {
             let Some(record) = file.agents.get(&name).cloned() else {
                 continue;
             };
-            if record.method != ConnectionMethod::CursorHook {
+            let Some(hook) = current_hook_script(&self.config_dir, record.method) else {
                 continue;
-            }
-            let hook = hook_path(&self.config_dir, "cursor");
-            if hook.is_file() && cursor_hooks_registered(&self.cursor_hooks_file(), &hook) {
+            };
+            if self.hook_install_is_current(record.method, &hook) {
                 if record.hook_script.as_ref() != Some(&hook) {
                     if let Some(updated) = file.agents.get_mut(&name) {
                         updated.hook_script = Some(hook);
@@ -653,6 +652,47 @@ impl ConnectionManager {
             ConnectionMethod::GrokHook => self.install_grok_hook().map(|_| ()),
             ConnectionMethod::CodexHook => self.install_codex_hook().map(|_| ()),
             ConnectionMethod::CursorHook => self.install_cursor_hook().map(|_| ()),
+        }
+    }
+
+    fn hook_install_is_current(&self, method: ConnectionMethod, hook: &Path) -> bool {
+        if !hook.is_file() || !hook_script_forwards_args(hook) {
+            return false;
+        }
+        match method {
+            ConnectionMethod::CursorHook => {
+                cursor_hooks_registered(&self.cursor_hooks_file(), hook)
+            }
+            ConnectionMethod::Wrapper => true,
+            ConnectionMethod::ClaudeHook
+            | ConnectionMethod::GrokHook
+            | ConnectionMethod::CodexHook => {
+                let (path, specs) = match method {
+                    ConnectionMethod::ClaudeHook => (claude_settings_path(), claude_hook_specs()),
+                    ConnectionMethod::GrokHook => (self.grok_hooks_file(), grok_hook_specs()),
+                    ConnectionMethod::CodexHook => (self.codex_hooks_file(), codex_hook_specs()),
+                    ConnectionMethod::CursorHook | ConnectionMethod::Wrapper => unreachable!(),
+                };
+                let Ok(bytes) = fs::read(&path) else {
+                    return false;
+                };
+                let Ok(document) = serde_json::from_slice::<Value>(&bytes) else {
+                    return false;
+                };
+                let Some(hooks) = document.get("hooks").and_then(Value::as_object) else {
+                    return false;
+                };
+                specs.iter().all(|spec| {
+                    hooks
+                        .get(spec.event)
+                        .and_then(Value::as_array)
+                        .is_some_and(|entries| {
+                            entries
+                                .iter()
+                                .any(|entry| dock_handler_matches(entry, hook, spec))
+                        })
+                })
+            }
         }
     }
 
@@ -991,19 +1031,7 @@ fn install_nested_hooks_at(
             .as_array_mut()
             .ok_or_else(|| format!("hook {event} must be an array"))?;
         entries.retain(|entry| !is_dock_managed_hook(entry, hook));
-        let mut group = serde_json::Map::new();
-        if let Some(matcher) = spec.matcher {
-            group.insert("matcher".to_owned(), json!(matcher));
-        }
-        group.insert(
-            "hooks".to_owned(),
-            json!([{
-                "type": "command",
-                "command": hook.to_string_lossy(),
-                "timeout": 5
-            }]),
-        );
-        entries.push(Value::Object(group));
+        entries.push(dock_hook_group(hook, spec));
     }
     strip_unwanted_dock_hooks(hooks, &hook_spec_names(specs), hook);
     let backup = existing.map(|bytes| {
@@ -1283,6 +1311,98 @@ fn file_label(path: &Path) -> String {
 struct HookSpec {
     event: &'static str,
     matcher: Option<&'static str>,
+    async_command: bool,
+    detach: bool,
+}
+
+const fn hook(event: &'static str) -> HookSpec {
+    HookSpec {
+        event,
+        matcher: None,
+        async_command: false,
+        detach: false,
+    }
+}
+
+const fn hook_match(event: &'static str, matcher: &'static str) -> HookSpec {
+    HookSpec {
+        event,
+        matcher: Some(matcher),
+        async_command: false,
+        detach: false,
+    }
+}
+
+const fn async_hook(event: &'static str) -> HookSpec {
+    HookSpec {
+        event,
+        matcher: None,
+        async_command: true,
+        detach: false,
+    }
+}
+
+const fn detach_hook(event: &'static str) -> HookSpec {
+    HookSpec {
+        event,
+        matcher: None,
+        async_command: false,
+        detach: true,
+    }
+}
+
+fn dock_handler_matches(entry: &Value, hook: &Path, spec: &HookSpec) -> bool {
+    let expected = dock_command_handler(hook, spec);
+    let Some(actual) = entry
+        .get("hooks")
+        .and_then(Value::as_array)
+        .and_then(|hooks| hooks.first())
+        .or(Some(entry))
+    else {
+        return false;
+    };
+    actual.get("command") == expected.get("command") && actual.get("async") == expected.get("async")
+}
+
+fn dock_hook_group(hook: &Path, spec: &HookSpec) -> Value {
+    let mut group = serde_json::Map::new();
+    if let Some(matcher) = spec.matcher {
+        group.insert("matcher".to_owned(), json!(matcher));
+    }
+    group.insert(
+        "hooks".to_owned(),
+        json!([dock_command_handler(hook, spec)]),
+    );
+    Value::Object(group)
+}
+
+fn hook_script_forwards_args(hook: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(hook) else {
+        return false;
+    };
+    #[cfg(windows)]
+    {
+        text.contains("%*")
+    }
+    #[cfg(not(windows))]
+    {
+        text.contains("\"$@\"")
+    }
+}
+
+fn dock_command_handler(hook: &Path, spec: &HookSpec) -> Value {
+    let mut command = hook.to_string_lossy().into_owned();
+    if spec.detach {
+        command.push_str(" --detach");
+    }
+    let mut handler = serde_json::Map::new();
+    handler.insert("type".to_owned(), json!("command"));
+    handler.insert("command".to_owned(), json!(command));
+    handler.insert("timeout".to_owned(), json!(5));
+    if spec.async_command {
+        handler.insert("async".to_owned(), json!(true));
+    }
+    Value::Object(handler)
 }
 
 fn hook_spec_names(specs: &[HookSpec]) -> Vec<String> {
@@ -1300,159 +1420,61 @@ fn hook_spec_labels(specs: &[HookSpec]) -> Vec<String> {
 }
 
 fn claude_hook_specs() -> &'static [HookSpec] {
-    &[
-        HookSpec {
-            event: "SessionStart",
-            matcher: None,
-        },
-        HookSpec {
-            event: "UserPromptSubmit",
-            matcher: None,
-        },
-        HookSpec {
-            event: "PermissionRequest",
-            matcher: None,
-        },
-        HookSpec {
-            event: "PermissionDenied",
-            matcher: None,
-        },
-        HookSpec {
-            event: "Notification",
-            matcher: None,
-        },
-        HookSpec {
-            event: "Stop",
-            matcher: None,
-        },
-        HookSpec {
-            event: "StopFailure",
-            matcher: None,
-        },
-        HookSpec {
-            event: "SessionEnd",
-            matcher: None,
-        },
-        HookSpec {
-            event: "PreToolUse",
-            matcher: Some("AskUserQuestion"),
-        },
-        HookSpec {
-            event: "PostToolUse",
-            matcher: None,
-        },
-        HookSpec {
-            event: "PostToolUseFailure",
-            matcher: None,
-        },
-    ]
+    const SPECS: &[HookSpec] = &[
+        hook("SessionStart"),
+        hook("UserPromptSubmit"),
+        hook("PermissionRequest"),
+        hook("PermissionDenied"),
+        hook("Notification"),
+        hook("Stop"),
+        hook("StopFailure"),
+        hook("SessionEnd"),
+        hook_match("PreToolUse", "AskUserQuestion"),
+        async_hook("PostToolUse"),
+        async_hook("PostToolUseFailure"),
+    ];
+    SPECS
 }
 
 fn grok_hook_specs() -> &'static [HookSpec] {
-    &[
-        HookSpec {
-            event: "SessionStart",
-            matcher: None,
-        },
-        HookSpec {
-            event: "UserPromptSubmit",
-            matcher: None,
-        },
-        HookSpec {
-            event: "Notification",
-            matcher: None,
-        },
-        HookSpec {
-            event: "PermissionDenied",
-            matcher: None,
-        },
-        HookSpec {
-            event: "Stop",
-            matcher: None,
-        },
-        HookSpec {
-            event: "StopFailure",
-            matcher: None,
-        },
-        HookSpec {
-            event: "StopCancelled",
-            matcher: None,
-        },
-        HookSpec {
-            event: "SessionEnd",
-            matcher: None,
-        },
-        HookSpec {
-            event: "PreToolUse",
-            matcher: Some("ask_user_question"),
-        },
-        HookSpec {
-            event: "PostToolUse",
-            matcher: None,
-        },
-        HookSpec {
-            event: "PostToolUseFailure",
-            matcher: None,
-        },
-    ]
+    const SPECS: &[HookSpec] = &[
+        hook("SessionStart"),
+        hook("UserPromptSubmit"),
+        hook("Notification"),
+        hook("PermissionDenied"),
+        hook("Stop"),
+        hook("StopFailure"),
+        hook("StopCancelled"),
+        hook("SessionEnd"),
+        hook_match("PreToolUse", "ask_user_question"),
+        detach_hook("PostToolUse"),
+        detach_hook("PostToolUseFailure"),
+    ];
+    SPECS
 }
 
 fn codex_hook_specs() -> &'static [HookSpec] {
-    &[
-        HookSpec {
-            event: "SessionStart",
-            matcher: None,
-        },
-        HookSpec {
-            event: "UserPromptSubmit",
-            matcher: None,
-        },
-        HookSpec {
-            event: "PermissionRequest",
-            matcher: None,
-        },
-        HookSpec {
-            event: "Stop",
-            matcher: None,
-        },
-        HookSpec {
-            event: "SessionEnd",
-            matcher: None,
-        },
-        HookSpec {
-            event: "PreToolUse",
-            matcher: Some("AskUserQuestion|ask_user_question"),
-        },
-        HookSpec {
-            event: "PostToolUse",
-            matcher: None,
-        },
-    ]
+    const SPECS: &[HookSpec] = &[
+        hook("SessionStart"),
+        hook("UserPromptSubmit"),
+        hook("PermissionRequest"),
+        hook("Stop"),
+        hook("SessionEnd"),
+        hook_match("PreToolUse", "AskUserQuestion|ask_user_question"),
+        async_hook("PostToolUse"),
+    ];
+    SPECS
 }
 
 fn cursor_hook_specs() -> &'static [HookSpec] {
-    &[
-        HookSpec {
-            event: "sessionStart",
-            matcher: None,
-        },
-        HookSpec {
-            event: "beforeSubmitPrompt",
-            matcher: None,
-        },
-        HookSpec {
-            event: "afterAgentResponse",
-            matcher: None,
-        },
-        HookSpec {
-            event: "stop",
-            matcher: None,
-        },
-        HookSpec {
-            event: "sessionEnd",
-            matcher: None,
-        },
-    ]
+    const SPECS: &[HookSpec] = &[
+        hook("sessionStart"),
+        hook("beforeSubmitPrompt"),
+        hook("afterAgentResponse"),
+        hook("stop"),
+        hook("sessionEnd"),
+    ];
+    SPECS
 }
 
 fn cursor_unbounded_events() -> &'static [&'static str] {
@@ -1522,14 +1544,14 @@ fn hook_script(dock_binary: &Path, provider: &str) -> String {
     #[cfg(windows)]
     {
         return format!(
-            "@echo off\r\nrem OrbCue generated {provider} hook.\r\n{} hook {provider}\r\nexit /b 0\r\n",
+            "@echo off\r\nrem OrbCue generated {provider} hook.\r\n{} hook {provider} %*\r\nexit /b 0\r\n",
             windows_batch_quote(&dock_binary.to_string_lossy())
         );
     }
     #[cfg(not(windows))]
     {
         format!(
-            "#!/bin/sh\n# OrbCue generated {provider} hook.\n# exec so orb's PPID is the agent; liveness reaps that PID.\nexec {} hook {provider}\n",
+            "#!/bin/sh\n# OrbCue generated {provider} hook.\n# exec so orb's PPID is the agent; liveness reaps that PID.\nexec {} hook {provider} \"$@\"\n",
             shell_quote(&dock_binary.to_string_lossy())
         )
     }
@@ -1547,18 +1569,9 @@ fn install_grok_hooks(hooks_path: &Path, hook: &Path) -> Result<(), String> {
             ));
         }
     }
-    let command = hook.to_string_lossy().into_owned();
     let mut hooks = serde_json::Map::new();
     for spec in grok_hook_specs() {
-        let mut group = serde_json::Map::new();
-        if let Some(matcher) = spec.matcher {
-            group.insert("matcher".to_owned(), json!(matcher));
-        }
-        group.insert(
-            "hooks".to_owned(),
-            json!([{"type":"command","command": command.as_str(), "timeout": 5}]),
-        );
-        hooks.insert(spec.event.to_owned(), json!([group]));
+        hooks.insert(spec.event.to_owned(), json!([dock_hook_group(hook, spec)]));
     }
     let document = json!({
         "name": "orbcue",

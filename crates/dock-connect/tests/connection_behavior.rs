@@ -206,6 +206,30 @@ fn grok_connect_writes_a_revocable_hook_file() {
     let post = parsed["hooks"]["PostToolUse"][0].as_object().unwrap();
     assert_eq!(post.get("matcher"), None);
     assert_eq!(parsed["hooks"]["SessionStart"][0].get("matcher"), None);
+    assert_eq!(
+        parsed["hooks"]["PostToolUse"][0]["hooks"][0]["async"],
+        serde_json::Value::Null
+    );
+    assert!(
+        parsed["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("--detach"),
+        "Grok PostToolUse must detach: {document}"
+    );
+    assert!(
+        parsed["hooks"]["PostToolUseFailure"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("--detach")
+    );
+    assert!(
+        !parsed["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("--detach"),
+        "Stop must stay on the agent critical path: {document}"
+    );
     assert!(document.contains("orbcue"));
     assert!(document.contains("grok-hook"));
     let script =
@@ -215,11 +239,133 @@ fn grok_connect_writes_a_revocable_hook_file() {
         "hook must exec orb so liveness PPID is the agent: {script}"
     );
     assert!(
+        script.contains("\"$@\""),
+        "hook must forward --detach: {script}"
+    );
+    assert!(
         !script.contains("|| true"),
         "|| true would keep a short-lived shell as orb's parent: {script}"
     );
     assert!(manager.disconnect("grok").unwrap());
     assert!(!hooks.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn strip_detach(command: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!(command.as_str().unwrap().replace(" --detach", ""))
+}
+
+fn strip_async(handler: &mut serde_json::Value) {
+    handler.as_object_mut().unwrap().remove("async");
+}
+
+#[test]
+fn listing_upgrades_stale_post_tool_hooks() {
+    let root = temp_root();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let grok = root.join("grok-real");
+    let claude = root.join("claude-real");
+    let codex = root.join("codex-real");
+    executable(&grok, "#!/bin/sh\nexit 0\n");
+    executable(&claude, "#!/bin/sh\nexit 0\n");
+    executable(&codex, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        home.clone(),
+        root.join("config"),
+        root.join("data"),
+        root.join("orb"),
+    );
+    manager.connect("grok", &grok).unwrap();
+
+    let grok_hooks = home.join(".grok").join("hooks").join("orbcue.json");
+    let mut grok_doc: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&grok_hooks).unwrap()).unwrap();
+    grok_doc["hooks"]["PostToolUse"][0]["hooks"][0]["command"] =
+        strip_detach(&grok_doc["hooks"]["PostToolUse"][0]["hooks"][0]["command"]);
+    grok_doc["hooks"]["PostToolUseFailure"][0]["hooks"][0]["command"] =
+        strip_detach(&grok_doc["hooks"]["PostToolUseFailure"][0]["hooks"][0]["command"]);
+    fs::write(&grok_hooks, serde_json::to_vec_pretty(&grok_doc).unwrap()).unwrap();
+
+    let claude_dir = home.join(".claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    let _guard = lock_env();
+    let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
+    std::env::set_var("CLAUDE_CONFIG_DIR", &claude_dir);
+    manager.connect("claude", &claude).unwrap();
+    let claude_settings = claude_dir.join("settings.json");
+    let mut claude_doc: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&claude_settings).unwrap()).unwrap();
+    strip_async(&mut claude_doc["hooks"]["PostToolUse"][0]["hooks"][0]);
+    strip_async(&mut claude_doc["hooks"]["PostToolUseFailure"][0]["hooks"][0]);
+    fs::write(
+        &claude_settings,
+        serde_json::to_vec_pretty(&claude_doc).unwrap(),
+    )
+    .unwrap();
+
+    manager.connect("codex", &codex).unwrap();
+    let codex_hooks = home.join(".codex").join("hooks.json");
+    let mut codex_doc: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&codex_hooks).unwrap()).unwrap();
+    strip_async(&mut codex_doc["hooks"]["PostToolUse"][0]["hooks"][0]);
+    fs::write(&codex_hooks, serde_json::to_vec_pretty(&codex_doc).unwrap()).unwrap();
+
+    let _ = manager.records();
+    let grok_upgraded: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&grok_hooks).unwrap()).unwrap();
+    assert!(
+        grok_upgraded["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("--detach"),
+        "{grok_upgraded}"
+    );
+    assert!(
+        grok_upgraded["hooks"]["PostToolUseFailure"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("--detach")
+    );
+    assert!(!grok_upgraded["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .contains("--detach"));
+
+    let claude_upgraded: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&claude_settings).unwrap()).unwrap();
+    assert_eq!(
+        claude_upgraded["hooks"]["PostToolUse"][0]["hooks"][0]["async"],
+        true
+    );
+    assert_eq!(
+        claude_upgraded["hooks"]["PostToolUseFailure"][0]["hooks"][0]["async"],
+        true
+    );
+    assert!(claude_upgraded["hooks"]["Stop"][0]["hooks"][0]
+        .get("async")
+        .is_none());
+    assert!(claude_upgraded["hooks"]["PreToolUse"][0]["hooks"][0]
+        .get("async")
+        .is_none());
+
+    let codex_upgraded: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&codex_hooks).unwrap()).unwrap();
+    assert_eq!(
+        codex_upgraded["hooks"]["PostToolUse"][0]["hooks"][0]["async"],
+        true
+    );
+    assert!(codex_upgraded["hooks"]["Stop"][0]["hooks"][0]
+        .get("async")
+        .is_none());
+    assert!(codex_upgraded["hooks"]["PreToolUse"][0]["hooks"][0]
+        .get("async")
+        .is_none());
+
+    match previous {
+        Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
+        None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+    }
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -439,6 +585,23 @@ fn claude_preview_notes_backup_and_disconnect_keeps_other_hooks() {
     );
     assert_eq!(parsed["hooks"]["PostToolUse"][0].get("matcher"), None);
     assert_eq!(parsed["hooks"]["SessionStart"][0].get("matcher"), None);
+    assert_eq!(parsed["hooks"]["PostToolUse"][0]["hooks"][0]["async"], true);
+    assert_eq!(
+        parsed["hooks"]["PostToolUseFailure"][0]["hooks"][0]["async"],
+        true
+    );
+    assert!(
+        parsed["hooks"]["Stop"][0]["hooks"][0]
+            .get("async")
+            .is_none(),
+        "Stop must stay synchronous: {connected}"
+    );
+    assert!(
+        parsed["hooks"]["PreToolUse"][0]["hooks"][0]
+            .get("async")
+            .is_none(),
+        "AskUserQuestion PreToolUse must stay synchronous: {connected}"
+    );
     assert!(connected.contains("user-hook"));
     fs::write(
         &settings,
@@ -675,6 +838,13 @@ fn codex_connect_merges_hooks_json_and_keeps_other_hooks() {
         "AskUserQuestion|ask_user_question"
     );
     assert_eq!(parsed["hooks"]["PostToolUse"][0].get("matcher"), None);
+    assert_eq!(parsed["hooks"]["PostToolUse"][0]["hooks"][0]["async"], true);
+    assert!(
+        parsed["hooks"]["Stop"][0]["hooks"][0]
+            .get("async")
+            .is_none(),
+        "Stop must stay synchronous: {connected}"
+    );
     assert!(!connected.contains("PostToolUseFailure"));
     assert!(connected.contains("user-hook"));
     assert!(connected.contains("codex-hook"));

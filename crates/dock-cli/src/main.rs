@@ -63,6 +63,9 @@ enum Command {
     /// Translate one structured adapter payload from stdin and emit it.
     Hook {
         provider: HookProvider,
+        /// Return immediately and deliver the event from a child process.
+        #[arg(long, hide = true)]
+        detach: bool,
     },
     /// List detected and connected Agent tools.
     Agents,
@@ -242,7 +245,11 @@ fn main() {
         }
         return;
     }
-    if let Command::Hook { provider } = &cli.command {
+    if let Command::Hook { provider, detach } = &cli.command {
+        if *detach {
+            detach_hook(*provider);
+            return;
+        }
         run_hook(*provider, &endpoint, cli.json);
         return;
     }
@@ -467,18 +474,14 @@ fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
     attach_terminal_id(&mut event);
     attach_liveness(&mut event);
     maybe_set_terminal_title(&event);
-    // Hooks are observers. Grok/Claude treat exit 2 as a Stop or PreToolUse
-    // gate, so a missing named pipe would keep another session working.
-    // Cursor treats empty/non-JSON stdout as a failed hook (`empty_stdout` /
-    // `invalid_json`), so the Cursor path always prints `{}` and never
-    // inherits the Windows trampoline's human summary.
-    if should_trampoline_to_windows(&Command::Hook { provider }) {
-        let stdout = if cursor_ack {
-            Stdio::null()
-        } else {
-            Stdio::inherit()
-        };
-        let _ = trampoline_emit_with_stdout(&event, stdout);
+    // Observer hook stdout is an agent control channel; trampoline summaries
+    // must not land there. Grok/Claude treat exit 2 as a Stop or PreToolUse
+    // gate, so delivery failures stay fail-open.
+    if should_trampoline_to_windows(&Command::Hook {
+        provider,
+        detach: false,
+    }) {
+        let _ = trampoline_emit_with_stdout(&event, Stdio::null());
         acknowledge_cursor_hook(cursor_ack);
         return;
     }
@@ -508,6 +511,73 @@ fn acknowledge_cursor_hook(cursor_ack: bool) {
     if cursor_ack {
         println!("{{}}");
     }
+}
+
+fn hook_provider_arg(provider: HookProvider) -> &'static str {
+    match provider {
+        HookProvider::Claude => "claude",
+        HookProvider::Codex => "codex",
+        HookProvider::Cursor => "cursor",
+        HookProvider::Dsh => "dsh",
+        HookProvider::Grok => "grok",
+    }
+}
+
+fn detach_hook(provider: HookProvider) {
+    let mut input = Vec::new();
+    if let Err(error) = std::io::stdin().read_to_end(&mut input) {
+        eprintln!("orb hook: cannot read stdin: {error}");
+        return;
+    }
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("orb hook: cannot locate orb: {error}");
+            return;
+        }
+    };
+    let mut command = ProcessCommand::new(exe);
+    command.arg("hook").arg(hook_provider_arg(provider));
+    command.stdin(Stdio::piped());
+    command.stdout(Stdio::null());
+    command.stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = match spawn_detached_hook(&mut command) {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("orb hook: cannot spawn detached hook: {error}");
+            return;
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Err(error) = stdin.write_all(&input) {
+            eprintln!("orb hook: cannot write detached hook stdin: {error}");
+        }
+    }
+}
+
+fn spawn_detached_hook(command: &mut ProcessCommand) -> std::io::Result<std::process::Child> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x01000000;
+        command.creation_flags(
+            CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB,
+        );
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(_) => {
+                command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+            }
+        }
+    }
+    command.spawn()
 }
 
 fn request_for(command: &Command) -> Result<IpcRequest, String> {
@@ -656,7 +726,7 @@ fn is_short_lived_windows_hook_parent(exe: &str) -> bool {
     let stem = strip_ascii_suffix_ignore_case(name, ".exe");
     matches!(
         stem.to_ascii_lowercase().as_str(),
-        "cmd" | "conhost" | "cmd.com"
+        "cmd" | "conhost" | "cmd.com" | "orb"
     )
 }
 
@@ -1086,7 +1156,7 @@ fn linux_agent_liveness() -> Option<(u32, u64)> {
 
 #[cfg(unix)]
 fn is_short_lived_hook_parent(comm: &str) -> bool {
-    matches!(comm, "sh" | "dash" | "bash" | "zsh" | "fish")
+    matches!(comm, "sh" | "dash" | "bash" | "zsh" | "fish" | "orb")
 }
 
 fn hook_source_from_identities(provider: &str, identities: &[String]) -> String {
@@ -2421,9 +2491,12 @@ mod tests {
         ));
         assert!(is_short_lived_windows_hook_parent("conhost"));
         assert!(is_short_lived_windows_hook_parent("Conhost.exe"));
+        assert!(is_short_lived_windows_hook_parent("orb.exe"));
+        assert!(is_short_lived_windows_hook_parent("ORB.EXE"));
         assert!(!is_short_lived_windows_hook_parent("claude.exe"));
         assert!(!is_short_lived_windows_hook_parent("powershell.exe"));
         assert!(!is_short_lived_windows_hook_parent("WindowsTerminal.exe"));
+        assert!(!is_short_lived_windows_hook_parent("grok.exe"));
 
         let tree = [
             (10, 9, "orb.exe"),
@@ -2438,6 +2511,26 @@ mod tests {
 
         let only_cmd = [(10, 9, "orb.exe"), (9, 0, "cmd.exe")];
         assert_eq!(resolve_windows_liveness_pid(10, &only_cmd), None);
+
+        let detached = [
+            (30, 20, "orb.exe"),
+            (20, 10, "orb.exe"),
+            (10, 1, "grok.exe"),
+        ];
+        assert_eq!(
+            resolve_windows_liveness_pid(30, &detached),
+            Some(10),
+            "detach child must walk past the short-lived orb parent to grok"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_hook_skips_detached_orb_parent() {
+        assert!(super::is_short_lived_hook_parent("orb"));
+        assert!(super::is_short_lived_hook_parent("sh"));
+        assert!(!super::is_short_lived_hook_parent("grok"));
+        assert!(!super::is_short_lived_hook_parent("claude"));
     }
 
     #[test]

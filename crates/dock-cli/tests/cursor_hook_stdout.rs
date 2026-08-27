@@ -1,59 +1,23 @@
 #![cfg(unix)]
 
-use std::fs;
-use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+mod common;
 
-fn isolated_root() -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("orbcue-cursor-hook-stdout-{nonce}"));
-    fs::create_dir_all(&root).unwrap();
-    root
-}
-
-fn write_exec(path: &Path, contents: &str) {
-    fs::write(path, contents).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-}
+use common::{isolated_root, run_orb_hook, write_exec};
 
 fn official_session_start() -> &'static [u8] {
     br#"{"hook_event_name":"sessionStart","conversation_id":"cursor-stdout","session_id":"cursor-stdout","workspace_roots":["/tmp/workspace"],"cursor_version":"2026.08.25-3e8eec8"}"#
 }
 
-fn run_cursor_hook(root: &Path, extra: &dyn Fn(&mut Command)) -> std::process::Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_orb"));
-    command
-        .args(["hook", "cursor"])
-        .env("HOME", root.join("home"))
-        .env("XDG_STATE_HOME", root.join("state"))
-        .env("ORBCUE_SOCKET", root.join("missing.sock"))
-        .env("ORBCUE_BACKEND", "local")
-        .env("ORBCUE_ORBD", root.join("missing-orbd"))
-        .env_remove("XDG_RUNTIME_DIR")
-        .env_remove("ORBCUE_FORWARD")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    extra(&mut command);
-    let mut child = command.spawn().expect("spawn orb hook cursor");
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(official_session_start())
-        .unwrap();
-    child.wait_with_output().expect("wait orb hook cursor")
+fn run_cursor_hook(
+    root: &std::path::Path,
+    extra: &dyn Fn(&mut std::process::Command),
+) -> std::process::Output {
+    run_orb_hook(root, "cursor", official_session_start(), extra)
 }
 
 #[test]
 fn cursor_hook_prints_empty_json_object_when_dock_is_missing() {
-    let root = isolated_root();
+    let root = isolated_root("orbcue-cursor-hook-stdout");
     let output = run_cursor_hook(&root, &|command| {
         command
             .env("ORBCUE_HOP", "wsl")
@@ -72,12 +36,12 @@ fn cursor_hook_prints_empty_json_object_when_dock_is_missing() {
         "{}",
         "Cursor CLI treats empty/non-JSON stdout as a failed hook; got {stdout:?}\nstderr: {stderr}"
     );
-    let _ = fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
 fn cursor_hook_hides_windows_trampoline_summary() {
-    let root = isolated_root();
+    let root = isolated_root("orbcue-cursor-hook-stdout");
     let stub = root.join("orb.exe");
     write_exec(
         &stub,
@@ -105,5 +69,5 @@ fn cursor_hook_hides_windows_trampoline_summary() {
         !stdout.contains("accepted"),
         "human trampoline summary leaked: {stdout:?}"
     );
-    let _ = fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(root);
 }
