@@ -1,6 +1,9 @@
-# OrbCue
+# OrbCue — The orb that cues you when an agent needs you.
 
-The orb that cues you when an agent needs you.
+[![Latest](https://img.shields.io/github/v/release/QZYH123/OrbCue?label=latest)](https://github.com/QZYH123/OrbCue/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/QZYH123/OrbCue)](LICENSE)
+[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D6?logo=windows&logoColor=white)](#系统要求)
+![CLI](https://img.shields.io/badge/CLI-Claude%20%7C%20Codex%20%7C%20Cursor%20%7C%20Grok-555)
 
 同时开着几个终端里的 AI 助手，窗口一多就很难看出谁在干活、谁在等你。
 
