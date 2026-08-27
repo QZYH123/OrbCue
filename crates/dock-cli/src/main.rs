@@ -433,15 +433,18 @@ fn run_connection_command(command: &Command, json_output: bool) -> i32 {
 }
 
 fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
+    let cursor_ack = matches!(provider, HookProvider::Cursor) && !json_output;
     let mut input = String::new();
     if let Err(error) = std::io::stdin().read_to_string(&mut input) {
         eprintln!("orb hook: cannot read stdin: {error}");
+        acknowledge_cursor_hook(cursor_ack);
         return;
     }
     let payload: Value = match serde_json::from_str(&input) {
         Ok(value) => value,
         Err(error) => {
             eprintln!("orb hook: invalid JSON ({error})");
+            acknowledge_cursor_hook(cursor_ack);
             return;
         }
     };
@@ -455,6 +458,8 @@ fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
     let Some(mut event) = event else {
         if json_output {
             println!("{{\"accepted\":false,\"rejection_reason\":\"unmapped_event\"}}");
+        } else {
+            acknowledge_cursor_hook(cursor_ack);
         }
         return;
     };
@@ -464,11 +469,21 @@ fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
     maybe_set_terminal_title(&event);
     // Hooks are observers. Grok/Claude treat exit 2 as a Stop or PreToolUse
     // gate, so a missing named pipe would keep another session working.
+    // Cursor treats empty/non-JSON stdout as a failed hook (`empty_stdout` /
+    // `invalid_json`), so the Cursor path always prints `{}` and never
+    // inherits the Windows trampoline's human summary.
     if should_trampoline_to_windows(&Command::Hook { provider }) {
-        let _ = trampoline_emit(&event);
+        let stdout = if cursor_ack {
+            Stdio::null()
+        } else {
+            Stdio::inherit()
+        };
+        let _ = trampoline_emit_with_stdout(&event, stdout);
+        acknowledge_cursor_hook(cursor_ack);
         return;
     }
     if ensure_cli_daemon(endpoint).is_err() {
+        acknowledge_cursor_hook(cursor_ack);
         return;
     }
     match send(endpoint, &IpcRequest::Event(event)) {
@@ -478,9 +493,20 @@ fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
                     "{}",
                     serde_json::to_string(&response).expect("response serializes")
                 );
+            } else {
+                acknowledge_cursor_hook(cursor_ack);
             }
         }
-        Err(error) => eprintln!("orb hook: cannot reach Dock: {error}"),
+        Err(error) => {
+            eprintln!("orb hook: cannot reach Dock: {error}");
+            acknowledge_cursor_hook(cursor_ack);
+        }
+    }
+}
+
+fn acknowledge_cursor_hook(cursor_ack: bool) {
+    if cursor_ack {
+        println!("{{}}");
     }
 }
 
@@ -1751,6 +1777,10 @@ fn trampoline_from_wsl_run(spec: &terminal::WslRunSpec) -> Result<Value, i32> {
 }
 
 fn trampoline_emit(event: &DockEvent) -> i32 {
+    trampoline_emit_with_stdout(event, Stdio::inherit())
+}
+
+fn trampoline_emit_with_stdout(event: &DockEvent, stdout: Stdio) -> i32 {
     let exe = match find_windows_dock() {
         Ok(path) => path,
         Err(error) => {
@@ -1761,7 +1791,7 @@ fn trampoline_emit(event: &DockEvent) -> i32 {
     let mut command = ProcessCommand::new(&exe);
     command.arg("emit");
     command.stdin(Stdio::piped());
-    command.stdout(Stdio::inherit());
+    command.stdout(stdout);
     command.stderr(Stdio::inherit());
     apply_windows_hop_env(&mut command);
     let mut child = match command.spawn() {

@@ -767,3 +767,45 @@ fn cursor_hook_follows_turn_lifecycle_with_conversation_id() {
     .unwrap();
     assert_eq!(ended.kind, EventKind::Closed);
 }
+
+#[test]
+fn cursor_hook_accepts_official_cli_payload_fields() {
+    let opened = cursor_hook(&serde_json::json!({
+        "hook_event_name": "sessionStart",
+        "session_id": "sess-official",
+        "conversation_id": "conv-official",
+        "workspace_roots": ["/tmp/official-project"],
+        "cursor_version": "2026.08.25-3e8eec8",
+        "user_email": "dev@example.com",
+        "transcript_path": "/tmp/should-not-be-opened.jsonl"
+    }))
+    .unwrap();
+    assert_eq!(opened.kind, EventKind::Idle);
+    assert_eq!(opened.source, "cursor");
+    assert_eq!(opened.session_id, "sess-official");
+    assert_eq!(
+        opened.workspace_root.as_deref(),
+        Some("/tmp/official-project")
+    );
+    assert_eq!(opened.summary, None);
+    assert!(opened.metadata.is_empty());
+
+    let working = cursor_hook(&serde_json::json!({
+        "hook_event_name": "beforeSubmitPrompt",
+        "conversation_id": "conv-official",
+        "workspace_roots": ["/tmp/official-project"],
+        "cursor_version": "2026.08.25-3e8eec8"
+    }))
+    .unwrap();
+    assert_eq!(working.kind, EventKind::Working);
+    assert_eq!(working.session_id, "conv-official");
+
+    let failed = cursor_hook(&serde_json::json!({
+        "hook_event_name": "stop",
+        "conversation_id": "conv-official",
+        "status": "error",
+        "cursor_version": "2026.08.25-3e8eec8"
+    }))
+    .unwrap();
+    assert_eq!(failed.kind, EventKind::Failed);
+}

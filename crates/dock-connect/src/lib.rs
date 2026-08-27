@@ -40,10 +40,19 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+
+static CONNECTION_IO: Mutex<()> = Mutex::new(());
+
+fn lock_connection_io() -> MutexGuard<'static, ()> {
+    CONNECTION_IO
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
 
 const PATH_START: &str = "# >>> orbcue PATH >>>";
 const PATH_END: &str = "# <<< orbcue PATH <<<";
@@ -287,6 +296,8 @@ impl ConnectionManager {
     }
 
     pub fn records(&self) -> Vec<ConnectionRecord> {
+        let _io = lock_connection_io();
+        self.repair_connected_artifacts();
         self.load()
             .agents
             .into_values()
@@ -331,6 +342,7 @@ impl ConnectionManager {
     }
 
     pub fn connect(&self, name: &str, original: &Path) -> Result<ConnectionRecord, String> {
+        let _io = lock_connection_io();
         if !valid_agent_name(name) {
             return Err(
                 "agent name must contain only letters, numbers, '.', '_' or '-'".to_owned(),
@@ -347,8 +359,16 @@ impl ConnectionManager {
         if let Some(existing) = file.agents.get(name) {
             if existing.original == original && existing.method == method {
                 self.reinstall_artifacts(method)?;
+                let mut record = existing.clone();
+                if let Some(hook) = current_hook_script(&self.config_dir, method) {
+                    record.hook_script = Some(hook);
+                }
+                if record != *existing {
+                    file.agents.insert(name.to_owned(), record.clone());
+                    self.save(&file)?;
+                }
                 self.drop_wrapper_path_if_unused(&file)?;
-                return Ok(existing.clone());
+                return Ok(record);
             }
         }
         let record = match method {
@@ -390,6 +410,7 @@ impl ConnectionManager {
     }
 
     pub fn disconnect(&self, name: &str) -> Result<bool, String> {
+        let _io = lock_connection_io();
         let mut file = self.load();
         let Some(record) = file.agents.remove(name) else {
             return Ok(false);
@@ -398,6 +419,48 @@ impl ConnectionManager {
         self.save(&file)?;
         self.drop_wrapper_path_if_unused(&file)?;
         Ok(true)
+    }
+
+    fn repair_connected_artifacts(&self) {
+        let mut file = self.load();
+        let mut dirty = false;
+        let names: Vec<String> = file.agents.keys().cloned().collect();
+        for name in names {
+            let Some(record) = file.agents.get(&name).cloned() else {
+                continue;
+            };
+            if record.method != ConnectionMethod::CursorHook {
+                continue;
+            }
+            let hook = hook_path(&self.config_dir, "cursor");
+            if hook.is_file() && cursor_hooks_registered(&self.cursor_hooks_file(), &hook) {
+                if record.hook_script.as_ref() != Some(&hook) {
+                    if let Some(updated) = file.agents.get_mut(&name) {
+                        updated.hook_script = Some(hook);
+                        dirty = true;
+                    }
+                }
+                continue;
+            }
+            if let Err(error) = self.reinstall_artifacts(record.method) {
+                eprintln!(
+                    "OrbCue could not repair {} connection: {error}",
+                    record.name
+                );
+                continue;
+            }
+            if let Some(updated) = file.agents.get_mut(&name) {
+                if updated.hook_script.as_ref() != Some(&hook) {
+                    updated.hook_script = Some(hook);
+                    dirty = true;
+                }
+            }
+        }
+        if dirty {
+            if let Err(error) = self.save(&file) {
+                eprintln!("OrbCue could not save repaired connections: {error}");
+            }
+        }
     }
 
     fn preview_files(&self, name: &str, method: ConnectionMethod) -> Vec<PreviewFile> {
@@ -643,11 +706,15 @@ impl ConnectionManager {
     }
 
     fn install_cursor_hook(&self) -> Result<(PathBuf, Option<PathBuf>), String> {
+        let hook = hook_path(&self.config_dir, "cursor");
+        let existed = hook.is_file();
         let hook = self.write_hook_script("cursor")?;
         match install_cursor_hooks_at(&self.cursor_hooks_file(), &hook) {
             Ok(path) => Ok((hook, path)),
             Err(error) => {
-                let _ = fs::remove_file(&hook);
+                if !existed {
+                    let _ = fs::remove_file(&hook);
+                }
                 Err(format!("cannot update Cursor hooks: {error}"))
             }
         }
@@ -1047,8 +1114,53 @@ fn install_cursor_hooks_at(hooks_path: &Path, hook: &Path) -> Result<Option<Path
     Ok(backup.map(|(path, _)| path))
 }
 
+fn cursor_hooks_registered(hooks_path: &Path, hook: &Path) -> bool {
+    let Ok(bytes) = fs::read(hooks_path) else {
+        return false;
+    };
+    let Ok(document) = serde_json::from_slice::<Value>(&bytes) else {
+        return false;
+    };
+    let Some(hooks) = document.get("hooks").and_then(Value::as_object) else {
+        return false;
+    };
+    let command = hook.to_string_lossy();
+    cursor_hook_specs().iter().all(|spec| {
+        hooks
+            .get(spec.event)
+            .and_then(Value::as_array)
+            .is_some_and(|entries| {
+                entries.iter().any(|entry| {
+                    entry.get("command").and_then(Value::as_str) == Some(command.as_ref())
+                })
+            })
+    })
+}
+
 fn uninstall_cursor_hooks_at(hooks_path: &Path, hook: &Path) -> Result<(), String> {
-    uninstall_nested_hooks_at(hooks_path, hook)
+    let Ok(bytes) = fs::read(hooks_path) else {
+        return Ok(());
+    };
+    let Ok(mut settings) = serde_json::from_slice::<Value>(&bytes) else {
+        return Ok(());
+    };
+    if let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) {
+        for entries in hooks.values_mut() {
+            if let Some(entries) = entries.as_array_mut() {
+                entries.retain(|entry| !is_dock_managed_hook(entry, hook));
+            }
+        }
+        drop_empty_cursor_hook_arrays(hooks);
+    }
+    let bytes = serde_json::to_vec_pretty(&settings).map_err(|error| error.to_string())?;
+    atomic_write(hooks_path, &bytes, existing_mode(hooks_path, 0o600))
+}
+
+fn drop_empty_cursor_hook_arrays(hooks: &mut serde_json::Map<String, Value>) {
+    hooks.retain(|_, value| match value.as_array() {
+        Some(entries) => !entries.is_empty(),
+        None => true,
+    });
 }
 
 fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
@@ -1365,6 +1477,16 @@ fn hook_path(config_dir: &Path, name: &str) -> PathBuf {
     #[cfg(not(windows))]
     {
         config_dir.join(format!("{name}-hook.sh"))
+    }
+}
+
+fn current_hook_script(config_dir: &Path, method: ConnectionMethod) -> Option<PathBuf> {
+    match method {
+        ConnectionMethod::ClaudeHook => Some(hook_path(config_dir, "claude")),
+        ConnectionMethod::GrokHook => Some(hook_path(config_dir, "grok")),
+        ConnectionMethod::CodexHook => Some(hook_path(config_dir, "codex")),
+        ConnectionMethod::CursorHook => Some(hook_path(config_dir, "cursor")),
+        ConnectionMethod::Wrapper => None,
     }
 }
 

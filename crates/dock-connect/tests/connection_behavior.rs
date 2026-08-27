@@ -3,10 +3,12 @@
 use orbcue_connect::{AgentOrigin, ConnectionManager, ConnectionMethod, PreviewAction};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -726,6 +728,8 @@ fn cursor_connect_writes_camelcase_hooks_and_keeps_other_hooks() {
     assert!(connected.contains("loop_limit"));
     assert!(connected.contains("user-hook"));
     assert!(connected.contains("cursor-hook"));
+    assert!(!connected.contains("SessionStart"));
+    assert!(!connected.contains("UserPromptSubmit"));
     let script =
         fs::read_to_string(root.join("config").join("orbcue").join("cursor-hook.sh")).unwrap();
     assert!(script.contains("exec "), "hook must exec orb: {script}");
@@ -733,6 +737,283 @@ fn cursor_connect_writes_camelcase_hooks_and_keeps_other_hooks() {
     let remaining = fs::read_to_string(&hooks).unwrap();
     assert!(remaining.contains("user-hook"));
     assert!(!remaining.contains("cursor-hook"));
+    let remaining_doc: serde_json::Value = serde_json::from_str(&remaining).unwrap();
+    assert!(
+        remaining_doc["hooks"].get("sessionStart").is_none(),
+        "disconnect must drop empty OrbCue event arrays: {remaining}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn torn_cursor_connection_is_repaired_from_records() {
+    let root = temp_root();
+    let home = root.join("home");
+    let config = root.join("config");
+    let cursor_dir = home.join(".cursor");
+    fs::create_dir_all(&cursor_dir).unwrap();
+    let original = root.join("cursor-agent");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let hook = config.join("orbcue").join("cursor-hook.sh");
+    let connections = config.join("orbcue").join("connections.json");
+    fs::create_dir_all(connections.parent().unwrap()).unwrap();
+    fs::write(
+        &connections,
+        serde_json::json!({
+            "version": 1,
+            "agents": {
+                "cursor": {
+                    "name": "cursor",
+                    "original": original,
+                    "method": "CursorHook",
+                    "wrapper": null,
+                    "hook_script": hook,
+                    "settings_backup": null,
+                    "capabilities": ["started"],
+                    "limitation": "",
+                    "installed_at": "1"
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let hooks = cursor_dir.join("hooks.json");
+    fs::write(
+        &hooks,
+        br#"{"version":1,"hooks":{"sessionStart":[],"beforeSubmitPrompt":[],"afterAgentResponse":[],"stop":[],"sessionEnd":[],"beforeShellExecution":[{"command":"user-hook"}]}}"#,
+    )
+    .unwrap();
+    assert!(!hook.exists());
+
+    let manager = ConnectionManager::new(home, config, root.join("data"), root.join("orb"));
+    let records = manager.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].method, ConnectionMethod::CursorHook);
+    assert_eq!(records[0].hook_script.as_deref(), Some(hook.as_path()));
+    assert!(hook.is_file(), "repair must recreate {}", hook.display());
+    let mode = fs::metadata(&hook).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
+    let script = fs::read_to_string(&hook).unwrap();
+    assert!(script.contains("exec "), "hook must exec orb: {script}");
+    let connected: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&hooks).unwrap()).unwrap();
+    let command = hook.to_string_lossy();
+    for event in [
+        "sessionStart",
+        "beforeSubmitPrompt",
+        "afterAgentResponse",
+        "stop",
+        "sessionEnd",
+    ] {
+        let entries = connected["hooks"][event]
+            .as_array()
+            .unwrap_or_else(|| panic!("{event} must be an array"));
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry["command"] == command.as_ref()),
+            "{event} must point at the rebuilt hook: {entries:?}"
+        );
+    }
+    assert_eq!(
+        connected["hooks"]["beforeShellExecution"][0]["command"],
+        "user-hook"
+    );
+    assert!(
+        cursor_dir.join("hooks.json.orbcue.bak").is_file(),
+        "first repair must keep a hooks.json backup"
+    );
+    assert!(manager.disconnect("cursor").unwrap());
+    let remaining = fs::read_to_string(&hooks).unwrap();
+    assert!(remaining.contains("user-hook"));
+    assert!(!remaining.contains("cursor-hook"));
+    assert!(!hook.exists());
+    let remaining_doc: serde_json::Value = serde_json::from_str(&remaining).unwrap();
+    assert!(remaining_doc["hooks"].get("sessionStart").is_none());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn listing_does_not_revive_cursor_after_disconnect() {
+    let root = temp_root();
+    let home = root.join("home");
+    let config = root.join("config");
+    let cursor_dir = home.join(".cursor");
+    fs::create_dir_all(&cursor_dir).unwrap();
+    let original = root.join("cursor-agent");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let hook = config.join("orbcue").join("cursor-hook.sh");
+    let connections = config.join("orbcue").join("connections.json");
+    fs::create_dir_all(connections.parent().unwrap()).unwrap();
+    fs::write(
+        &connections,
+        serde_json::json!({
+            "version": 1,
+            "agents": {
+                "cursor": {
+                    "name": "cursor",
+                    "original": original,
+                    "method": "CursorHook",
+                    "wrapper": null,
+                    "hook_script": hook,
+                    "settings_backup": null,
+                    "capabilities": ["started"],
+                    "limitation": "",
+                    "installed_at": "1"
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let hooks = cursor_dir.join("hooks.json");
+    fs::write(
+        &hooks,
+        br#"{"version":1,"hooks":{"sessionStart":[],"beforeSubmitPrompt":[],"afterAgentResponse":[],"stop":[],"sessionEnd":[],"beforeShellExecution":[{"command":"user-hook"}]}}"#,
+    )
+    .unwrap();
+    let manager = Arc::new(ConnectionManager::new(
+        home,
+        config,
+        root.join("data"),
+        root.join("orb"),
+    ));
+    let listing = {
+        let manager = manager.clone();
+        thread::spawn(move || manager.records())
+    };
+    let disconnect = {
+        let manager = manager.clone();
+        thread::spawn(move || manager.disconnect("cursor"))
+    };
+    listing.join().unwrap();
+    assert!(disconnect.join().unwrap().unwrap());
+    let saved: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&connections).unwrap()).unwrap();
+    assert!(
+        saved["agents"].get("cursor").is_none(),
+        "disconnect must keep cursor out of connections.json: {saved}"
+    );
+    assert!(!hook.exists(), "disconnect must leave the hook uninstalled");
+    let remaining = fs::read_to_string(&hooks).unwrap();
+    assert!(remaining.contains("user-hook"));
+    assert!(!remaining.contains("cursor-hook"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cursor_reconnect_cleans_legacy_own_registration() {
+    let root = temp_root();
+    let home = root.join("home");
+    let cursor_dir = home.join(".cursor");
+    fs::create_dir_all(&cursor_dir).unwrap();
+    let hooks = cursor_dir.join("hooks.json");
+    fs::write(
+        &hooks,
+        br#"{
+          "version": 1,
+          "hooks": {
+            "SessionStart": [{"hooks":[{"type":"command","command":"/old/cursor-hook.sh"}]}],
+            "UserPromptSubmit": [{"command":"/old/agent-activity-dock/cursor-hook.sh"}],
+            "Stop": [{"command":"/old/cursor-hook.sh"}],
+            "beforeShellExecution": [{"command":"user-hook"}]
+          }
+        }"#,
+    )
+    .unwrap();
+    let original = root.join("cursor-agent");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        home,
+        root.join("config"),
+        root.join("data"),
+        root.join("orb"),
+    );
+    manager.connect("cursor", &original).unwrap();
+    let connected: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&hooks).unwrap()).unwrap();
+    assert_eq!(connected["version"], 1);
+    assert!(connected["hooks"].get("SessionStart").is_none());
+    assert!(connected["hooks"].get("UserPromptSubmit").is_none());
+    assert!(connected["hooks"].get("Stop").is_none());
+    assert_eq!(
+        connected["hooks"]["beforeShellExecution"][0]["command"],
+        "user-hook"
+    );
+    let hook = root.join("config").join("orbcue").join("cursor-hook.sh");
+    let command = hook.to_string_lossy();
+    for event in [
+        "sessionStart",
+        "beforeSubmitPrompt",
+        "afterAgentResponse",
+        "stop",
+        "sessionEnd",
+    ] {
+        let entries = connected["hooks"][event]
+            .as_array()
+            .unwrap_or_else(|| panic!("{event} must be an array"));
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry["command"] == command.as_ref()),
+            "{event} must point at the migrated hook: {entries:?}"
+        );
+    }
+    assert!(
+        cursor_dir.join("hooks.json.orbcue.bak").is_file(),
+        "first migrate must keep a hooks.json backup"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cursor_generated_hook_forwards_official_session_start() {
+    let root = temp_root();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let original = root.join("cursor-agent");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let log = root.join("hook-stdin.json");
+    let dock = root.join("orb");
+    executable(
+        &dock,
+        "#!/bin/sh\nif [ \"$1\" = hook ]; then cat > \"$ORBCUE_TEST_LOG\"; echo '{}'; exit 0; fi\nexit 0\n",
+    );
+    let manager = ConnectionManager::new(home, root.join("config"), root.join("data"), dock);
+    manager.connect("cursor", &original).unwrap();
+    let script = root.join("config").join("orbcue").join("cursor-hook.sh");
+    let payload = r#"{"hook_event_name":"sessionStart","conversation_id":"cursor-e2e","session_id":"cursor-e2e","workspace_roots":["/tmp/workspace"],"cursor_version":"2026.08.25-3e8eec8"}"#;
+    let status = Command::new(&script)
+        .env("ORBCUE_TEST_LOG", &log)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(payload.as_bytes())?;
+            child.wait_with_output()
+        })
+        .unwrap();
+    assert!(
+        status.status.success(),
+        "hook script failed: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let forwarded = fs::read_to_string(&log).unwrap();
+    assert!(
+        forwarded.contains("\"hook_event_name\":\"sessionStart\""),
+        "generated hook must forward official stdin: {forwarded}"
+    );
+    assert!(
+        forwarded.contains("\"conversation_id\":\"cursor-e2e\""),
+        "generated hook must forward conversation_id: {forwarded}"
+    );
+    assert_eq!(String::from_utf8_lossy(&status.stdout).trim(), "{}");
     fs::remove_dir_all(root).unwrap();
 }
 
