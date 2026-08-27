@@ -19,9 +19,11 @@ OrbCue 在 Windows 桌面上放一个小球：orb 是形态，cue 是该你出�
 | 工具 | 命令 |
 | --- | --- |
 | Claude Code | `claude` |
-| Grok | `grok` |
+| Grok Build | `grok` |
 | Codex | `codex` |
 | Cursor Agent | `agent` / `cursor-agent` |
+
+以上指的都是 CLI 版本。
 
 ## 目录
 
@@ -85,11 +87,11 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/OrbCue/release
 
 | 页面 | 作用 |
 | --- | --- |
-| 小球 | 桌面常驻。数字是工作中 / 追踪中；`?` 表示有任务在等你，`!` 表示有失败 |
+| 小球 | 桌面常驻。数字是工作中 / 追踪中；`?` 表示有任务在等你，`!` 表示有失败。可拖到屏幕边缘贴成半圆 |
 | 动态 | 当前会话列表，按项目分组，可筛选全部 / 工作中 / 未工作 |
 | 审计 | 本次运行里最近的完成、失败、等待和关闭，最多 128 条，只在内存中，重启即清空 |
 | 连接 | 列出本机检测到的工具，确认后连接或断开 |
-| 设置 | 外观、提示音、系统通知、开机自启、快捷键、圆标，以及启动别名 |
+| 设置 | 外观、提示音、系统通知、开机自启、快捷键、圆标、侧边收起，以及启动别名 |
 
 外观主题有五套：原型、Fluent、Glyph、Braun、Glass，在「设置」里切换。
 
@@ -129,12 +131,13 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/OrbCue/release
 
 同名工具在 Windows 和 WSL 各装了一份，就各占一行，分开连接。Cursor 编辑器本身不会被当成命令行工具。
 
-连接页会查看：桌面程序能看到的 PATH、用户 PATH，以及常见安装目录（例如 `%USERPROFILE%\.local\bin`、Grok 的 `%USERPROFILE%\.grok\bin`、Cursor 命令行的 `%LOCALAPPDATA%\cursor-agent`）。装了 WSL 时再查看 WSL 里的 PATH（WSL 里能看到的 Windows 程序不重复计）。
+连接页会查看：桌面程序能看到的 PATH、用户 PATH，以及常见安装目录（例如 `%USERPROFILE%\.local\bin`、Grok Build 的 `%USERPROFILE%\.grok\bin`、Cursor 命令行的 `%LOCALAPPDATA%\cursor-agent`）。装了 WSL 时再查看 WSL 里的 PATH（WSL 里能看到的 Windows 程序不重复计）。
 
 ### 设置
 
 - **启动别名**：给 `orb run` 起短命令，方便精确跳回
 - **隐藏圆标**：小球右上角不再显示 `?` / `!`
+- **收到侧边**：默认打开。拖到屏幕边缘约一个球宽内，小球会贴成半圆，略透明、不显示数字；鼠标悬停会沿同一边滑出来，移开后再贴回去。出现 `?` 或 `!` 时会保持展开，直到你再把它拖到边上。关掉则只是普通拖动
 - **完成 / 等待 / 失败提示音**、**系统通知**
 - **开机自启**：登录 Windows 后自动打开 OrbCue
 - **全局快捷键**：默认 `Ctrl+Shift+Space` 打开或收起面板
@@ -145,7 +148,7 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/OrbCue/release
 
 | 工具 | 连接方式 | 能报告的状态 |
 | --- | --- | --- |
-| Claude、Grok | 在该工具自己的配置里登记 hook | 开始、等待、完成、失败、关闭 |
+| Claude Code、Grok Build | 在该工具自己的配置里登记 hook | 开始、等待、完成、失败、关闭 |
 | Cursor | 在该工具自己的配置里登记 hook | 开始、完成、失败、关闭；选择题不会标成「等待」 |
 | Codex | 在该工具自己的配置里登记 hook | 开始、等待、完成、关闭；打断和报错看不到 |
 
@@ -153,8 +156,8 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/OrbCue/release
 
 - Cursor 命令行偶尔不会通知已经结束，任务会停在「工作中」，直到进程退出才消失
 - Codex 用 Esc 或 Ctrl+C 打断当前回复时，不会通知 OrbCue，任务停在「工作中」；对话报错也不会显示为失败。在动态页点「清除」即可；退出 Codex 后任务也会从列表消失
-- Claude / Codex 在授权框里点拒绝时，不会通知 OrbCue。小球会停在「等待授权」，直到工具下一刀命令结束或这一轮结束；也可以在动态页点「清除」。Grok 点拒绝会马上回到工作中
-- 首次修改 Claude / Codex / Cursor 的配置前，会保留一份备份（例如 `settings.json.orbcue.bak`）
+- Claude Code / Codex 在授权框里点拒绝时，不会通知 OrbCue。小球会停在「等待授权」，直到它继续干活或这一轮结束；也可以在动态页点「清除」。Grok Build 点拒绝会马上回到工作中
+- 首次修改 Claude Code / Codex / Cursor 的配置前，会保留一份备份（例如 `settings.json.orbcue.bak`）
 
 ## 隐私与数据
 
@@ -177,7 +180,7 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/OrbCue/release
 
 ### 授权框里点了拒绝，还显示等待授权？
 
-Claude 和 Codex 不会把这次拒绝告诉 OrbCue。等到它继续干活或这一轮结束就会恢复；也可以点「清除」。Grok 没有这个问题。
+Claude Code 和 Codex 不会把这次拒绝告诉 OrbCue。等到它继续干活或这一轮结束就会恢复；也可以点「清除」。Grok Build 没有这个问题。
 
 ### 点返回箭头找不到窗口，或不在那个标签？
 
@@ -185,7 +188,11 @@ Claude 和 Codex 不会把这次拒绝告诉 OrbCue。等到它继续干活或�
 
 ### 小球不见了？
 
-看托盘图标：可能选过「隐藏小球」。点「显示小球」，或用 `Ctrl+Shift+Space` 打开面板。
+看托盘图标：可能选过「隐藏小球」。点「显示小球」，或用 `Ctrl+Shift+Space` 打开面板。开着「收到侧边」时，它也可能贴在屏幕边缘成半透明半圆，到四边找一下。
+
+### Cursor 报 hook 失败，或任务不上小球？
+
+Cursor CLI 把 hook 的空输出或非 JSON 输出当成失败。OrbCue 会回一个空 JSON 对象，避免 Cursor 自己报 hook 出错。若仍异常，到连接页断开再连接一次。
 
 ### 等你处理时没有系统通知？
 
