@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { clampToWorkArea, panelPositionNearBall, shouldHidePanelOnBallDrag } from './placement';
+import {
+  clampToWorkArea,
+  dockHitPx,
+  dockPeekPx,
+  dockSnapPx,
+  dockedPosition,
+  edgeExpandedPosition,
+  nearestWorkAreaEdge,
+  panelPositionNearBall,
+  shouldHidePanelOnBallDrag,
+  shouldSnapToEdge,
+} from './placement';
 
 const workArea = { x: 0, y: 0, width: 1000, height: 800 };
 
@@ -56,5 +67,58 @@ describe('panel follow', () => {
   it('hides the panel when the ball drag starts so it cannot stay behind', () => {
     expect(shouldHidePanelOnBallDrag(true)).toBe(true);
     expect(shouldHidePanelOnBallDrag(false)).toBe(false);
+  });
+});
+
+describe('side dock', () => {
+  const ball = { x: 40, y: 200, width: 56, height: 56 };
+
+  it('picks the nearest work-area edge', () => {
+    expect(nearestWorkAreaEdge(ball, workArea)).toBe('left');
+    expect(nearestWorkAreaEdge({ ...ball, x: 920 }, workArea)).toBe('right');
+    expect(nearestWorkAreaEdge({ ...ball, x: 400, y: 10 }, workArea)).toBe('top');
+    expect(nearestWorkAreaEdge({ ...ball, x: 400, y: 740 }, workArea)).toBe('bottom');
+  });
+
+  it('uses about one ball-width as the snap magnet', () => {
+    expect(dockSnapPx(ball)).toBe(56);
+    expect(dockSnapPx({ width: 112, height: 112 })).toBe(112);
+  });
+
+  it('snaps when the ball is within one ball-width of an edge', () => {
+    const snap = dockSnapPx(ball);
+    expect(shouldSnapToEdge({ ...ball, x: 200 }, workArea, snap)).toBe(false);
+    expect(shouldSnapToEdge(ball, workArea, snap)).toBe(true);
+    expect(shouldSnapToEdge({ ...ball, x: 8 }, workArea, snap)).toBe(true);
+  });
+
+  it('tucks to a semicircle on the work-area edge', () => {
+    const peek = dockPeekPx(ball);
+    expect(peek).toBe(28);
+    expect(dockHitPx(ball)).toBe(peek);
+    const docked = dockedPosition(ball, workArea, 'left', peek);
+    expect(docked.x).toBe(0 - (56 - peek));
+    expect(docked.y).toBe(200);
+    expect(docked.x + 56).toBe(peek);
+  });
+
+  it('tucks past the right edge', () => {
+    const peek = 24;
+    const docked = dockedPosition({ ...ball, x: 900 }, workArea, 'right', peek);
+    expect(docked.x).toBe(1000 - peek);
+  });
+
+  it('slides out along the same edge so the peek stays under the pointer', () => {
+    const peek = dockPeekPx(ball);
+    const dockedRight = dockedPosition({ ...ball, x: 900 }, workArea, 'right', peek);
+    expect(edgeExpandedPosition({ ...ball, ...dockedRight }, workArea, 'right')).toEqual({
+      x: 1000 - 56,
+      y: 200,
+    });
+    const dockedLeft = dockedPosition(ball, workArea, 'left', peek);
+    expect(edgeExpandedPosition({ ...ball, ...dockedLeft }, workArea, 'left')).toEqual({
+      x: 0,
+      y: 200,
+    });
   });
 });

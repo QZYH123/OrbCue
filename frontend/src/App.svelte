@@ -22,7 +22,16 @@
     sessionHighlightKey,
   } from './highlight';
   import { connectSuccessNotice, inventoryHasRows, showDetectingPlaceholder, sideLabel, wslDockErrorBanner } from './inventory';
-  import { clampToWorkArea, shouldHidePanelOnBallDrag } from './placement';
+  import {
+    clampToWorkArea,
+    dockHitPx,
+    dockSnapPx,
+    edgeExpandedPosition,
+    nearestWorkAreaEdge,
+    shouldHidePanelOnBallDrag,
+    shouldSnapToEdge,
+    type WorkAreaEdge,
+  } from './placement';
   import { CONNECTIONS_INTRO, EMPTY_TRACKING_HINT, isDockTerminalId, jumpFeedback } from './jumpBack';
   import { applyPreviewDocument, demoInventory, previewLabel, previewSnapshot, tauriAvailable } from './preview';
   import {
@@ -78,6 +87,18 @@
   let connectSuccess = '';
   let shortcutEnabled = localStorage.getItem('shortcut-enabled') !== 'false';
   let hideBallBadge = localStorage.getItem('orbcue-hide-ball-badge') === 'true';
+  let sideDockEnabled = localStorage.getItem('orbcue-side-dock') !== 'false';
+  let parked = false;
+  let docked = false;
+  let dockHome = { x: 0, y: 0 };
+  let dockedAt = 0;
+  let dockEdge: WorkAreaEdge | null = null;
+  let ballHovered = false;
+  let ignoringLeave = false;
+  let suppressExpandUntilLeave = false;
+  let expandTimer: number | undefined;
+  let redockTimer: number | undefined;
+  let suppressTimer: number | undefined;
   let theme: DockTheme = initialTheme();
   let runAlias = '';
   let runAliasDraft = '';
@@ -85,7 +106,9 @@
   let runAliasError = '';
   const shortcut = 'CommandOrControl+Shift+Space';
   const BADGE_KEY = 'orbcue-hide-ball-badge';
+  const SIDE_DOCK_KEY = 'orbcue-side-dock';
   let badgeChannel: BroadcastChannel | null = null;
+  let sideDockChannel: BroadcastChannel | null = null;
   let unsubscribe: (() => void) | undefined;
   let dragging = false;
   let suppressClick = false;
@@ -147,18 +170,38 @@
     });
   }
 
+  function applySideDockPref(enabled: boolean) {
+    sideDockEnabled = enabled;
+    if (label === 'ball' && !enabled) void unparkBall();
+  }
+
+  function listenSideDockPref() {
+    if (typeof BroadcastChannel === 'undefined' || sideDockChannel) return;
+    sideDockChannel = new BroadcastChannel(SIDE_DOCK_KEY);
+    sideDockChannel.onmessage = (event) => {
+      applySideDockPref(event.data === true);
+    };
+    window.addEventListener('storage', (event) => {
+      if (event.key !== SIDE_DOCK_KEY) return;
+      applySideDockPref(event.newValue !== 'false');
+    });
+  }
+
   onMount(() => {
     const unsubTheme = subscribeTheme((next) => {
       theme = next;
     });
     listenBadgePref();
+    listenSideDockPref();
     void loadRunAlias();
     if (previewMode) {
       const pageQ = new URLSearchParams(window.location.search).get('page');
       if (pageQ === 'audit' || pageQ === 'connections' || pageQ === 'settings' || pageQ === 'activity') {
         page = pageQ;
       }
-      return unsubTheme;
+      return () => {
+        unsubTheme();
+      };
     }
     label = getCurrentWindow().label;
     let active = true;
@@ -198,7 +241,16 @@
       }
       const stopListening = await listen<SnapshotMessage>('orb:snapshot', (event) => {
         if (!active) return;
-        snapshot = event.payload.snapshot;
+        const next = event.payload.snapshot;
+        const previousMark = snapshot.pending_mark;
+        snapshot = next;
+        if (
+          label === 'ball' &&
+          isAttentionMark(next.pending_mark) &&
+          next.pending_mark !== previousMark
+        ) {
+          void unparkBall();
+        }
         if (event.payload.attention && label === 'ball') {
           pulse = true;
           window.setTimeout(() => (pulse = false), 280);
@@ -276,7 +328,8 @@
           window.clearTimeout(snapTimer);
           snapTimer = window.setTimeout(() => {
             dragArmed = false;
-            void clampBallToWorkArea();
+            dragging = false;
+            void finishBallDrag();
           }, 280);
         });
         if (active) {
@@ -293,6 +346,9 @@
     return () => {
       active = false;
       window.clearTimeout(snapTimer);
+      window.clearTimeout(expandTimer);
+      window.clearTimeout(redockTimer);
+      window.clearTimeout(suppressTimer);
       unsubscribe?.();
       unsubTheme();
     };
@@ -341,14 +397,78 @@
   }
 
   async function onBallPointerDown(event: PointerEvent) {
+    window.clearTimeout(snapTimer);
+    dragArmed = false;
     dragging = false;
     suppressClick = false;
     dragStart = { x: event.screenX, y: event.screenY };
     void unlockAudio();
   }
 
+  function onBallPointerEnter() {
+    ballHovered = true;
+    window.clearTimeout(redockTimer);
+    if (suppressExpandUntilLeave) return;
+    queueExpandIfDocked();
+  }
+
+  function onDockedPointerMove() {
+    ballHovered = true;
+    window.clearTimeout(redockTimer);
+    if (suppressExpandUntilLeave || dragArmed || dragging) return;
+    queueExpandIfDocked();
+  }
+
+  function onBallPointerLeave() {
+    if (ignoringLeave) return;
+    ballHovered = false;
+    window.clearTimeout(expandTimer);
+    if (docked) {
+      suppressExpandUntilLeave = false;
+      return;
+    }
+    if (dragArmed || dragging) return;
+    scheduleRedock();
+  }
+
+  function queueExpandIfDocked() {
+    if (!docked || dragArmed || dragging || suppressExpandUntilLeave) return;
+    window.clearTimeout(expandTimer);
+    const wait = Math.max(0, 500 - (Date.now() - dockedAt));
+    expandTimer = window.setTimeout(() => {
+      expandTimer = undefined;
+      if (docked && ballHovered && !dragArmed && !dragging && !suppressExpandUntilLeave) {
+        void expandBall();
+      }
+    }, wait);
+  }
+
+  function scheduleRedock() {
+    window.clearTimeout(redockTimer);
+    redockTimer = window.setTimeout(() => {
+      redockTimer = undefined;
+      void confirmRedock();
+    }, 160);
+  }
+
+  async function confirmRedock() {
+    if (!parked || docked || dragArmed || dragging || ignoringLeave) return;
+    try {
+      if (await invoke<boolean>('cursor_over_ball')) {
+        ballHovered = true;
+        return;
+      }
+    } catch {
+      if (ballHovered) return;
+    }
+    ballHovered = false;
+    if (parked && !docked && !dragArmed && !dragging) {
+      void dockBall();
+    }
+  }
+
   async function onBallPointerMove(event: PointerEvent) {
-    if (event.buttons === 0 || dragging) return;
+    if (event.buttons === 0 || dragging || dragArmed) return;
     const dx = event.screenX - dragStart.x;
     const dy = event.screenY - dragStart.y;
     if (dx * dx + dy * dy < 25) return;
@@ -370,10 +490,11 @@
     try {
       await getCurrentWindow().startDragging();
     } catch (error) {
-      dragging = false;
       suppressClick = false;
       dragArmed = false;
       console.warn('Could not drag Dock ball', error);
+    } finally {
+      dragging = false;
     }
   }
 
@@ -383,23 +504,124 @@
       suppressClick = false;
       return;
     }
+    if (docked) void expandBall();
     void togglePanel();
   }
 
-  async function clampBallToWorkArea() {
+  async function ballWorkArea() {
+    const win = getCurrentWindow();
+    const monitor = (await currentMonitor()) ?? (await primaryMonitor());
+    if (!monitor) return null;
+    const pos = await win.outerPosition();
+    const size = await win.outerSize();
+    const area = monitor.workArea ?? { position: monitor.position, size: monitor.size };
+    return {
+      win,
+      rect: { x: pos.x, y: pos.y, width: size.width, height: size.height },
+      work: {
+        x: area.position.x,
+        y: area.position.y,
+        width: area.size.width,
+        height: area.size.height,
+      },
+    };
+  }
+
+  function isAttentionMark(mark: string): boolean {
+    return mark === '?' || mark === '!';
+  }
+
+  async function dockBall(): Promise<boolean> {
+    if (previewMode || docked || label !== 'ball' || !sideDockEnabled) return false;
     try {
-      const win = getCurrentWindow();
-      const monitor = (await currentMonitor()) ?? (await primaryMonitor());
-      if (!monitor) return;
-      const pos = await win.outerPosition();
-      const size = await win.outerSize();
-      const area = monitor.workArea ?? { position: monitor.position, size: monitor.size };
-      const clamped = clampToWorkArea(
-        { x: pos.x, y: pos.y, width: size.width, height: size.height },
-        { x: area.position.x, y: area.position.y, width: area.size.width, height: area.size.height },
-      );
-      if (clamped.x === pos.x && clamped.y === pos.y) return;
-      await win.setPosition(new PhysicalPosition(clamped.x, clamped.y));
+      const placed = await ballWorkArea();
+      if (placed) {
+        dockHome = clampToWorkArea(placed.rect, placed.work);
+        dockEdge = nearestWorkAreaEdge(placed.rect, placed.work);
+      }
+      await invoke('dock_ball', { hit: placed ? dockHitPx(placed.rect) : 32 });
+      parked = true;
+      docked = true;
+      dockedAt = Date.now();
+      suppressExpandUntilLeave = true;
+      window.clearTimeout(suppressTimer);
+      suppressTimer = window.setTimeout(() => {
+        if (!ballHovered) suppressExpandUntilLeave = false;
+      }, 200);
+      return true;
+    } catch (error) {
+      parked = false;
+      docked = false;
+      console.warn('Could not dock Dock ball', error);
+      return false;
+    }
+  }
+
+  async function expandDestination() {
+    try {
+      const placed = await ballWorkArea();
+      if (placed && dockEdge) {
+        return edgeExpandedPosition(placed.rect, placed.work, dockEdge);
+      }
+    } catch {
+      /* fall through */
+    }
+    return dockHome;
+  }
+
+  async function expandBall() {
+    if (!docked) return;
+    const dest = await expandDestination();
+    docked = false;
+    ignoringLeave = true;
+    window.clearTimeout(redockTimer);
+    try {
+      await invoke('undock_ball', { x: dest.x, y: dest.y });
+    } catch (error) {
+      console.warn('Could not undock Dock ball', error);
+    }
+    window.setTimeout(() => {
+      ignoringLeave = false;
+      void confirmRedock();
+    }, 80);
+  }
+
+  async function unparkBall() {
+    parked = false;
+    await expandBall();
+  }
+
+  async function finishBallDrag() {
+    if (previewMode) {
+      return;
+    }
+    try {
+      const placed = await ballWorkArea();
+      if (
+        sideDockEnabled &&
+        placed &&
+        shouldSnapToEdge(placed.rect, placed.work, dockSnapPx(placed.rect))
+      ) {
+        docked = false;
+        await dockBall();
+        return;
+      }
+    } catch (error) {
+      console.warn('Could not snap Dock ball to the edge', error);
+    }
+    parked = false;
+    docked = false;
+    void clampBallToWorkArea();
+  }
+
+  async function clampBallToWorkArea() {
+    if (docked) return;
+    try {
+      const placed = await ballWorkArea();
+      if (!placed) return;
+      const clamped = clampToWorkArea(placed.rect, placed.work);
+      if (clamped.x === placed.rect.x && clamped.y === placed.rect.y) return;
+      await placed.win.setPosition(new PhysicalPosition(clamped.x, clamped.y));
     } catch (error) {
       console.warn('Could not keep Dock ball on screen', error);
     }
@@ -615,6 +837,17 @@
     badgeChannel?.postMessage(hideBallBadge);
   }
 
+  function toggleSideDock() {
+    applySideDockPref(!sideDockEnabled);
+    try {
+      localStorage.setItem(SIDE_DOCK_KEY, String(sideDockEnabled));
+    } catch {
+      /* ignore quota */
+    }
+    listenSideDockPref();
+    sideDockChannel?.postMessage(sideDockEnabled);
+  }
+
   async function loadRunAlias() {
     runAliasError = '';
     if (previewMode) {
@@ -778,7 +1011,7 @@
 
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} onpointerleave={onBallPointerLeave} />
 
 {#if isBall}
   <main
@@ -786,7 +1019,15 @@
     class:attention={ballKind === 'wait' || ballKind === 'fail'}
     class:pulse
     class:working={ballKind === 'working'}
+    class:docked
+    class:dock-left={dockEdge === 'left'}
+    class:dock-right={dockEdge === 'right'}
+    class:dock-top={dockEdge === 'top'}
+    class:dock-bottom={dockEdge === 'bottom'}
     aria-label="OrbCue"
+    onpointerenter={onBallPointerEnter}
+    onpointerleave={onBallPointerLeave}
+    onpointermove={onDockedPointerMove}
   >
     <button
       class="ball {ballKind}"
@@ -1107,6 +1348,10 @@
         <button class="setting-row" aria-pressed={hideBallBadge} onclick={toggleHideBallBadge}>
           <span><strong>隐藏圆标</strong><small>小球右上角的 ? / ! 不再显示</small></span><span class:enabled={hideBallBadge} class="switch"><i></i></span>
         </button>
+        <button class="setting-row" aria-pressed={sideDockEnabled} onclick={toggleSideDock}>
+          <span><strong>收到侧边</strong><small>拖到屏幕边缘贴成半圆，悬停展开</small></span><span class:enabled={sideDockEnabled} class="switch"><i></i></span>
+        </button>
+
         <button class="setting-row" aria-pressed={completionSoundEnabled} onclick={() => toggleSound('completion')}>
           <span><strong>完成提示音</strong><small>任务正常完成时播放短音</small></span><span class:enabled={completionSoundEnabled} class="switch"><i></i></span>
         </button>

@@ -13,6 +13,26 @@ html, body, #app {
   -webkit-tap-highlight-color: transparent;
 }
 
+.ball-shell {
+  transition:
+    opacity .18s cubic-bezier(.15, .7, .3, 1),
+    filter .18s cubic-bezier(.15, .7, .3, 1);
+}
+.ball-shell.docked {
+  opacity: .72;
+  filter: saturate(.88);
+}
+.ball-shell.docked .count,
+.ball-shell.docked .matrix,
+.ball-shell.docked .ball-bar,
+.ball-shell.docked .ball-arc,
+.ball-shell.docked .badge {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ball-shell { transition-duration: .01s; }
+}
+
 .theme-picker {
   display: flex;
   gap: 4px;

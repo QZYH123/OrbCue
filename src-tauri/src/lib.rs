@@ -23,7 +23,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-#[cfg(windows)]
 use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -672,6 +671,81 @@ fn hide_panel(app: AppHandle) {
     hide_panel_window(&app);
 }
 
+#[tauri::command]
+fn dock_ball(app: AppHandle, hit: i32) -> Result<(), String> {
+    let ball = app
+        .get_webview_window("ball")
+        .ok_or_else(|| "ball window missing".to_owned())?;
+    let monitor = monitor_for(&ball).ok_or_else(|| "no monitor".to_owned())?;
+    let pos = ball.outer_position().map_err(|error| error.to_string())?;
+    let size = ball.outer_size().map_err(|error| error.to_string())?;
+    let (origin, work) = monitor_work_area(&monitor);
+    let dest = docked_ball_position(pos.x, pos.y, size.width, size.height, origin, work, hit);
+    region::set_physical_position(&ball, dest.x, dest.y)
+}
+
+#[tauri::command]
+fn cursor_over_ball(app: AppHandle) -> bool {
+    let Some(ball) = app.get_webview_window("ball") else {
+        return false;
+    };
+    region::cursor_over_window(&ball, 8)
+}
+
+#[tauri::command]
+fn undock_ball(app: AppHandle, x: i32, y: i32) -> Result<(), String> {
+    let ball = app
+        .get_webview_window("ball")
+        .ok_or_else(|| "ball window missing".to_owned())?;
+    let monitor = monitor_for(&ball).ok_or_else(|| "no monitor".to_owned())?;
+    let size = ball.outer_size().map_err(|error| error.to_string())?;
+    let dest = clamp_to_monitor(&monitor, size, x, y);
+    region::set_physical_position(&ball, dest.x, dest.y)
+}
+
+fn docked_ball_position(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    origin: PhysicalPosition<i32>,
+    work: tauri::PhysicalSize<u32>,
+    hit: i32,
+) -> PhysicalPosition<i32> {
+    let w = width as i32;
+    let h = height as i32;
+    let side = w.min(h);
+    let default_hit = ((side as f32) * 0.5).round() as i32;
+    let on_screen = (if hit > 0 { hit } else { default_hit }).clamp(8, side - 8);
+    let left = x - origin.x;
+    let right = origin.x + work.width as i32 - (x + w);
+    let top = y - origin.y;
+    let bottom = origin.y + work.height as i32 - (y + h);
+    let min_side = left.min(right).min(top).min(bottom);
+    let (dest_x, dest_y) = if min_side == left {
+        (
+            origin.x - (w - on_screen),
+            y.clamp(origin.y, (origin.y + work.height as i32 - h).max(origin.y)),
+        )
+    } else if min_side == right {
+        (
+            origin.x + work.width as i32 - on_screen,
+            y.clamp(origin.y, (origin.y + work.height as i32 - h).max(origin.y)),
+        )
+    } else if min_side == top {
+        (
+            x.clamp(origin.x, (origin.x + work.width as i32 - w).max(origin.x)),
+            origin.y - (h - on_screen),
+        )
+    } else {
+        (
+            x.clamp(origin.x, (origin.x + work.width as i32 - w).max(origin.x)),
+            origin.y + work.height as i32 - on_screen,
+        )
+    };
+    PhysicalPosition::new(dest_x, dest_y)
+}
+
 fn hide_panel_window(app: &AppHandle) {
     if let Some(panel) = app.get_webview_window("panel") {
         let _ = panel.hide();
@@ -864,6 +938,9 @@ pub fn run() {
             open_panel,
             toggle_panel,
             hide_panel,
+            dock_ball,
+            cursor_over_ball,
+            undock_ball,
             focus_source,
             set_notification_enabled,
             preview_notification,
