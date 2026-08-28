@@ -531,6 +531,12 @@
     return mark === '?' || mark === '!';
   }
 
+  function clearDock() {
+    parked = false;
+    docked = false;
+    dockEdge = null;
+  }
+
   async function dockBall(): Promise<boolean> {
     if (previewMode || docked || label !== 'ball' || !sideDockEnabled) return false;
     try {
@@ -539,7 +545,11 @@
         dockHome = clampToWorkArea(placed.rect, placed.work);
         dockEdge = nearestWorkAreaEdge(placed.rect, placed.work);
       }
-      await invoke('dock_ball', { hit: placed ? dockHitPx(placed.rect) : 32 });
+      const tucked = await invoke<boolean>('dock_ball', { hit: placed ? dockHitPx(placed.rect) : 32 });
+      if (!tucked) {
+        clearDock();
+        return false;
+      }
       parked = true;
       docked = true;
       dockedAt = Date.now();
@@ -550,8 +560,7 @@
       }, 200);
       return true;
     } catch (error) {
-      parked = false;
-      docked = false;
+      clearDock();
       console.warn('Could not dock Dock ball', error);
       return false;
     }
@@ -603,8 +612,7 @@
         shouldSnapToEdge(placed.rect, placed.work, dockSnapPx(placed.rect))
       ) {
         docked = false;
-        await dockBall();
-        return;
+        if (await dockBall()) return;
       }
     } catch (error) {
       console.warn('Could not snap Dock ball to the edge', error);

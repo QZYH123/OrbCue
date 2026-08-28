@@ -6,6 +6,7 @@ import {
   dockSnapPx,
   dockedPosition,
   edgeExpandedPosition,
+  fullyInWorkArea,
   nearestWorkAreaEdge,
   panelPositionNearBall,
   shouldHidePanelOnBallDrag,
@@ -106,6 +107,28 @@ describe('side dock', () => {
     const peek = 24;
     const docked = dockedPosition({ ...ball, x: 900 }, workArea, 'right', peek);
     expect(docked.x).toBe(1000 - peek);
+  });
+
+  it('does not treat a clamped-to-edge window as tucked', () => {
+    const onLeftEdge = { x: 0, y: 200, width: 56, height: 56 };
+    expect(fullyInWorkArea(onLeftEdge, workArea)).toBe(true);
+    expect(fullyInWorkArea({ ...onLeftEdge, ...dockedPosition(onLeftEdge, workArea, 'left', 28) }, workArea)).toBe(
+      false,
+    );
+  });
+
+  it('uses the work-area origin, not screen (0, 0)', () => {
+    const sidebar = { x: 62, y: 0, width: 1858, height: 1080 };
+    const sittingOnWorkLeft = { x: 62, y: 200, width: 56, height: 56 };
+    expect(fullyInWorkArea(sittingOnWorkLeft, sidebar)).toBe(true);
+    expect(fullyInWorkArea({ x: 0, y: 200, width: 56, height: 56 }, sidebar)).toBe(false);
+    expect(fullyInWorkArea({ x: 34, y: 200, width: 56, height: 56 }, sidebar)).toBe(false);
+
+    const secondScreen = { x: 1920, y: 0, width: 1920, height: 1080 };
+    const sittingOnSecondLeft = { x: 1920, y: 80, width: 56, height: 56 };
+    expect(fullyInWorkArea(sittingOnSecondLeft, secondScreen)).toBe(true);
+    const tucked = dockedPosition(sittingOnSecondLeft, secondScreen, 'left', 28);
+    expect(fullyInWorkArea({ ...sittingOnSecondLeft, ...tucked }, secondScreen)).toBe(false);
   });
 
   it('slides out along the same edge so the peek stays under the pointer', () => {

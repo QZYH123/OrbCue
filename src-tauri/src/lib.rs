@@ -672,7 +672,7 @@ fn hide_panel(app: AppHandle) {
 }
 
 #[tauri::command]
-fn dock_ball(app: AppHandle, hit: i32) -> Result<(), String> {
+fn dock_ball(app: AppHandle, hit: i32) -> Result<bool, String> {
     let ball = app
         .get_webview_window("ball")
         .ok_or_else(|| "ball window missing".to_owned())?;
@@ -681,7 +681,18 @@ fn dock_ball(app: AppHandle, hit: i32) -> Result<(), String> {
     let size = ball.outer_size().map_err(|error| error.to_string())?;
     let (origin, work) = monitor_work_area(&monitor);
     let dest = docked_ball_position(pos.x, pos.y, size.width, size.height, origin, work, hit);
-    region::set_physical_position(&ball, dest.x, dest.y)
+    region::set_physical_position(&ball, dest.x, dest.y)?;
+    let pos = ball.outer_position().map_err(|error| error.to_string())?;
+    let size = ball.outer_size().map_err(|error| error.to_string())?;
+    let (origin, work) = monitor_work_area(&monitor);
+    Ok(!fully_in_work_area(
+        pos.x,
+        pos.y,
+        size.width,
+        size.height,
+        origin,
+        work,
+    ))
 }
 
 #[tauri::command]
@@ -701,6 +712,19 @@ fn undock_ball(app: AppHandle, x: i32, y: i32) -> Result<(), String> {
     let size = ball.outer_size().map_err(|error| error.to_string())?;
     let dest = clamp_to_monitor(&monitor, size, x, y);
     region::set_physical_position(&ball, dest.x, dest.y)
+}
+
+fn fully_in_work_area(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    origin: PhysicalPosition<i32>,
+    work: tauri::PhysicalSize<u32>,
+) -> bool {
+    let right = origin.x + work.width as i32;
+    let bottom = origin.y + work.height as i32;
+    x >= origin.x && y >= origin.y && x + width as i32 <= right && y + height as i32 <= bottom
 }
 
 fn docked_ball_position(

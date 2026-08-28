@@ -10,6 +10,19 @@ export interface Point {
   y: number;
 }
 
+/** True when the window sits entirely inside the work area (edges inclusive). */
+export function fullyInWorkArea(
+  window: { x: number; y: number; width: number; height: number },
+  workArea: Rect,
+): boolean {
+  return (
+    window.x >= workArea.x &&
+    window.y >= workArea.y &&
+    window.x + window.width <= workArea.x + workArea.width &&
+    window.y + window.height <= workArea.y + workArea.height
+  );
+}
+
 export function clampToWorkArea(
   window: { x: number; y: number; width: number; height: number },
   workArea: Rect,
