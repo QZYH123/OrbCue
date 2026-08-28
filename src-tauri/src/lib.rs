@@ -797,6 +797,7 @@ fn show_ball_window(app: &AppHandle) {
     BALL_HIDDEN.store(false, Ordering::Relaxed);
     if let Some(ball) = app.get_webview_window("ball") {
         let _ = ball.show();
+        region::apply_ball_region(&ball);
     }
     refresh_tray_ball_label(app);
 }
