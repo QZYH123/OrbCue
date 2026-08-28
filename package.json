@@ -1,6 +1,6 @@
 {
   "name": "orbcue",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "description": "The orb that cues you when an agent needs you",
   "engines": {
