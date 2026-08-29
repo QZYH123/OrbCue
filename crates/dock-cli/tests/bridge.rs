@@ -1,35 +1,13 @@
 #![cfg(unix)]
 
+mod common;
+
+use common::{isolated_env, isolated_root, orb_cmd};
 use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn isolated_root() -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("orbcue-bridge-{nonce}"));
-    fs::create_dir_all(&root).unwrap();
-    root
-}
-
-fn orb_cmd() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_orb"))
-}
-
-fn isolated_env<'a>(command: &'a mut Command, root: &Path, socket: &Path) -> &'a mut Command {
-    command
-        .env("ORBCUE_SOCKET", socket)
-        .env("ORBCUE_BACKEND", "wsl")
-        .env("XDG_STATE_HOME", root.join("state"))
-        .env("HOME", root.join("home"))
-        .env("ORBCUE_ORBD", root.join("missing-orbd"))
-        .env_remove("XDG_RUNTIME_DIR")
-}
+use std::path::Path;
+use std::process::{Child, ChildStdout, Stdio};
 
 fn spawn_bridge(root: &Path, socket: &Path) -> Child {
     isolated_env(
@@ -91,7 +69,7 @@ fn emit(root: &Path, socket: &Path, args: &[&str]) {
 
 #[test]
 fn bridge_forwards_subscribe_ack_and_reset() {
-    let root = isolated_root();
+    let root = isolated_root("orbcue-bridge");
     let socket = root.join("orb.sock");
     fs::create_dir_all(root.join("home")).unwrap();
 

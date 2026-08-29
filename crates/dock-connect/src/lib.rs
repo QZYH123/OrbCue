@@ -309,18 +309,7 @@ impl ConnectionManager {
     }
 
     pub fn preview(&self, name: &str, original: &Path) -> Result<ConnectionPreview, String> {
-        if !valid_agent_name(name) {
-            return Err(
-                "agent name must contain only letters, numbers, '.', '_' or '-'".to_owned(),
-            );
-        }
-        if !original.is_file() {
-            return Err(format!(
-                "original executable does not exist: {}",
-                original.display()
-            ));
-        }
-        let method = connection_method_for(name);
+        let method = validate_connection_request(name, original)?;
         Ok(ConnectionPreview {
             name: name.to_owned(),
             original: original.to_owned(),
@@ -343,18 +332,7 @@ impl ConnectionManager {
 
     pub fn connect(&self, name: &str, original: &Path) -> Result<ConnectionRecord, String> {
         let _io = lock_connection_io();
-        if !valid_agent_name(name) {
-            return Err(
-                "agent name must contain only letters, numbers, '.', '_' or '-'".to_owned(),
-            );
-        }
-        if !original.is_file() {
-            return Err(format!(
-                "original executable does not exist: {}",
-                original.display()
-            ));
-        }
-        let method = connection_method_for(name);
+        let method = validate_connection_request(name, original)?;
         let mut file = self.load();
         if let Some(existing) = file.agents.get(name) {
             if existing.original == original && existing.method == method {
@@ -707,7 +685,7 @@ impl ConnectionManager {
 
     fn install_claude_hook(&self) -> Result<(PathBuf, Option<PathBuf>), String> {
         let hook = self.write_hook_script("claude")?;
-        match install_claude_settings(&hook) {
+        match install_claude_settings_at(&claude_settings_path(), &hook) {
             Ok(path) => Ok((hook, path)),
             Err(error) => {
                 let _ = fs::remove_file(&hook);
@@ -776,7 +754,9 @@ impl ConnectionManager {
         }
         if let Some(hook) = &record.hook_script {
             match record.method {
-                ConnectionMethod::ClaudeHook => uninstall_claude_settings(hook)?,
+                ConnectionMethod::ClaudeHook => {
+                    uninstall_claude_settings_at(&claude_settings_path(), hook)?
+                }
                 ConnectionMethod::GrokHook => {
                     let grok_hooks = self.grok_hooks_file();
                     if grok_hooks.exists() {
@@ -984,10 +964,6 @@ fn push_unique_ignore_case(names: &mut Vec<String>, candidate: String) {
     }
 }
 
-fn install_claude_settings(hook: &Path) -> Result<Option<PathBuf>, String> {
-    install_claude_settings_at(&claude_settings_path(), hook)
-}
-
 fn install_claude_settings_at(
     settings_path: &Path,
     hook: &Path,
@@ -1059,10 +1035,6 @@ fn claude_settings_path() -> PathBuf {
                 .join(".claude")
         });
     config_dir.join("settings.json")
-}
-
-fn uninstall_claude_settings(hook: &Path) -> Result<(), String> {
-    uninstall_claude_settings_at(&claude_settings_path(), hook)
 }
 
 fn uninstall_claude_settings_at(settings_path: &Path, hook: &Path) -> Result<(), String> {
@@ -1689,6 +1661,19 @@ fn valid_agent_name(name: &str) -> bool {
         && name
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
+}
+
+fn validate_connection_request(name: &str, original: &Path) -> Result<ConnectionMethod, String> {
+    if !valid_agent_name(name) {
+        return Err("agent name must contain only letters, numbers, '.', '_' or '-'".to_owned());
+    }
+    if !original.is_file() {
+        return Err(format!(
+            "original executable does not exist: {}",
+            original.display()
+        ));
+    }
+    Ok(connection_method_for(name))
 }
 
 fn now_string() -> String {

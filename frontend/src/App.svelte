@@ -11,7 +11,7 @@
     requestPermission,
   } from '@tauri-apps/plugin-notification';
   import { onMount } from 'svelte';
-  import { playChime, unlockAudio, type ChimeSettings } from './chime';
+  import { playChime, unlockAudio } from './chime';
   import { ensureNotificationPermission } from './notifications';
   import type { AgentInventory, AgentSide, ConnectionPreview, DiscoveredAgent, FocusResult, SessionSnapshot, Snapshot, SnapshotMessage } from './types';
   import { emptySnapshot } from './types';
@@ -76,9 +76,17 @@
   let previewError = '';
   let onboardingComplete = initialOnboardingComplete(window.location.search, localStorage);
   let onboardingStep: OnboardingStep = 'theme';
-  let completionSoundEnabled = localStorage.getItem('completion-sound-enabled') !== 'false';
-  let attentionSoundEnabled = localStorage.getItem('attention-sound-enabled') !== 'false';
-  let failureSoundEnabled = localStorage.getItem('failure-sound-enabled') !== 'false';
+  const soundKeys = {
+    completion: 'completion-sound-enabled',
+    attention: 'attention-sound-enabled',
+    failure: 'failure-sound-enabled',
+  } as const;
+  type SoundChannel = keyof typeof soundKeys;
+  let soundEnabled: Record<SoundChannel, boolean> = {
+    completion: localStorage.getItem(soundKeys.completion) !== 'false',
+    attention: localStorage.getItem(soundKeys.attention) !== 'false',
+    failure: localStorage.getItem(soundKeys.failure) !== 'false',
+  };
   let notificationsEnabled = localStorage.getItem('notifications-enabled') !== 'false';
   let highlightedKey = '';
   let autostartEnabled = false;
@@ -158,41 +166,48 @@
       })),
   ];
 
-  function listenBadgePref() {
-    if (typeof BroadcastChannel === 'undefined' || badgeChannel) return;
-    badgeChannel = new BroadcastChannel(BADGE_KEY);
-    badgeChannel.onmessage = (event) => {
-      hideBallBadge = event.data === true;
-    };
-    window.addEventListener('storage', (event) => {
-      if (event.key !== BADGE_KEY) return;
-      hideBallBadge = event.newValue === 'true';
-    });
-  }
-
   function applySideDockPref(enabled: boolean) {
     sideDockEnabled = enabled;
     if (label === 'ball' && !enabled) void unparkBall();
   }
 
-  function listenSideDockPref() {
-    if (typeof BroadcastChannel === 'undefined' || sideDockChannel) return;
-    sideDockChannel = new BroadcastChannel(SIDE_DOCK_KEY);
-    sideDockChannel.onmessage = (event) => {
-      applySideDockPref(event.data === true);
+  function listenBooleanPreference(
+    key: string,
+    apply: (enabled: boolean) => void,
+    defaultValue = false,
+  ): { channel: BroadcastChannel | null; stop: () => void } {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === key) apply(event.newValue === null ? defaultValue : event.newValue === 'true');
     };
-    window.addEventListener('storage', (event) => {
-      if (event.key !== SIDE_DOCK_KEY) return;
-      applySideDockPref(event.newValue !== 'false');
-    });
+    window.addEventListener('storage', onStorage);
+    if (typeof BroadcastChannel === 'undefined') {
+      return { channel: null, stop: () => window.removeEventListener('storage', onStorage) };
+    }
+    const channel = new BroadcastChannel(key);
+    channel.onmessage = (event) => apply(event.data === true);
+    return {
+      channel,
+      stop: () => {
+        channel.close();
+        window.removeEventListener('storage', onStorage);
+      },
+    };
   }
 
   onMount(() => {
     const unsubTheme = subscribeTheme((next) => {
       theme = next;
     });
-    listenBadgePref();
-    listenSideDockPref();
+    const badgePreference = listenBooleanPreference(BADGE_KEY, (enabled) => {
+      hideBallBadge = enabled;
+    });
+    badgeChannel = badgePreference.channel;
+    const sideDockPreference = listenBooleanPreference(
+      SIDE_DOCK_KEY,
+      applySideDockPref,
+      true,
+    );
+    sideDockChannel = sideDockPreference.channel;
     void loadRunAlias();
     if (previewMode) {
       const pageQ = new URLSearchParams(window.location.search).get('page');
@@ -200,6 +215,8 @@
         page = pageQ;
       }
       return () => {
+        badgePreference.stop();
+        sideDockPreference.stop();
         unsubTheme();
       };
     }
@@ -254,7 +271,7 @@
         if (event.payload.attention && label === 'ball') {
           pulse = true;
           window.setTimeout(() => (pulse = false), 280);
-          void playChime(event.payload.attention.severity, currentChimeSettings());
+          void playChime(event.payload.attention.severity, soundEnabled);
         }
       });
       const stopInventory = await listen<AgentInventory>('orb:inventory', (event) => {
@@ -307,21 +324,15 @@
           console.warn('Could not listen for panel focus', error);
         }
       }
-      if (active) {
-        unsubscribe = () => {
-          stopListening();
-          stopInventory();
-          stopHighlight();
-          stopFocus();
-          void stopAction.unregister();
-        };
-      } else {
+      const stopListeners = () => {
         stopListening();
         stopInventory();
         stopHighlight();
         stopFocus();
         void stopAction.unregister();
-      }
+      };
+      if (active) unsubscribe = stopListeners;
+      else stopListeners();
       if (label === 'ball') {
         const stopMoved = await getCurrentWindow().onMoved(() => {
           if (!dragArmed) return;
@@ -350,6 +361,8 @@
       window.clearTimeout(redockTimer);
       window.clearTimeout(suppressTimer);
       unsubscribe?.();
+      badgePreference.stop();
+      sideDockPreference.stop();
       unsubTheme();
     };
   });
@@ -645,40 +658,35 @@
     if (next === 'connections' && !previewMode) void loadAgentsCached();
   }
 
-  async function loadAgentsCached() {
+  async function updateInventory(
+    command: string,
+    waitForBackgroundRefresh = false,
+  ) {
     if (previewMode) return;
     inventoryRefreshing = true;
     connectionError = '';
     try {
-      inventory = await invoke<AgentInventory>('agent_inventory');
+      inventory = await invoke<AgentInventory>(command);
+      // `agent_inventory` may return an empty cache while a background scan
+      // publishes the real result. Keep its placeholder only for that case.
+      inventoryRefreshing = waitForBackgroundRefresh && !inventoryHasRows(inventory);
     } catch (error) {
       connectionError = String(error);
-    } finally {
-      if (inventoryHasRows(inventory)) inventoryRefreshing = false;
-    }
-  }
-
-  async function refreshAgents() {
-    if (previewMode) return;
-    inventoryRefreshing = true;
-    connectionError = '';
-    try {
-      inventory = await invoke<AgentInventory>('refresh_agents');
-    } catch (error) {
-      connectionError = String(error);
-    } finally {
+      // failed requests must never leave the UI stuck on "正在检测".
       inventoryRefreshing = false;
     }
   }
 
-  async function addFromFolder() {
-    if (previewMode) return;
-    connectionError = '';
-    try {
-      inventory = await invoke<AgentInventory>('add_agent_folder');
-    } catch (error) {
-      connectionError = String(error);
-    }
+  function loadAgentsCached() {
+    return updateInventory('agent_inventory', true);
+  }
+
+  function refreshAgents() {
+    return updateInventory('refresh_agents');
+  }
+
+  function addFromFolder() {
+    return updateInventory('add_agent_folder');
   }
 
   function connected(name: string, side: AgentSide) {
@@ -821,14 +829,6 @@
     }
   }
 
-  function currentChimeSettings(): ChimeSettings {
-    return {
-      completion: completionSoundEnabled,
-      attention: attentionSoundEnabled,
-      failure: failureSoundEnabled,
-    };
-  }
-
   function setTheme(next: DockTheme) {
     theme = next;
     persistTheme(next);
@@ -841,7 +841,6 @@
     } catch {
       /* ignore quota */
     }
-    listenBadgePref();
     badgeChannel?.postMessage(hideBallBadge);
   }
 
@@ -852,7 +851,6 @@
     } catch {
       /* ignore quota */
     }
-    listenSideDockPref();
     sideDockChannel?.postMessage(sideDockEnabled);
   }
 
@@ -894,25 +892,13 @@
     }
   }
 
-  function toggleSound(channel: 'completion' | 'attention' | 'failure') {
-    if (channel === 'completion') {
-      completionSoundEnabled = !completionSoundEnabled;
-      localStorage.setItem('completion-sound-enabled', String(completionSoundEnabled));
-    } else if (channel === 'attention') {
-      attentionSoundEnabled = !attentionSoundEnabled;
-      localStorage.setItem('attention-sound-enabled', String(attentionSoundEnabled));
-    } else {
-      failureSoundEnabled = !failureSoundEnabled;
-      localStorage.setItem('failure-sound-enabled', String(failureSoundEnabled));
-    }
-    if (
-      (channel === 'completion' && completionSoundEnabled) ||
-      (channel === 'attention' && attentionSoundEnabled) ||
-      (channel === 'failure' && failureSoundEnabled)
-    ) {
-      const severity =
-        channel === 'completion' ? 'info' : channel === 'attention' ? 'attention' : 'error';
-      void playChime(severity, currentChimeSettings());
+  function toggleSound(channel: SoundChannel) {
+    const enabled = !soundEnabled[channel];
+    soundEnabled = { ...soundEnabled, [channel]: enabled };
+    localStorage.setItem(soundKeys[channel], String(enabled));
+    if (enabled) {
+      const severity = channel === 'completion' ? 'info' : channel === 'attention' ? 'attention' : 'error';
+      void playChime(severity, soundEnabled);
     }
   }
 
@@ -1021,6 +1007,12 @@
 
 <svelte:window onkeydown={handleKeydown} onpointerleave={onBallPointerLeave} />
 
+{#snippet ballCount(withSeparator: boolean)}
+  <span class="count-work">{snapshot.working_count}</span>
+  {#if withSeparator}<span class="count-sep">/</span>{/if}
+  <span class="count-total">{snapshot.tracked_count}</span>
+{/snippet}
+
 {#if isBall}
   <main
     class="ball-shell"
@@ -1051,16 +1043,13 @@
           {#each matrixDots as tone, i (i)}<i class="dot {tone}"></i>{/each}
         </span>
         <span class="count">
-          <span class="count-work">{snapshot.working_count}</span>
-          <span class="count-sep">/</span>
-          <span class="count-total">{snapshot.tracked_count}</span>
+          {@render ballCount(true)}
         </span>
       {:else if theme === 'braun'}
         <span class="ball-lcd" aria-hidden="true"></span>
         <span class="ball-ring" aria-hidden="true"></span>
         <span class="count">
-          <span class="count-work">{snapshot.working_count}</span>
-          <span class="count-total">{snapshot.tracked_count}</span>
+          {@render ballCount(false)}
         </span>
       {:else if theme === 'glass'}
         <span class="ball-frost" aria-hidden="true"></span>
@@ -1068,15 +1057,11 @@
         <span class="ball-sheen" aria-hidden="true"></span>
         <span class="ball-arc" aria-hidden="true"></span>
         <span class="count">
-          <span class="count-work">{snapshot.working_count}</span>
-          <span class="count-sep">/</span>
-          <span class="count-total">{snapshot.tracked_count}</span>
+          {@render ballCount(true)}
         </span>
       {:else if theme === 'fluent'}
         <span class="count">
-          <span class="count-work">{snapshot.working_count}</span>
-          <span class="count-sep">/</span>
-          <span class="count-total">{snapshot.tracked_count}</span>
+          {@render ballCount(true)}
         </span>
         <span class="ball-bar" aria-hidden="true"></span>
       {:else}
@@ -1084,8 +1069,7 @@
         <span class="ball-ring" aria-hidden="true"></span>
         <span class="ball-sheen" aria-hidden="true"></span>
         <span class="count">
-          <span class="count-work">{snapshot.working_count}</span>
-          <span class="count-total">{snapshot.tracked_count}</span>
+          {@render ballCount(false)}
         </span>
       {/if}
     </button>
@@ -1152,6 +1136,13 @@
         </div>
       </article>
     {/snippet}
+    {#snippet connectionList()}
+      <div class="connection-list">
+        {#each connectionAgents as agent (agent.side + ':' + agent.name)}
+          {@render connectionCard(agent)}
+        {/each}
+      </div>
+    {/snippet}
     {#if !onboardingComplete}
       <section class="panel-body onboarding" aria-label="初次设置">
         <p class="onboarding-step">{onboardingStepIndex(onboardingStep)} / {ONBOARDING_STEPS.length}</p>
@@ -1173,11 +1164,7 @@
             {:else if connectionAgents.length === 0}
               <div class="empty compact"><span>○</span><p>没有检测到支持的工具</p><small>可点「从文件夹添加」，或先跳过、稍后在连接页再接。</small></div>
             {:else}
-              <div class="connection-list">
-                {#each connectionAgents as agent (agent.side + ':' + agent.name)}
-                  {@render connectionCard(agent)}
-                {/each}
-              </div>
+              {@render connectionList()}
             {/if}
             {#if connectionError}<p class="error-message">{connectionError}</p>{/if}
           </div>
@@ -1328,11 +1315,7 @@
         <div class="empty compact"><span>○</span><p>没有检测到支持的工具</p><small>目前支持 Claude、Grok、Codex 和 Cursor。可点「从文件夹添加」。没有 WSL 也可以只连 Windows 上的工具</small></div>
       {:else}
         <div class="panel-body">
-        <div class="connection-list">
-          {#each connectionAgents as agent (agent.side + ':' + agent.name)}
-            {@render connectionCard(agent)}
-          {/each}
-        </div>
+        {@render connectionList()}
         </div>
       {/if}
       {#if connectionError}<p class="error-message">{connectionError}</p>{/if}
@@ -1360,14 +1343,14 @@
           <span><strong>收到侧边</strong><small>拖到屏幕边缘贴成半圆，悬停展开</small></span><span class:enabled={sideDockEnabled} class="switch"><i></i></span>
         </button>
 
-        <button class="setting-row" aria-pressed={completionSoundEnabled} onclick={() => toggleSound('completion')}>
-          <span><strong>完成提示音</strong><small>任务正常完成时播放短音</small></span><span class:enabled={completionSoundEnabled} class="switch"><i></i></span>
+        <button class="setting-row" aria-pressed={soundEnabled.completion} onclick={() => toggleSound('completion')}>
+          <span><strong>完成提示音</strong><small>任务正常完成时播放短音</small></span><span class:enabled={soundEnabled.completion} class="switch"><i></i></span>
         </button>
-        <button class="setting-row" aria-pressed={attentionSoundEnabled} onclick={() => toggleSound('attention')}>
-          <span><strong>等待提示音</strong><small>等待输入或授权时播放短音</small></span><span class:enabled={attentionSoundEnabled} class="switch"><i></i></span>
+        <button class="setting-row" aria-pressed={soundEnabled.attention} onclick={() => toggleSound('attention')}>
+          <span><strong>等待提示音</strong><small>等待输入或授权时播放短音</small></span><span class:enabled={soundEnabled.attention} class="switch"><i></i></span>
         </button>
-        <button class="setting-row" aria-pressed={failureSoundEnabled} onclick={() => toggleSound('failure')}>
-          <span><strong>失败提示音</strong><small>任务失败时播放较低音调</small></span><span class:enabled={failureSoundEnabled} class="switch"><i></i></span>
+        <button class="setting-row" aria-pressed={soundEnabled.failure} onclick={() => toggleSound('failure')}>
+          <span><strong>失败提示音</strong><small>任务失败时播放较低音调</small></span><span class:enabled={soundEnabled.failure} class="switch"><i></i></span>
         </button>
         <button class="setting-row" aria-pressed={notificationsEnabled} onclick={() => void toggleNotifications()}>
           <span><strong>系统通知</strong><small>等待输入、授权或失败时弹出一次；已完成只走提示音</small></span><span class:enabled={notificationsEnabled} class="switch"><i></i></span>

@@ -1,20 +1,12 @@
 #![cfg(unix)]
 
+mod common;
+
+use common::isolated_root;
 use serde_json::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn isolated_root() -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("orbcue-setsid-{nonce}"));
-    fs::create_dir_all(&root).unwrap();
-    root
-}
 
 fn isolate<'a>(command: &'a mut Command, root: &Path, socket: &Path) -> &'a mut Command {
     command
@@ -79,7 +71,7 @@ fn read_json(path: &Path) -> Value {
 
 #[test]
 fn setsid_hooks_share_ancestor_pty_without_wt_session() {
-    let root = isolated_root();
+    let root = isolated_root("orbcue-setsid");
     let socket = root.join("orb.sock");
     fs::create_dir_all(root.join("home")).unwrap();
     let state_path = root.join("state.json");
@@ -155,7 +147,7 @@ fn setsid_hooks_share_ancestor_pty_without_wt_session() {
 
 #[test]
 fn wrapper_start_and_setsid_hook_share_the_same_pty_id() {
-    let root = isolated_root();
+    let root = isolated_root("orbcue-setsid");
     let socket = root.join("orb.sock");
     fs::create_dir_all(root.join("home")).unwrap();
     let state_path = root.join("state.json");

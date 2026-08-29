@@ -22,13 +22,27 @@ pub fn write_exec(path: &Path, contents: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+pub fn orb_cmd() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_orb"))
+}
+
+pub fn isolated_env<'a>(command: &'a mut Command, root: &Path, socket: &Path) -> &'a mut Command {
+    command
+        .env("ORBCUE_SOCKET", socket)
+        .env("ORBCUE_BACKEND", "wsl")
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("HOME", root.join("home"))
+        .env("ORBCUE_ORBD", root.join("missing-orbd"))
+        .env_remove("XDG_RUNTIME_DIR")
+}
+
 pub fn run_orb_hook(
     root: &Path,
     provider: &str,
     payload: &[u8],
     extra: &dyn Fn(&mut Command),
 ) -> std::process::Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_orb"));
+    let mut command = orb_cmd();
     command
         .args(["hook", provider])
         .env("HOME", root.join("home"))

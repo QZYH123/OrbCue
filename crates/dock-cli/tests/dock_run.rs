@@ -1,30 +1,11 @@
 #![cfg(unix)]
 
+mod common;
+
+use common::{isolated_root, orb_cmd, write_exec};
 use serde_json::Value;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn isolated_root() -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("orbcue-run-{nonce}"));
-    fs::create_dir_all(&root).unwrap();
-    root
-}
-
-fn write_exec(path: &Path, contents: &str) {
-    fs::write(path, contents).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-}
-
-fn orb_cmd() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_orb"))
-}
 
 fn run_json(root: &Path, extra_path: &Path, args: &[&str]) -> (Value, String) {
     let output = orb_cmd()
@@ -107,7 +88,7 @@ exit 0
 
 #[test]
 fn dock_run_requires_an_available_agent() {
-    let root = isolated_root();
+    let root = isolated_root("orbcue-run");
     let bin = setup_bin(&root);
     let (value, stderr) = run_json(&root, &bin, &["--json", "run", "missing-agent"]);
     assert_eq!(value["ok"], false, "stdout={value} stderr={stderr}");
@@ -121,7 +102,7 @@ fn dock_run_requires_an_available_agent() {
 
 #[test]
 fn dock_run_requires_windows_terminal() {
-    let root = isolated_root();
+    let root = isolated_root("orbcue-run");
     let bin = setup_bin(&root);
     write_exec(&bin.join("fakeagent"), "#!/bin/sh\nexit 0\n");
     fs::remove_file(bin.join("wt")).unwrap();
@@ -153,7 +134,7 @@ fn dock_run_requires_windows_terminal() {
 
 #[test]
 fn dock_run_injects_marker_and_replaces_the_previous_session() {
-    let root = isolated_root();
+    let root = isolated_root("orbcue-run");
     let socket = root.join("orb.sock");
     let bin = setup_bin(&root);
     let orb = env!("CARGO_BIN_EXE_orb");
@@ -230,7 +211,7 @@ fn dock_run_injects_marker_and_replaces_the_previous_session() {
 
 #[test]
 fn dock_run_close_keeps_the_launcher_when_stdin_is_not_a_tty() {
-    let root = isolated_root();
+    let root = isolated_root("orbcue-run");
     let bin = setup_bin(&root);
     write_exec(&bin.join("fakeagent"), "#!/bin/sh\nexit 0\n");
     let (started, stderr) = run_json(&root, &bin, &["--json", "run", "--close", "fakeagent"]);

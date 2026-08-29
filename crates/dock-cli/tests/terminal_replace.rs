@@ -1,36 +1,13 @@
 #![cfg(unix)]
 
+mod common;
+
+use common::{isolated_env, isolated_root, orb_cmd};
 use serde_json::Value;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn isolated_root() -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("orbcue-terminal-{nonce}"));
-    fs::create_dir_all(&root).unwrap();
-    root
-}
-
-fn orb_cmd() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_orb"))
-}
-
-fn isolated_env<'a>(command: &'a mut Command, root: &Path, socket: &Path) -> &'a mut Command {
-    command
-        .env("ORBCUE_SOCKET", socket)
-        .env("ORBCUE_BACKEND", "wsl")
-        .env("ORBCUE_TERMINAL_ID", "pts-test")
-        .env("XDG_STATE_HOME", root.join("state"))
-        .env("HOME", root.join("home"))
-        .env("ORBCUE_ORBD", root.join("missing-orbd"))
-        .env_remove("XDG_RUNTIME_DIR")
-}
+use std::path::Path;
+use std::process::Stdio;
 
 fn hook_grok(root: &Path, socket: &Path, payload: &str) -> Value {
     let mut child = isolated_env(
@@ -48,6 +25,7 @@ fn hook_grok(root: &Path, socket: &Path, payload: &str) -> Value {
         root,
         socket,
     )
+    .env("ORBCUE_TERMINAL_ID", "pts-test")
     .spawn()
     .expect("spawn dock hook");
     {
@@ -78,6 +56,7 @@ fn emit(root: &Path, socket: &Path, args: &[&str]) -> Value {
         root,
         socket,
     )
+    .env("ORBCUE_TERMINAL_ID", "pts-test")
     .output()
     .expect("run dock");
     assert!(
@@ -105,7 +84,7 @@ fn session_ids(value: &Value) -> Vec<String> {
 
 #[test]
 fn hook_and_start_replace_sessions_on_the_same_terminal() {
-    let root = isolated_root();
+    let root = isolated_root("orbcue-terminal");
     let socket = root.join("orb.sock");
     fs::create_dir_all(root.join("home")).unwrap();
     let service = orbcue_service::spawn(&socket).expect("spawn isolated orbd");

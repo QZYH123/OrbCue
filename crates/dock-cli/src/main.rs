@@ -766,13 +766,19 @@ fn resolve_windows_liveness_pid(current: u32, processes: &[(u32, u32, &str)]) ->
 }
 
 #[cfg(windows)]
-fn windows_parent_liveness() -> Option<(u32, u64)> {
-    windows_parent_liveness_inner()
+#[link(name = "kernel32")]
+extern "system" {
+    fn CloseHandle(handle: isize) -> i32;
 }
 
+/// Return the current process id and a compact parent/name index for the
+/// Windows process tree. Both hook liveness and source detection need the same
+/// Toolhelp snapshot; keeping the FFI and enumeration in one place avoids two
+/// subtly different copies of it.
 #[cfg(windows)]
-fn windows_parent_liveness_inner() -> Option<(u32, u64)> {
+fn windows_process_tree() -> Option<(u32, HashMap<u32, WindowsProcess>)> {
     use std::mem::{size_of, zeroed};
+
     #[repr(C)]
     struct ProcessEntry32W {
         dw_size: u32,
@@ -786,13 +792,57 @@ fn windows_parent_liveness_inner() -> Option<(u32, u64)> {
         dw_flags: u32,
         sz_exe_file: [u16; 260],
     }
+
     #[link(name = "kernel32")]
     extern "system" {
         fn GetCurrentProcessId() -> u32;
         fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> isize;
         fn Process32FirstW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
         fn Process32NextW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
-        fn CloseHandle(handle: isize) -> i32;
+    }
+
+    const TH32CS_SNAPPROCESS: u32 = 0x2;
+    const INVALID: isize = -1;
+
+    unsafe {
+        let current = GetCurrentProcessId();
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == 0 || snapshot == INVALID {
+            return None;
+        }
+        let mut entry: ProcessEntry32W = zeroed();
+        entry.dw_size = size_of::<ProcessEntry32W>() as u32;
+        let mut processes = HashMap::new();
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                processes.insert(
+                    entry.th32_process_id,
+                    WindowsProcess {
+                        parent: entry.th32_parent_process_id,
+                        name: utf16_z(&entry.sz_exe_file),
+                    },
+                );
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+        Some((current, processes))
+    }
+}
+
+#[cfg(windows)]
+struct WindowsProcess {
+    parent: u32,
+    name: String,
+}
+
+#[cfg(windows)]
+fn windows_parent_liveness() -> Option<(u32, u64)> {
+    let (current, by_pid) = windows_process_tree()?;
+    #[link(name = "kernel32")]
+    extern "system" {
         fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
         fn GetProcessTimes(
             process: isize,
@@ -803,37 +853,11 @@ fn windows_parent_liveness_inner() -> Option<(u32, u64)> {
         ) -> i32;
         fn GetLastError() -> u32;
     }
-    const TH32CS_SNAPPROCESS: u32 = 0x2;
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-    const INVALID: isize = -1;
     unsafe {
-        let current = GetCurrentProcessId();
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snapshot == 0 || snapshot == INVALID {
-            return None;
-        }
-        let mut entry: ProcessEntry32W = zeroed();
-        entry.dw_size = size_of::<ProcessEntry32W>() as u32;
-        let mut processes = Vec::new();
-        let mut names = Vec::new();
-        if Process32FirstW(snapshot, &mut entry) != 0 {
-            loop {
-                let name = utf16_z(&entry.sz_exe_file);
-                names.push(name);
-                processes.push((
-                    entry.th32_process_id,
-                    entry.th32_parent_process_id,
-                    names.len() - 1,
-                ));
-                if Process32NextW(snapshot, &mut entry) == 0 {
-                    break;
-                }
-            }
-        }
-        CloseHandle(snapshot);
-        let named: Vec<(u32, u32, &str)> = processes
+        let named: Vec<(u32, u32, &str)> = by_pid
             .iter()
-            .map(|(pid, parent, index)| (*pid, *parent, names[*index].as_str()))
+            .map(|(pid, process)| (*pid, process.parent, process.name.as_str()))
             .collect();
         let pid = resolve_windows_liveness_pid(current, &named)?;
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
@@ -1276,27 +1300,9 @@ fn linux_process_identity(pid: u32, comm: &str) -> Option<String> {
 
 #[cfg(windows)]
 fn windows_hook_invoker_identities() -> Vec<String> {
-    use std::mem::{size_of, zeroed};
-    #[repr(C)]
-    struct ProcessEntry32W {
-        dw_size: u32,
-        cnt_usage: u32,
-        th32_process_id: u32,
-        th32_default_heap_id: usize,
-        th32_module_id: u32,
-        cnt_threads: u32,
-        th32_parent_process_id: u32,
-        pc_pri_class_base: i32,
-        dw_flags: u32,
-        sz_exe_file: [u16; 260],
-    }
+    let (current, by_pid) = windows_process_tree().unwrap_or_default();
     #[link(name = "kernel32")]
     extern "system" {
-        fn GetCurrentProcessId() -> u32;
-        fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> isize;
-        fn Process32FirstW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
-        fn Process32NextW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
-        fn CloseHandle(handle: isize) -> i32;
         fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
         fn QueryFullProcessImageNameW(
             process: isize,
@@ -1305,39 +1311,10 @@ fn windows_hook_invoker_identities() -> Vec<String> {
             size: *mut u32,
         ) -> i32;
     }
-    const TH32CS_SNAPPROCESS: u32 = 0x2;
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-    const INVALID: isize = -1;
     unsafe {
-        let current = GetCurrentProcessId();
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snapshot == 0 || snapshot == INVALID {
-            return Vec::new();
-        }
-        let mut entry: ProcessEntry32W = zeroed();
-        entry.dw_size = size_of::<ProcessEntry32W>() as u32;
-        let mut processes = Vec::new();
-        let mut names = Vec::new();
-        if Process32FirstW(snapshot, &mut entry) != 0 {
-            loop {
-                names.push(utf16_z(&entry.sz_exe_file));
-                processes.push((
-                    entry.th32_process_id,
-                    entry.th32_parent_process_id,
-                    names.len() - 1,
-                ));
-                if Process32NextW(snapshot, &mut entry) == 0 {
-                    break;
-                }
-            }
-        }
-        CloseHandle(snapshot);
-        let mut by_pid = HashMap::with_capacity(processes.len());
-        for (pid, parent, index) in &processes {
-            by_pid.insert(*pid, (*parent, names[*index].as_str()));
-        }
         let mut pid = match by_pid.get(&current) {
-            Some((parent, _)) => *parent,
+            Some(process) => process.parent,
             None => return Vec::new(),
         };
         let mut identities = Vec::new();
@@ -1345,11 +1322,11 @@ fn windows_hook_invoker_identities() -> Vec<String> {
             if pid == 0 {
                 break;
             }
-            let Some((parent, name)) = by_pid.get(&pid).copied() else {
+            let Some(process) = by_pid.get(&pid) else {
                 break;
             };
-            if !is_short_lived_windows_hook_parent(name) {
-                let mut identity = name.to_owned();
+            if !is_short_lived_windows_hook_parent(&process.name) {
+                let mut identity = process.name.clone();
                 let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
                 if handle != 0 {
                     let mut buf = [0u16; 1024];
@@ -1364,10 +1341,10 @@ fn windows_hook_invoker_identities() -> Vec<String> {
                 }
                 identities.push(identity);
             }
-            if parent == 0 || parent == pid {
+            if process.parent == 0 || process.parent == pid {
                 break;
             }
-            pid = parent;
+            pid = process.parent;
         }
         identities
     }

@@ -128,31 +128,33 @@ pub struct WireResponse {
 
 impl WireResponse {
     pub fn from_apply(result: &ApplyResult) -> Self {
-        Self {
-            ok: result.accepted,
-            accepted: result.accepted,
-            rejection_reason: result.rejection_reason.clone(),
-            attention: result.attention.clone(),
-            snapshot: SnapshotView::from(&result.snapshot),
-        }
+        Self::from_snapshot(
+            &result.snapshot,
+            result.accepted,
+            result.rejection_reason.clone(),
+            result.attention.clone(),
+        )
     }
 
     pub fn accepted(snapshot: &DockSnapshot) -> Self {
-        Self {
-            ok: true,
-            accepted: true,
-            rejection_reason: None,
-            attention: None,
-            snapshot: SnapshotView::from(snapshot),
-        }
+        Self::from_snapshot(snapshot, true, None, None)
     }
 
     pub fn rejected(snapshot: &DockSnapshot, reason: &str) -> Self {
+        Self::from_snapshot(snapshot, false, Some(reason.to_owned()), None)
+    }
+
+    fn from_snapshot(
+        snapshot: &DockSnapshot,
+        accepted: bool,
+        rejection_reason: Option<String>,
+        attention: Option<Attention>,
+    ) -> Self {
         Self {
-            ok: false,
-            accepted: false,
-            rejection_reason: Some(reason.to_owned()),
-            attention: None,
+            ok: accepted,
+            accepted,
+            rejection_reason,
+            attention,
             snapshot: SnapshotView::from(snapshot),
         }
     }
@@ -235,23 +237,27 @@ pub fn encode_request(request: &IpcRequest) -> Result<Vec<u8>, serde_json::Error
             source,
             session_id,
             terminal_id,
-        } => encode_line(&serde_json::json!({
-            "query": "acknowledge",
-            "source": source,
-            "session_id": session_id,
-            "terminal_id": terminal_id,
-        })),
+        } => encode_session_query("acknowledge", source, session_id, terminal_id),
         IpcRequest::Reset {
             source,
             session_id,
             terminal_id,
-        } => encode_line(&serde_json::json!({
-            "query": "reset",
-            "source": source,
-            "session_id": session_id,
-            "terminal_id": terminal_id,
-        })),
+        } => encode_session_query("reset", source, session_id, terminal_id),
     }
+}
+
+fn encode_session_query(
+    query: &str,
+    source: &str,
+    session_id: &str,
+    terminal_id: &Option<String>,
+) -> Result<Vec<u8>, serde_json::Error> {
+    encode_line(&serde_json::json!({
+        "query": query,
+        "source": source,
+        "session_id": session_id,
+        "terminal_id": terminal_id,
+    }))
 }
 
 pub fn default_endpoint() -> PathBuf {

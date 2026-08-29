@@ -3,18 +3,24 @@
 use crate::{AgentOrigin, ConnectionRecord, DiscoveredAgent};
 use std::env;
 use std::ffi::{OsStr, OsString};
+#[cfg(not(windows))]
 use std::io::Read;
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::process::{Child, Command, Stdio};
+#[cfg(not(windows))]
 use std::sync::OnceLock;
+#[cfg(not(windows))]
 use std::thread;
+#[cfg(not(windows))]
 use std::time::{Duration, Instant};
 
 pub const LOGIN_PATH_START: &str = "__ORBCUE_PATH_START__";
 pub const LOGIN_PATH_END: &str = "__ORBCUE_PATH_END__";
 /// Quoted `%s\n` so bash printf emits real newlines. Unquoted `%s\n` prints a
 /// literal `n` and glues the markers to PATH.
-pub const LOGIN_PATH_SCRIPT: &str =
+#[cfg(not(windows))]
+const LOGIN_PATH_SCRIPT: &str =
     r#"printf '%s\n' '__ORBCUE_PATH_START__' "$PATH" '__ORBCUE_PATH_END__'"#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,7 +75,8 @@ pub fn probe_login_path(
         .ok_or_else(|| "login shell PATH probe did not emit a marked PATH".to_owned())
 }
 
-pub fn cached_login_path() -> Result<String, String> {
+#[cfg(not(windows))]
+fn cached_login_path() -> Result<String, String> {
     static LOGIN_PATH: OnceLock<Result<String, String>> = OnceLock::new();
     LOGIN_PATH
         .get_or_init(|| {
@@ -363,6 +370,7 @@ fn is_windows_drive_path(text: &str) -> bool {
     )
 }
 
+#[cfg(not(windows))]
 fn run_login_path_command(timeout: Duration) -> Result<ProbeOutput, String> {
     let shell = env::var("SHELL")
         .ok()
@@ -379,6 +387,7 @@ fn run_login_path_command(timeout: Duration) -> Result<ProbeOutput, String> {
     wait_output(child, timeout)
 }
 
+#[cfg(not(windows))]
 fn wait_output(mut child: Child, timeout: Duration) -> Result<ProbeOutput, String> {
     let mut stdout = child
         .stdout

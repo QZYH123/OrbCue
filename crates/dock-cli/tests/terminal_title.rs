@@ -1,23 +1,15 @@
 #![cfg(unix)]
 
+mod common;
+
+use common::isolated_root;
 use serde_json::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const PROJECT: &str = "/tmp/title-e2e/agent-activity-dock";
 const OSC_NEEDLE: &str = "]0;agent-activity-dock · grok";
-
-fn isolated_root() -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("orbcue-title-{nonce}"));
-    fs::create_dir_all(&root).unwrap();
-    root
-}
 
 fn isolate<'a>(command: &'a mut Command, root: &Path, socket: &Path) -> &'a mut Command {
     command
@@ -103,7 +95,7 @@ fn run_hook_in_pty(
 
 #[test]
 fn hook_writes_osc_title_on_a_real_pty() {
-    let root = isolated_root();
+    let root = isolated_root("orbcue-title");
     let socket = root.join("orb.sock");
     fs::create_dir_all(root.join("home")).unwrap();
     let service = orbcue_service::spawn(&socket).expect("spawn isolated orbd");
@@ -187,7 +179,7 @@ fn run_setsid_hook_in_pty(
 
 #[test]
 fn setsid_hook_writes_osc_via_ancestor_tty() {
-    let root = isolated_root();
+    let root = isolated_root("orbcue-title");
     let socket = root.join("orb.sock");
     fs::create_dir_all(root.join("home")).unwrap();
     let service = orbcue_service::spawn(&socket).expect("spawn isolated orbd");
@@ -218,7 +210,7 @@ fn setsid_hook_writes_osc_via_ancestor_tty() {
 
 #[test]
 fn setsid_stop_hook_writes_osc_via_ancestor_tty() {
-    let root = isolated_root();
+    let root = isolated_root("orbcue-title");
     let socket = root.join("orb.sock");
     fs::create_dir_all(root.join("home")).unwrap();
     let service = orbcue_service::spawn(&socket).expect("spawn isolated orbd");

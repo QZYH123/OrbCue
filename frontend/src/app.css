@@ -25,7 +25,10 @@ html, body, #app {
   opacity: 0;
 }
 @media (prefers-reduced-motion: reduce) {
-  .ball-shell.docked .ball { transition-duration: .01s; }
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    transition-duration: .001ms !important;
+  }
 }
 
 .theme-picker {
@@ -146,4 +149,415 @@ html, body, #app {
   align-items: center;
   margin-top: auto;
   padding-top: 8px;
+}
+
+/* Shared theme-invariant layout rules. Theme files only contain visual variants. */
+.audit-project {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ball-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  user-select: none;
+  background: transparent;
+}
+.ball:active { cursor: grabbing; }
+.confirm-dialog h2 .side-badge { margin-left: 8px; vertical-align: 2px; }
+.connection-aside {
+  display: grid;
+  flex: 0 0 auto;
+  justify-items: end;
+  gap: 6px;
+}
+.connection-note {
+  overflow: hidden;
+  margin: 4px 0 0;
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.connection-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 13px; }
+.empty {
+  display: grid;
+  justify-items: center;
+  padding: 40px 16px;
+  color: var(--muted);
+  text-align: center;
+}
+.empty small { margin-top: 5px; color: var(--faint); font-size: 11px; }
+.empty.compact { padding: 36px 16px; }
+.hint-banner .hint-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.hint-banner p { display: flex; flex-direction: column; gap: 2px; margin: 0; min-width: 0; }
+.jump-btn:not(.precise) { opacity: .6; }
+.jump-btn:not(.precise):hover { opacity: 1; }
+.panel > * { position: relative; z-index: 1; flex: 0 0 auto; min-width: 0; }
+.panel > .panel-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.preview-block { max-height: 200px; overflow: auto; margin-top: 8px; }
+.preview-entries, .preview-will-not {
+  margin: 4px 0 0;
+  padding-left: 15px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+.preview-file { margin: 7px 0; }
+.primary-button:disabled { opacity: .4; cursor: default; }
+.project-heading span:first-child {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-heading.collapsed .chevron { transform: rotate(-45deg); }
+.session-heading {
+  display: flex;
+  flex: 1 1 0;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.session-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+}
+::-webkit-scrollbar-track { background: transparent; }
+html.preview #app { width: 300px; height: 400px; }
+html.preview body { display: grid; place-items: center; }
+html.preview.preview-ball #app { width: 56px; height: 56px; }
+html.preview.preview-ball .ball-shell { clip-path: circle(28px at 28px 28px); }
+
+
+/* Shared declarations extracted from the theme variants. */
+:root {
+    color: var(--text);
+    background: transparent;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility
+}
+button {
+    font: inherit
+}
+.ball {
+    position: relative;
+    width: 52px;
+    height: 52px;
+    padding: 0;
+    overflow: hidden;
+    border-radius: 50%;
+    cursor: grab;
+    touch-action: none
+}
+.badge {
+    position: absolute;
+    right: 7px;
+    top: 7px;
+    z-index: 2;
+    width: 12px;
+    height: 12px;
+    display: grid;
+    place-items: center;
+    border-radius: 99px;
+    line-height: 1;
+    pointer-events: none
+}
+.panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    color: var(--text)
+}
+.hero {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px
+}
+.hero-count,
+.lcd-digits {
+    display: flex;
+    align-items: baseline;
+    min-width: 0
+}
+.icon-button {
+    line-height: 1;
+    cursor: pointer
+}
+.icon-button:hover,
+.filters button.active,
+.dock-nav button:hover,
+.dock-nav button.active {
+    color: var(--text)
+}
+.filters,
+.session-actions {
+    display: flex
+}
+.filters button {
+    position: relative;
+    border: 0;
+    background: none;
+    cursor: pointer
+}
+.sessions,
+.audit-list,
+.connection-list,
+.settings-list {
+    display: grid;
+    flex: 1 1 auto;
+    align-content: start;
+    grid-auto-rows: min-content;
+    min-width: 0;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto
+}
+.project-group {
+    display: grid;
+    min-width: 0
+}
+.project-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    border: 0;
+    background: none;
+    text-align: left;
+    cursor: pointer
+}
+.chevron {
+    flex: 0 0 auto;
+    margin-right: 2px;
+    transform: rotate(45deg);
+    transition: transform .16s ease
+}
+.session-card,
+.audit-card {
+    position: relative;
+    display: flex;
+    min-width: 0
+}
+.connection-card {
+    position: relative;
+    display: flex;
+    align-items: center;
+    min-width: 0
+}
+.setting-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    width: 100%;
+    justify-content: space-between;
+    gap: 14px;
+    color: inherit;
+    text-align: left;
+    cursor: pointer
+}
+.session-content,
+.audit-content,
+.connection-content,
+.hero-main {
+    min-width: 0;
+    flex: 1
+}
+.connection-title strong {
+    font-size: 13px
+}
+.session-heading strong {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap
+}
+.state-chip {
+    flex: 0 0 auto;
+    white-space: nowrap
+}
+.connection-path {
+    overflow: hidden;
+    min-width: 0;
+    margin-top: 3px;
+    color: var(--faint);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap
+}
+.session-card p.session-focus-error,
+.session-card p.session-focus-note {
+    margin: 6px 0 0;
+    font-size: 11px
+}
+.jump-btn {
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+    align-self: center;
+    padding: 0;
+    cursor: pointer
+}
+.session-actions button,
+.text-button {
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: pointer
+}
+.audit-content time {
+    flex: 0 0 auto;
+    color: var(--faint);
+    font-size: 10px;
+    white-space: nowrap
+}
+.audit-meta {
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+    color: var(--muted);
+    font-size: 11px
+}
+.audit-meta span + span {
+    padding-left: 8px
+}
+.empty > span {
+    margin-bottom: 10px
+}
+.empty p {
+    margin: 0
+}
+.section-intro,
+.refresh-hint {
+    color: var(--muted)
+}
+.connections-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px
+}
+.side-badge {
+    flex: 0 0 auto;
+    font-size: 9px;
+    white-space: nowrap
+}
+.connection-state {
+    font-size: 10px
+}
+.primary-button {
+    cursor: pointer
+}
+.secondary-button {
+    cursor: pointer;
+    color: var(--text)
+}
+.hint-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 0 0 8px
+}
+.dialog-warning {
+    margin: 8px 0 0
+}
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 4;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+    overflow: hidden
+}
+.confirm-dialog {
+    width: min(324px, 100%);
+    margin: 0;
+    overflow: hidden;
+    color: var(--text)
+}
+.confirm-dialog h2 {
+    margin: 0 0 10px
+}
+.confirm-dialog p {
+    margin: 7px 0;
+    color: var(--muted);
+    line-height: 1.45
+}
+.confirm-dialog code {
+    display: block;
+    overflow: hidden;
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap
+}
+.preview-file strong {
+    display: block;
+    overflow: hidden;
+    color: var(--text);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap
+}
+.setting-row strong {
+    display: block
+}
+.setting-row small {
+    display: block;
+    color: var(--faint)
+}
+.switch {
+    flex: 0 0 auto
+}
+.privacy-note p {
+    margin: 4px 0 0;
+    line-height: 1.45
+}
+footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 14px
+}
+.text-button:disabled {
+    cursor: default
+}
+.dock-nav {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr)
+}
+.dock-nav button {
+    border: 0;
+    background: transparent;
+    cursor: pointer
+}
+::-webkit-scrollbar {
+    height: 0
 }

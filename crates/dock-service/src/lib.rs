@@ -631,17 +631,12 @@ fn schedule_liveness_reaper(
     let _ = thread::Builder::new()
         .name("orb-liveness".to_owned())
         .spawn(move || {
-            let busy = Arc::new(AtomicBool::new(false));
             while !stopping.load(Ordering::Acquire) {
                 thread::sleep(Duration::from_secs(15));
                 if stopping.load(Ordering::Acquire) {
                     break;
                 }
-                if busy.swap(true, Ordering::AcqRel) {
-                    continue;
-                }
                 reap_dead_sessions(&state, &updates, state_path.as_deref());
-                busy.store(false, Ordering::Release);
             }
         });
 }

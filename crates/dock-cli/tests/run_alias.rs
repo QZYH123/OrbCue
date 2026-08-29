@@ -1,25 +1,12 @@
 #![cfg(unix)]
 
+mod common;
+
+use common::{isolated_root, orb_cmd};
 use serde_json::Value;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn isolated_root() -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("orbcue-alias-{nonce}"));
-    fs::create_dir_all(&root).unwrap();
-    root
-}
-
-fn orb_cmd() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_orb"))
-}
+use std::path::Path;
 
 fn alias_json(root: &Path, args: &[&str]) -> Value {
     let output = orb_cmd()
@@ -46,7 +33,7 @@ fn alias_json(root: &Path, args: &[&str]) -> Value {
 
 #[test]
 fn set_get_and_clear_alias() {
-    let root = isolated_root();
+    let root = isolated_root("orbcue-alias");
     fs::create_dir_all(root.join("home").join(".local").join("bin")).unwrap();
     fs::create_dir_all(root.join("bin")).unwrap();
     let set = alias_json(&root, &["alias", "dr", "--json"]);
@@ -74,7 +61,7 @@ fn set_get_and_clear_alias() {
 
 #[test]
 fn refuses_to_clobber_existing_command() {
-    let root = isolated_root();
+    let root = isolated_root("orbcue-alias");
     fs::create_dir_all(root.join("bin")).unwrap();
     fs::write(root.join("bin").join("dr"), "echo nope\n").unwrap();
     let value = alias_json(&root, &["alias", "dr", "--json"]);
