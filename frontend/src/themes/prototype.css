@@ -250,20 +250,6 @@ html.preview { background: #2b2e33; }
 .ticket-rail.cancelled,
 .ticket-rail.closed { background: #5d6670; }
 
-.state-mark {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  margin: 14px 0 0 12px;
-  border-radius: 99px;
-  background: var(--muted);
-}
-.state-mark.working { background: var(--working); }
-.state-mark.needs_attention { background: var(--wait); }
-.state-mark.failed { background: var(--fail); }
-.state-mark.completed { background: transparent; box-shadow: inset 0 0 0 1.5px var(--working); }
-.state-mark.closed { background: var(--faint); }
-
 .session-content,
 .audit-content,
 .connection-content { padding: 9px 10px 8px 12px; }
@@ -292,8 +278,6 @@ html.preview { background: #2b2e33; }
 .state-chip.completed { color: #d4f0e0; background: rgba(94, 207, 143, .16); }
 .state-chip.idle,
 .state-chip.cancelled { color: var(--text); background: rgba(255, 255, 255, .08); }
-.session-id,
-.session-path,
 .connection-path {
   overflow: hidden;
   min-width: 0;

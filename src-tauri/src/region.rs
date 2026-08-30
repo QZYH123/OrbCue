@@ -1,4 +1,4 @@
-//! Circular ball region. Bounds match `frontend/src/circleRegion.ts`.
+//! Circular ball region. CreateEllipticRgn uses these bounds.
 
 use tauri::{AppHandle, Manager, WebviewWindow};
 #[cfg(not(windows))]

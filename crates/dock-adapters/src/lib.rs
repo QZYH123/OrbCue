@@ -17,20 +17,6 @@ pub fn cursor_hook(payload: &Value) -> Option<DockEvent> {
     map_cli_hook("cursor", payload)
 }
 
-pub fn dsh_projection(payload: &Value) -> Option<DockEvent> {
-    let kind = match payload.get("event").and_then(Value::as_str)? {
-        "session.started" | "session.working" => EventKind::Working,
-        "session.waiting_input" => EventKind::WaitingInput,
-        "session.permission_requested" => EventKind::PermissionRequested,
-        "session.completed" => EventKind::Completed,
-        "session.failed" => EventKind::Failed,
-        "session.cancelled" => EventKind::Cancelled,
-        _ => return None,
-    };
-    let session_id = json_str(payload, &["session_id"])?;
-    Some(make_event("dsh", session_id, kind, payload))
-}
-
 pub fn grok_hook(payload: &Value) -> Option<DockEvent> {
     if json_str(payload, &["subagentType", "subagent_type"]).is_some() {
         return None;

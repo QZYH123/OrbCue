@@ -3,7 +3,7 @@
 mod terminal;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use orbcue_adapters::{claude_hook, codex_hook, cursor_hook, dsh_projection, grok_hook};
+use orbcue_adapters::{claude_hook, codex_hook, cursor_hook, grok_hook};
 use orbcue_connect::{ConnectionManager, ConnectionMethod, ConnectionPreview, PreviewAction};
 use orbcue_core::{
     dock_tab_title, dock_terminal_marker, session_terminal_title, DockEvent, EventKind, Severity,
@@ -125,7 +125,6 @@ enum HookProvider {
     Claude,
     Codex,
     Cursor,
-    Dsh,
     Grok,
 }
 
@@ -133,7 +132,7 @@ enum HookProvider {
 struct EventArgs {
     /// Stable session identifier from the Agent integration.
     session_id: String,
-    /// Source integration name, such as claude, grok, codex, cursor or dsh.
+    /// Source integration name, such as claude, grok, codex or cursor.
     #[arg(long, default_value = "manual")]
     source: String,
     #[arg(long)]
@@ -459,7 +458,6 @@ fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
         HookProvider::Claude => claude_hook(&payload),
         HookProvider::Codex => codex_hook(&payload),
         HookProvider::Cursor => cursor_hook(&payload),
-        HookProvider::Dsh => dsh_projection(&payload),
         HookProvider::Grok => grok_hook(&payload),
     };
     let Some(mut event) = event else {
@@ -518,7 +516,6 @@ fn hook_provider_arg(provider: HookProvider) -> &'static str {
         HookProvider::Claude => "claude",
         HookProvider::Codex => "codex",
         HookProvider::Cursor => "cursor",
-        HookProvider::Dsh => "dsh",
         HookProvider::Grok => "grok",
     }
 }

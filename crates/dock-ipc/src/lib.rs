@@ -11,6 +11,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -310,9 +311,15 @@ pub fn default_state_path() -> PathBuf {
 }
 
 /// Canonical daemon topology. Compile default is GUI-OS local listen.
+///
+/// `Local` is the supported path: Windows named pipe, WSL `orb` trampolines in.
+/// `Wsl` is a frozen rollback (`ORBCUE_BACKEND=wsl`). It still resolves, but
+/// do not add features; it is scheduled for removal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DockBackend {
+    /// Frozen: daemon in WSL, Windows presenter bridges in.
     Wsl,
+    /// Supported: daemon on the GUI OS.
     Local,
 }
 
@@ -382,15 +389,13 @@ pub fn backend_file_path() -> Option<PathBuf> {
     windows_app_data_dir().map(|dir| dir.join(WINDOWS_APP_FOLDER).join("backend"))
 }
 
-pub fn resolve_backend_from_env() -> DockBackend {
-    env::var("ORBCUE_BACKEND")
-        .ok()
-        .as_deref()
-        .and_then(parse_backend)
-        .unwrap_or_else(default_backend_for_build)
+pub fn resolve_backend() -> DockBackend {
+    let backend = resolve_backend_unwarned();
+    warn_frozen_wsl_backend(backend);
+    backend
 }
 
-pub fn resolve_backend() -> DockBackend {
+fn resolve_backend_unwarned() -> DockBackend {
     if let Some(value) = env::var("ORBCUE_BACKEND")
         .ok()
         .as_deref()
@@ -410,6 +415,19 @@ pub fn resolve_backend() -> DockBackend {
         return DockBackend::Local;
     }
     default_backend_for_build()
+}
+
+fn warn_frozen_wsl_backend(backend: DockBackend) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if backend != DockBackend::Wsl {
+        return;
+    }
+    if WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    eprintln!(
+        "orb: ORBCUE_BACKEND=wsl is frozen and will be removed. Use the default Windows daemon; WSL orb already forwards events to it."
+    );
 }
 
 pub fn persist_default_backend_file() {

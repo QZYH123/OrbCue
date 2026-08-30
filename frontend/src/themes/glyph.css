@@ -300,8 +300,6 @@ html.preview { background: #141414; }
 .state-chip.completed { color: #666; }
 .state-chip.idle,
 .state-chip.cancelled { color: var(--faint); }
-.session-id,
-.session-path,
 .connection-path {
   overflow: hidden;
   min-width: 0;

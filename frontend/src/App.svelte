@@ -28,7 +28,6 @@
     dockSnapPx,
     edgeExpandedPosition,
     nearestWorkAreaEdge,
-    shouldHidePanelOnBallDrag,
     shouldSnapToEdge,
     type WorkAreaEdge,
   } from './placement';
@@ -488,16 +487,14 @@
     dragging = true;
     suppressClick = true;
     dragArmed = true;
-    if (shouldHidePanelOnBallDrag(true)) {
+    try {
+      await invoke('hide_panel');
+    } catch {
       try {
-        await invoke('hide_panel');
-      } catch {
-        try {
-          const panel = await WebviewWindow.getByLabel('panel');
-          await panel?.hide();
-        } catch (error) {
-          console.warn('Could not hide Dock panel while dragging', error);
-        }
+        const panel = await WebviewWindow.getByLabel('panel');
+        await panel?.hide();
+      } catch (error) {
+        console.warn('Could not hide Dock panel while dragging', error);
       }
     }
     try {

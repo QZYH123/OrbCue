@@ -75,10 +75,6 @@ pub fn highlight_target(source: Option<&str>, session_id: Option<&str>) -> Optio
     }
 }
 
-pub fn highlight_key(source: &str, session_id: &str) -> String {
-    format!("{source}\0{session_id}")
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttentionJump {
     pub source: String,

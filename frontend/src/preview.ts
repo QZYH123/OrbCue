@@ -112,7 +112,7 @@ export const demoSnapshot: Snapshot = {
       occurred_at: '2026-08-22T09:12:00Z',
     },
     {
-      source: 'dsh',
+      source: 'cursor',
       session_id: 'notes-1',
       state: 'idle',
       mark: 'o',

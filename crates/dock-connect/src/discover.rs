@@ -1,6 +1,6 @@
 //! PATH discovery for Agents. Login-shell PATH is probed once; tests inject PATH.
 
-use crate::{AgentOrigin, ConnectionRecord, DiscoveredAgent};
+use crate::{AgentOrigin, DiscoveredAgent};
 use std::env;
 use std::ffi::{OsStr, OsString};
 #[cfg(not(windows))]
@@ -28,21 +28,6 @@ pub struct ProbeOutput {
     pub status_success: bool,
     pub stdout: String,
     pub stderr: String,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct InventorySnapshotCache {
-    latest: Option<(Vec<DiscoveredAgent>, Vec<ConnectionRecord>)>,
-}
-
-impl InventorySnapshotCache {
-    pub fn get(&self) -> Option<(Vec<DiscoveredAgent>, Vec<ConnectionRecord>)> {
-        self.latest.clone()
-    }
-
-    pub fn set(&mut self, discovered: Vec<DiscoveredAgent>, connected: Vec<ConnectionRecord>) {
-        self.latest = Some((discovered, connected));
-    }
 }
 
 pub fn parse_login_path_output(stdout: &str) -> Option<String> {
@@ -107,6 +92,7 @@ pub fn discovery_path() -> OsString {
     }
 }
 
+#[cfg(any(windows, test))]
 pub fn merge_search_path(primary: OsString, extra: OsString) -> OsString {
     if extra.is_empty() {
         return primary;
@@ -191,21 +177,15 @@ fn strip_ascii_suffix_ignore_case<'a>(value: &'a str, suffix: &str) -> Option<&'
         .filter(|stem| !stem.is_empty())
 }
 
-pub fn discover_agents(
-    path: &OsStr,
-    excluded_dir: Option<&Path>,
-    grok_home: &Path,
-) -> Vec<DiscoveredAgent> {
-    discover_agents_with_extras(path, &[grok_home.join("bin")], excluded_dir)
-}
-
 pub fn discover_agents_with_extras(
     path: &OsStr,
     extra_dirs: &[PathBuf],
     excluded_dir: Option<&Path>,
 ) -> Vec<DiscoveredAgent> {
-    let mut agents: Vec<DiscoveredAgent> = ["claude", "codex", "dsh", "grok"]
-        .into_iter()
+    let mut agents: Vec<DiscoveredAgent> = crate::FIRST_PARTY_AGENTS
+        .iter()
+        .copied()
+        .filter(|name| *name != "cursor")
         .filter_map(|name| {
             choose_discovered(name, collect_named(name, path, extra_dirs, excluded_dir))
         })
@@ -441,10 +421,10 @@ mod tests {
     #[cfg(unix)]
     use super::LOGIN_PATH_SCRIPT;
     use super::{
-        agent_origin, parse_login_path_output, probe_login_path, InventorySnapshotCache,
-        ProbeOutput, LOGIN_PATH_END, LOGIN_PATH_START,
+        agent_origin, parse_login_path_output, probe_login_path, ProbeOutput, LOGIN_PATH_END,
+        LOGIN_PATH_START,
     };
-    use crate::{AgentOrigin, ConnectionRecord, DiscoveredAgent};
+    use crate::{AgentOrigin, DiscoveredAgent};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -507,12 +487,12 @@ mod tests {
         std::fs::write(local_bin.join("claude"), b"").unwrap();
         std::fs::write(windows_bin.join("codex"), b"").unwrap();
         let path = std::env::join_paths([&windows_bin, &local_bin]).unwrap();
-        let discovered = super::discover_agents(&path, None, &root.join("missing-grok"));
+        let discovered = super::discover_agents_with_extras(&path, &[], None);
         assert_eq!(discovered.len(), 1);
         assert_eq!(discovered[0].name, "claude");
         assert_eq!(discovered[0].path, local_bin.join("claude"));
         std::fs::remove_file(local_bin.join("claude")).unwrap();
-        let windows_only = super::discover_agents(&path, None, &root.join("missing-grok"));
+        let windows_only = super::discover_agents_with_extras(&path, &[], None);
         assert!(
             windows_only.is_empty(),
             "interop /mnt/* agents must be left to Windows discovery: {windows_only:?}"
@@ -537,10 +517,11 @@ mod tests {
         std::fs::write(bin.join("dsh.bat"), b"").unwrap();
         std::fs::write(bin.join("grok.cmd"), b"").unwrap();
         let path = std::env::join_paths([&bin]).unwrap();
-        let discovered = super::discover_agents(&path, None, &root.join("missing-grok"));
+        let discovered = super::discover_agents_with_extras(&path, &[], None);
         let mut names: Vec<_> = discovered.iter().map(|agent| agent.name.as_str()).collect();
         names.sort_unstable();
-        assert_eq!(names, ["claude", "codex", "cursor", "dsh", "grok"]);
+        assert_eq!(names, ["claude", "codex", "cursor", "grok"]);
+        assert!(discovered.iter().all(|agent| agent.name != "dsh"));
         assert!(discovered.iter().any(|agent| agent
             .path
             .file_name()
@@ -778,21 +759,5 @@ mod tests {
         assert_eq!(dirs.len(), 2);
         assert_eq!(dirs[0], PathBuf::from("/usr/bin"));
         assert_eq!(dirs[1], PathBuf::from("/home/u/.local/bin"));
-    }
-
-    #[test]
-    fn cache_hit_returns_previous_inventory() {
-        let mut cache = InventorySnapshotCache::default();
-        assert!(cache.get().is_none());
-        let discovered = vec![DiscoveredAgent {
-            name: "claude".to_owned(),
-            path: "/home/u/.local/bin/claude".into(),
-            origin: AgentOrigin::Wsl,
-            connectable: true,
-        }];
-        cache.set(discovered.clone(), Vec::<ConnectionRecord>::new());
-        let hit = cache.get().expect("cached inventory");
-        assert_eq!(hit.0, discovered);
-        assert!(hit.1.is_empty());
     }
 }

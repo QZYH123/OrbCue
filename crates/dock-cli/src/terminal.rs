@@ -18,10 +18,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub trait TerminalAdapter {
-    fn spawn(&self, request: &SpawnRequest) -> Result<SpawnPlan, String>;
-}
-
 pub struct SpawnRequest {
     pub agent: String,
     pub marker: String,
@@ -68,7 +64,7 @@ pub struct WindowsTerminalAdapter {
     pub wsl: Option<PathBuf>,
 }
 
-impl TerminalAdapter for WindowsTerminalAdapter {
+impl WindowsTerminalAdapter {
     fn spawn(&self, request: &SpawnRequest) -> Result<SpawnPlan, String> {
         let plan = spawn_plan(&self.wt, self.wsl.as_deref(), request)?;
         execute_plan(&plan)?;

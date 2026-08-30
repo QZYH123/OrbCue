@@ -124,7 +124,7 @@ fn hook_and_start_replace_sessions_on_the_same_terminal() {
     assert_eq!(
         session_ids(&started),
         ["cli-c"],
-        "dock start should replace the hook session: {started}"
+        "orb start should replace the hook session: {started}"
     );
     assert_eq!(started["snapshot"]["tracked_count"], 1);
 

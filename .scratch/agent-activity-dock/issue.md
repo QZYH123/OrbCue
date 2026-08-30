@@ -1,7 +1,9 @@
 # Agent Activity Dock MVP: Zero-Install, Low-Interference Status Ball
 
-**Status:** complete
-**Labels:** completed
+**Status:** frozen
+**Labels:** historical, completed
+
+> **Frozen.** Historical MVP ticket. Completion evidence below points at the deleted Python experiment. Current constraints: [`docs/agents/domain.md`](../../docs/agents/domain.md), [`docs/event-contract.md`](../../docs/event-contract.md), [`docs/adr/`](../../docs/adr/).
 
 ## Problem Statement
 

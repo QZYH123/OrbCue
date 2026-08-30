@@ -29,12 +29,8 @@ const AGENT_NAMES: Record<string, string> = {
   codex: 'Codex',
   cursor: 'Cursor',
   'cursor-agent': 'Cursor',
-  dsh: 'DSH',
 };
 
-const DOCK_MARKER_PREFIX = /^orb:[0-9a-f]{6}\s*[·•\-–—]\s*/i;
-const DOCK_MARKER_SUFFIX = /\s*[·•\-–—]\s*orb:[0-9a-f]{6}$/i;
-const WT_PREFIX = /^Windows Terminal\s*[-–—]\s*/i;
 const OTHER_LABEL = '其他';
 
 export function folderName(path: string | null | undefined): string | null {
@@ -50,31 +46,6 @@ export function displayAgent(source: string): string {
   if (!key) return 'Agent';
   if (AGENT_NAMES[key]) return AGENT_NAMES[key];
   return source.charAt(0).toUpperCase() + source.slice(1);
-}
-
-export function shortSessionId(id: string): string {
-  const trimmed = id.trim();
-  if (trimmed.length <= 10) return trimmed;
-  const hex = trimmed.replace(/-/g, '');
-  if (/^[0-9a-f]+$/i.test(hex) && hex.length >= 12) {
-    return hex.slice(0, 8);
-  }
-  return `${trimmed.slice(0, 8)}…`;
-}
-
-export function cleanWindowTitle(title: string): string {
-  return title
-    .replace(WT_PREFIX, '')
-    .replace(DOCK_MARKER_PREFIX, '')
-    .replace(DOCK_MARKER_SUFFIX, '')
-    .trim();
-}
-
-export function auditAttentionNote(entry: Pick<AuditEntry, 'state' | 'attention_reason'>): string | null {
-  if (entry.state !== 'needs_attention') {
-    return null;
-  }
-  return entry.attention_reason === 'permission' ? '授权请求' : '需要输入';
 }
 
 export function isAuditVisible(state: SessionState): boolean {
@@ -130,13 +101,6 @@ export function auditProjectLabel(entry: Pick<AuditEntry, 'project_path'>): stri
 
 export function sessionDomKey(session: SessionLike): string {
   return `${session.source}\0${session.session_id}\0${session.terminal_id ?? ''}`;
-}
-
-export function sessionDetail(session: SessionLike): string {
-  const terminal = session.terminal_id?.trim() ?? '';
-  const dock = /^orb:([0-9a-fA-F]{6})$/.exec(terminal);
-  if (dock?.[1]) return dock[1].toLowerCase();
-  return shortSessionId(session.session_id);
 }
 
 export function presentSessionSections<T extends SessionLike>(

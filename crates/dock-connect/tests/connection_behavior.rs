@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use orbcue_connect::{AgentOrigin, ConnectionManager, ConnectionMethod, PreviewAction};
+use orbcue_connect::{AgentOrigin, ConnectionManager, ConnectionMethod};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
@@ -32,144 +32,79 @@ fn executable(path: &std::path::Path, script: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
+fn plant_legacy_wrapper(config: &Path, original: &Path, wrapper: &Path, bashrc: Option<&Path>) {
+    fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+    executable(wrapper, "#!/bin/sh\nexit 0\n");
+    if let Some(bashrc) = bashrc {
+        fs::write(
+            bashrc,
+            "export EXISTING=1\n# >>> orbcue PATH >>>\nexport PATH=\"/tmp/orbcue:$PATH\"\n# <<< orbcue PATH <<<\n",
+        )
+        .unwrap();
+    }
+    let dir = config.join("orbcue");
+    fs::create_dir_all(&dir).unwrap();
+    let document = serde_json::json!({
+        "version": 1,
+        "agents": {
+            "dsh": {
+                "name": "dsh",
+                "original": original,
+                "method": "Wrapper",
+                "wrapper": wrapper,
+                "capabilities": ["started", "completed", "failed"],
+                "limitation": "",
+                "installed_at": "0"
+            }
+        }
+    });
+    fs::write(
+        dir.join("connections.json"),
+        serde_json::to_vec_pretty(&document).unwrap(),
+    )
+    .unwrap();
+}
+
 #[test]
-fn wrapper_preserves_arguments_and_exit_code_while_emitting_lifecycle() {
+fn unknown_agent_is_not_connected() {
+    let root = temp_root();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let original = root.join("dsh-real");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(
+        home,
+        root.join("config"),
+        root.join("data"),
+        root.join("orb"),
+    );
+    let error = manager.connect("dsh", &original).unwrap_err();
+    assert!(error.contains("Claude"));
+    assert!(error.contains("orb start"));
+    assert!(manager
+        .preview("dsh", &original)
+        .unwrap_err()
+        .contains("orb complete"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn legacy_wrapper_record_can_still_be_disconnected() {
     let root = temp_root();
     let home = root.join("home");
     let config = root.join("config");
     let data = root.join("data");
     fs::create_dir_all(&home).unwrap();
-    let dock = root.join("orb");
     let original = root.join("dsh-real");
-    executable(
-        &dock,
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$ORBCUE_TEST_LOG\"\n",
-    );
-    executable(
-        &original,
-        "#!/bin/sh\n[ \"$1\" = '--model' ] || exit 99\nexit 17\n",
-    );
-    let log = root.join("events.log");
-    let manager = ConnectionManager::new(home.clone(), config, data.clone(), dock);
-
-    let record = manager.connect("dsh", &original).unwrap();
-    assert_eq!(record.method, ConnectionMethod::Wrapper);
-    let wrapper = record.wrapper.unwrap();
-    assert_eq!(wrapper, data.join("orbcue").join("dsh"));
-    let result = Command::new(&wrapper)
-        .arg("--model")
-        .arg("gpt-test")
-        .env("ORBCUE_TEST_LOG", &log)
-        .status()
-        .unwrap();
-    assert_eq!(result.code(), Some(17));
-    let events = fs::read_to_string(log).unwrap();
-    assert!(events.contains("start"));
-    assert!(events.contains("fail"));
-    let written_profiles = [".profile", ".zshrc", ".bashrc"]
-        .into_iter()
-        .map(|name| home.join(name))
-        .filter(|path| path.is_file())
-        .collect::<Vec<_>>();
-    assert!(!written_profiles.is_empty());
-    assert!(written_profiles
-        .iter()
-        .all(|path| { fs::read_to_string(path).unwrap().contains("orbcue PATH") }));
-    let failed_refresh = manager.connect("dsh", &wrapper);
-    assert!(failed_refresh.is_err());
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let wrapper = data.join("orbcue").join("dsh");
+    let bashrc = home.join(".bashrc");
+    plant_legacy_wrapper(&config, &original, &wrapper, Some(&bashrc));
+    let manager = ConnectionManager::new(home, config, data, root.join("orb"));
     assert!(wrapper.exists());
     assert!(manager.disconnect("dsh").unwrap());
     assert!(!wrapper.exists());
-    assert!(written_profiles
-        .iter()
-        .all(|path| { !fs::read_to_string(path).unwrap().contains("orbcue PATH") }));
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn wrapper_path_is_injected_into_every_existing_shell_profile() {
-    let root = temp_root();
-    let home = root.join("home");
-    fs::create_dir_all(home.join(".config").join("powershell")).unwrap();
-    fs::create_dir_all(home.join(".config").join("fish")).unwrap();
-    fs::write(home.join(".bashrc"), "export EXISTING=1\n").unwrap();
-    fs::write(home.join(".zshrc"), "export EXISTING=1\n").unwrap();
-    fs::write(
-        home.join(".config")
-            .join("powershell")
-            .join("Microsoft.PowerShell_profile.ps1"),
-        "Write-Host existing\n",
-    )
-    .unwrap();
-    fs::write(
-        home.join(".config").join("fish").join("config.fish"),
-        "set -gx EXISTING 1\n",
-    )
-    .unwrap();
-    let original = root.join("dsh-real");
-    executable(&original, "#!/bin/sh\nexit 0\n");
-    let manager = ConnectionManager::new(
-        home.clone(),
-        root.join("config"),
-        root.join("data"),
-        root.join("orb"),
-    );
-
-    manager.connect("dsh", &original).unwrap();
-    let bashrc = fs::read_to_string(home.join(".bashrc")).unwrap();
-    let zshrc = fs::read_to_string(home.join(".zshrc")).unwrap();
-    let pwsh = fs::read_to_string(
-        home.join(".config")
-            .join("powershell")
-            .join("Microsoft.PowerShell_profile.ps1"),
-    )
-    .unwrap();
-    let fish = fs::read_to_string(home.join(".config").join("fish").join("config.fish")).unwrap();
-    assert!(bashrc.contains("export PATH="));
-    assert!(zshrc.contains("export PATH="));
-    assert!(pwsh.contains("$env:PATH"));
-    assert!(fish.contains("set -gx PATH"));
-    assert!(manager.disconnect("dsh").unwrap());
-    assert!(!fs::read_to_string(home.join(".zshrc"))
-        .unwrap()
-        .contains("orbcue PATH"));
-    assert!(!fs::read_to_string(
-        home.join(".config")
-            .join("powershell")
-            .join("Microsoft.PowerShell_profile.ps1")
-    )
-    .unwrap()
-    .contains("orbcue PATH"));
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn zsh_users_get_a_zshrc_snippet_even_when_only_bashrc_exists() {
-    let _guard = lock_env();
-    let root = temp_root();
-    let home = root.join("home");
-    fs::create_dir_all(&home).unwrap();
-    fs::write(home.join(".bashrc"), "export EXISTING=1\n").unwrap();
-    let original = root.join("dsh-real");
-    executable(&original, "#!/bin/sh\nexit 0\n");
-    let manager = ConnectionManager::new(
-        home.clone(),
-        root.join("config"),
-        root.join("data"),
-        root.join("orb"),
-    );
-    let old_shell = std::env::var_os("SHELL");
-    std::env::set_var("SHELL", "/usr/bin/zsh");
-    manager.connect("dsh", &original).unwrap();
-    match old_shell {
-        Some(value) => std::env::set_var("SHELL", value),
-        None => std::env::remove_var("SHELL"),
-    }
-    let zshrc = fs::read_to_string(home.join(".zshrc")).unwrap();
-    assert!(zshrc.contains("export PATH="));
-    assert!(fs::read_to_string(home.join(".bashrc"))
-        .unwrap()
-        .contains("export PATH="));
+    assert!(!fs::read_to_string(bashrc).unwrap().contains("orbcue PATH"));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -441,7 +376,7 @@ fn preview_is_side_effect_free() {
     let home = root.join("home");
     fs::create_dir_all(&home).unwrap();
     fs::write(home.join(".bashrc"), "export EXISTING=1\n").unwrap();
-    let original = root.join("dsh-real");
+    let original = root.join("grok-real");
     executable(&original, "#!/bin/sh\nexit 0\n");
     let manager = ConnectionManager::new(
         home,
@@ -452,9 +387,9 @@ fn preview_is_side_effect_free() {
     let before_paths = all_paths(&root);
     let before_files = file_contents(&root);
     with_shell("/bin/bash", || {
-        let preview = manager.preview("dsh", &original).unwrap();
+        let preview = manager.preview("grok", &original).unwrap();
         assert!(preview.dry_run);
-        assert_eq!(preview.method, ConnectionMethod::Wrapper);
+        assert_eq!(preview.method, ConnectionMethod::GrokHook);
         assert!(preview
             .will_not
             .iter()
@@ -479,7 +414,7 @@ fn connect_writes_exactly_the_previewed_paths() {
     let home = root.join("home");
     fs::create_dir_all(&home).unwrap();
     fs::write(home.join(".bashrc"), "export EXISTING=1\n").unwrap();
-    let original = root.join("dsh-real");
+    let original = root.join("grok-real");
     executable(&original, "#!/bin/sh\nexit 0\n");
     let manager = ConnectionManager::new(
         home,
@@ -489,8 +424,8 @@ fn connect_writes_exactly_the_previewed_paths() {
     );
     with_shell("/bin/bash", || {
         let before = file_contents(&root);
-        let preview = manager.preview("dsh", &original).unwrap();
-        manager.connect("dsh", &original).unwrap();
+        let preview = manager.preview("grok", &original).unwrap();
+        manager.connect("grok", &original).unwrap();
         let after = file_contents(&root);
         let changed: BTreeSet<_> = after
             .iter()
@@ -502,36 +437,7 @@ fn connect_writes_exactly_the_previewed_paths() {
         assert!(preview
             .files
             .iter()
-            .any(|file| file.entries.iter().any(|entry| entry == "started")));
-        assert!(preview.files.iter().any(|file| {
-            file.path.file_name().and_then(|name| name.to_str()) == Some(".bashrc")
-                && file.action == PreviewAction::Modify
-        }));
-    });
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn refusing_non_dock_overwrite_still_works() {
-    let root = temp_root();
-    let home = root.join("home");
-    let data = root.join("data");
-    fs::create_dir_all(&home).unwrap();
-    let wrapper = data.join("orbcue").join("dsh");
-    fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
-    fs::write(&wrapper, "user-owned wrapper\n").unwrap();
-    let original = root.join("dsh-real");
-    executable(&original, "#!/bin/sh\nexit 0\n");
-    let manager = ConnectionManager::new(home, root.join("config"), data, root.join("orb"));
-    with_shell("/bin/bash", || {
-        let preview = manager.preview("dsh", &original).unwrap();
-        assert!(preview.files.iter().any(|file| file.path == wrapper));
-        let error = manager.connect("dsh", &original).unwrap_err();
-        assert!(error.contains("refusing to overwrite non-OrbCue file"));
-        assert_eq!(
-            fs::read_to_string(&wrapper).unwrap(),
-            "user-owned wrapper\n"
-        );
+            .any(|file| file.entries.iter().any(|entry| entry == "SessionStart")));
     });
     fs::remove_dir_all(root).unwrap();
 }
@@ -626,7 +532,7 @@ fn claude_preview_notes_backup_and_disconnect_keeps_other_hooks() {
 }
 
 #[test]
-fn discovery_skips_the_managed_wrapper_and_finds_the_real_agent() {
+fn discovery_skips_the_managed_data_dir_and_finds_the_real_agent() {
     let root = temp_root();
     let home = root.join("home");
     let config = root.join("config");
@@ -634,13 +540,12 @@ fn discovery_skips_the_managed_wrapper_and_finds_the_real_agent() {
     let real_bin = root.join("real-bin");
     fs::create_dir_all(&real_bin).unwrap();
     fs::create_dir_all(&home).unwrap();
-    let original = real_bin.join("dsh");
+    let original = real_bin.join("claude");
     executable(&original, "#!/bin/sh\nexit 0\n");
     let manager =
         orbcue_connect::ConnectionManager::new(home, config, data.clone(), root.join("orb"));
-    manager.connect("dsh", &original).unwrap();
 
-    let nested_stub = data.join("orbcue").join("bin").join("dsh");
+    let nested_stub = data.join("orbcue").join("bin").join("claude");
     fs::create_dir_all(nested_stub.parent().unwrap()).unwrap();
     executable(&nested_stub, "#!/bin/sh\nexit 0\n");
     let managed_bin = data.join("orbcue");
@@ -648,7 +553,7 @@ fn discovery_skips_the_managed_wrapper_and_finds_the_real_agent() {
         std::env::join_paths([managed_bin.join("bin"), managed_bin, real_bin.clone()]).unwrap();
     let discovered = manager.discover_from_path(&path);
 
-    assert_eq!(discovered[0].name, "dsh");
+    assert_eq!(discovered[0].name, "claude");
     assert_eq!(discovered[0].path, original);
     assert_eq!(discovered[0].origin, AgentOrigin::Wsl);
     assert!(discovered[0].connectable);

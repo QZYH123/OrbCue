@@ -23,13 +23,6 @@ impl FocusDecision {
     }
 }
 
-pub fn focus_decision(request: &FocusRequest) -> FocusDecision {
-    focus_attempts(request)
-        .into_iter()
-        .next()
-        .unwrap_or(FocusDecision::UseCapturedWindow)
-}
-
 /// Ordered attempts for one jump-back click. `orb:` is precise; captured HWND
 /// is only a fallback after that channel misses.
 pub fn focus_attempts(request: &FocusRequest) -> Vec<FocusDecision> {
@@ -73,35 +66,12 @@ pub fn select_unique_window_title<'a, T: AsRef<str>>(
     titles: &'a [T],
     hint: &str,
 ) -> Result<&'a str, String> {
-    select_window_by_hints(titles, &[hint.to_owned()])
-}
-
-pub fn select_window_by_hints<'a, T: AsRef<str>>(
-    titles: &'a [T],
-    hints: &[String],
-) -> Result<&'a str, String> {
-    let mut tried: Vec<&str> = Vec::new();
-    for hint in hints {
-        if hint.is_empty() {
-            continue;
-        }
-        tried.push(hint.as_str());
-        let matches = titles_matching(titles, hint);
-        match matches.len() {
-            1 => return Ok(matches[0]),
-            0 => continue,
-            _ => {
-                return Err(format!(
-                    "终端窗口匹配不唯一（线索：{}）",
-                    quote_clues(&tried)
-                ))
-            }
-        }
+    let matches = titles_matching(titles, hint);
+    match matches.len() {
+        1 => Ok(matches[0]),
+        0 => Err(format!("没有找到匹配的终端窗口（线索：「{hint}」）")),
+        _ => Err(format!("终端窗口匹配不唯一（线索：「{hint}」）")),
     }
-    Err(format!(
-        "没有找到匹配的终端窗口（线索：{}）",
-        quote_clues(&tried)
-    ))
 }
 
 fn titles_matching<'a, T: AsRef<str>>(titles: &'a [T], hint: &str) -> Vec<&'a str> {
@@ -111,14 +81,6 @@ fn titles_matching<'a, T: AsRef<str>>(titles: &'a [T], hint: &str) -> Vec<&'a st
         .map(AsRef::as_ref)
         .filter(|title| title.to_lowercase().contains(&needle))
         .collect()
-}
-
-fn quote_clues(clues: &[&str]) -> String {
-    clues
-        .iter()
-        .map(|hint| format!("「{hint}」"))
-        .collect::<Vec<_>>()
-        .join("、")
 }
 
 fn nonempty(value: Option<&str>) -> Option<&str> {
@@ -184,11 +146,18 @@ pub fn dock_tab_title(agent: &str, project_path: Option<&str>, marker: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::{
-        captured_hwnd_usable, dock_tab_title, dock_terminal_marker, focus_attempts, focus_decision,
+        captured_hwnd_usable, dock_tab_title, dock_terminal_marker, focus_attempts,
         format_dock_marker, is_terminal_window_candidate, project_path_hint,
         select_unique_window_title, session_terminal_title, FocusDecision, FocusRequest,
         JUMP_WINDOW_MISSING,
     };
+
+    fn first_decision(request: &FocusRequest) -> FocusDecision {
+        focus_attempts(request)
+            .into_iter()
+            .next()
+            .unwrap_or(FocusDecision::UseCapturedWindow)
+    }
 
     fn request(deep_link: Option<&str>, terminal_id: Option<&str>) -> FocusRequest {
         FocusRequest {
@@ -200,26 +169,26 @@ mod tests {
     #[test]
     fn deep_link_wins_and_skips_window_matching() {
         assert_eq!(
-            focus_decision(&request(
+            first_decision(&request(
                 Some("https://example.invalid/session"),
                 Some("orb:ab12cd"),
             )),
             FocusDecision::OpenDeepLink("https://example.invalid/session".to_owned())
         );
         assert!(
-            focus_decision(&request(Some("https://example.invalid/session"), None)).is_precise()
+            first_decision(&request(Some("https://example.invalid/session"), None)).is_precise()
         );
     }
 
     #[test]
     fn dock_marker_is_the_precise_channel() {
         assert_eq!(
-            focus_decision(&request(None, Some("orb:ab12cd"))),
+            first_decision(&request(None, Some("orb:ab12cd"))),
             FocusDecision::FocusDockMarker {
                 marker: "orb:ab12cd".to_owned(),
             }
         );
-        assert!(focus_decision(&request(None, Some("orb:AB12CD"))).is_precise());
+        assert!(first_decision(&request(None, Some("orb:AB12CD"))).is_precise());
         assert_eq!(dock_terminal_marker("orb:ab12cd"), Some("orb:ab12cd"));
         assert_eq!(dock_terminal_marker(" orb:00ffaa "), Some("orb:00ffaa"));
         assert_eq!(dock_terminal_marker("orb:abc"), None);
@@ -230,16 +199,16 @@ mod tests {
     #[test]
     fn project_path_and_source_are_not_used_as_hints() {
         assert_eq!(
-            focus_decision(&request(None, None)),
+            first_decision(&request(None, None)),
             FocusDecision::UseCapturedWindow
         );
-        assert!(!focus_decision(&request(None, None)).is_precise());
+        assert!(!first_decision(&request(None, None)).is_precise());
         assert_eq!(
-            focus_decision(&request(Some(""), Some(""))),
+            first_decision(&request(Some(""), Some(""))),
             FocusDecision::UseCapturedWindow
         );
         assert_eq!(
-            focus_decision(&request(None, Some("pts/5"))),
+            first_decision(&request(None, Some("pts/5"))),
             FocusDecision::UseCapturedWindow
         );
         assert!(JUMP_WINDOW_MISSING.contains("orb run"));

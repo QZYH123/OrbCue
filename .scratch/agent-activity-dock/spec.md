@@ -1,7 +1,10 @@
 # Agent Activity Dock
 
-**Status:** ready-for-agent
-**Labels:** ready-for-agent
+**Status:** frozen
+**Labels:** historical
+
+> **Frozen.** This is the original Unix-first spec. Do not implement from it.
+> Current constraints: [`docs/agents/domain.md`](../../docs/agents/domain.md), [`docs/event-contract.md`](../../docs/event-contract.md), [`docs/adr/`](../../docs/adr/).
 
 ## Problem Statement
 

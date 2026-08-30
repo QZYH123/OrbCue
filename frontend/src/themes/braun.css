@@ -271,16 +271,6 @@ html.preview { background: #6b6b6b; }
 .session-card.unread.needs_attention { box-shadow: inset 2px 0 0 var(--wait); }
 .session-card.unread.failed { box-shadow: inset 2px 0 0 var(--fail); }
 .session-card.highlighted { box-shadow: inset 2px 0 0 var(--text); }
-.row-num {
-  flex: 0 0 1.7em;
-  padding: 8px 0 0 1px;
-  color: var(--faint);
-  font-size: 10px;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: .04em;
-}
-
 .session-content,
 .audit-content,
 .connection-content { padding: 7px 8px 6px 0; }

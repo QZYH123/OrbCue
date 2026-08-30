@@ -1,6 +1,4 @@
-use orbcue_adapters::{
-    claude_hook, codex_hook, codex_notification, cursor_hook, dsh_projection, grok_hook,
-};
+use orbcue_adapters::{claude_hook, codex_hook, codex_notification, cursor_hook, grok_hook};
 use orbcue_core::{DockEvent, DockState, EventKind, SessionState};
 
 #[test]
@@ -164,15 +162,7 @@ fn claude_unknown_subagent_shape_stays_a_main_session() {
 }
 
 #[test]
-fn dsh_and_codex_copy_parent_session_id() {
-    let dsh = dsh_projection(&serde_json::json!({
-        "event": "session.waiting_input",
-        "session_id": "child",
-        "parent_session_id": "parent"
-    }))
-    .unwrap();
-    assert_eq!(dsh.parent_session_id.as_deref(), Some("parent"));
-
+fn codex_notification_copies_parent_session_id() {
     let codex = codex_notification(&serde_json::json!({
         "type": "failed",
         "session_id": "child",
@@ -185,7 +175,6 @@ fn dsh_and_codex_copy_parent_session_id() {
 
 #[test]
 fn projection_adapters_reject_unknown_payloads_without_throwing() {
-    assert!(dsh_projection(&serde_json::json!({"event":"unknown"})).is_none());
     assert!(codex_notification(&serde_json::json!({"type":"unknown"})).is_none());
 }
 
@@ -256,25 +245,6 @@ fn codex_allowing_a_permission_prompt_returns_to_working() {
     .unwrap();
     assert_eq!(allowed.kind, EventKind::Working);
     assert_eq!(apply_permission_then(allowed), SessionState::Working);
-}
-
-#[test]
-fn dsh_permission_then_working_resumes() {
-    let permission = dsh_projection(&serde_json::json!({
-        "event": "session.permission_requested",
-        "session_id": "dsh-session",
-        "event_id": "d-perm-1"
-    }))
-    .expect("DSH session.permission_requested is the dock permission event");
-    assert_eq!(permission.kind, EventKind::PermissionRequested);
-
-    let working = dsh_projection(&serde_json::json!({
-        "event": "session.working",
-        "session_id": "dsh-session",
-        "event_id": "d-work-1"
-    }))
-    .unwrap();
-    assert_eq!(apply_permission_then(working), SessionState::Working);
 }
 
 #[test]

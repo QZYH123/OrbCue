@@ -10,16 +10,16 @@ mod notify;
 
 pub use capture::{captured_keys_to_drop, sessions_to_capture, CaptureSession, SessionKey};
 pub use jump::{
-    captured_hwnd_usable, dock_tab_title, dock_terminal_marker, focus_attempts, focus_decision,
-    format_dock_marker, is_terminal_window_candidate, process_image_file_name, project_path_hint,
-    select_unique_window_title, select_window_by_hints, session_terminal_title, FocusDecision,
-    FocusRequest, DOCK_MARKER_HEX_LEN, DOCK_TERMINAL_PREFIX, JUMP_WINDOW_MISSING,
-    TERMINAL_PROCESS_NAMES, TERMINAL_WINDOW_CLASSES,
+    captured_hwnd_usable, dock_tab_title, dock_terminal_marker, focus_attempts, format_dock_marker,
+    is_terminal_window_candidate, process_image_file_name, project_path_hint,
+    select_unique_window_title, session_terminal_title, FocusDecision, FocusRequest,
+    DOCK_MARKER_HEX_LEN, DOCK_TERMINAL_PREFIX, JUMP_WINDOW_MISSING, TERMINAL_PROCESS_NAMES,
+    TERMINAL_WINDOW_CLASSES,
 };
 pub use notify::{
-    attention_click_followup, attention_jump, dispatch_attention_toast, highlight_key,
-    highlight_target, toast_for_attention, AttentionClickFollowup, AttentionJump, HighlightTarget,
-    NotificationSink, ToastDispatch, ToastSpec,
+    attention_click_followup, attention_jump, dispatch_attention_toast, highlight_target,
+    AttentionClickFollowup, AttentionJump, HighlightTarget, NotificationSink, ToastDispatch,
+    ToastSpec,
 };
 
 use serde::{Deserialize, Serialize};

@@ -29,8 +29,6 @@
 | `src-tauri` | Windows 桌面壳；默认就是状态服务 |
 | `frontend` | 小球和面板（Svelte 5） |
 
-根目录的 `src/agent_activity_dock/` 和 `tests/` 是旧实验，不是当前构建路径，改功能时不要走那里。
-
 改领域行为或事件契约前读 [`docs/agents/domain.md`](agents/domain.md) 和 [`docs/event-contract.md`](event-contract.md)。
 
 ## 跑起来
@@ -65,7 +63,7 @@ npm --prefix frontend run dev
 bash scripts/install-cli.sh
 ```
 
-编译并安装 `orb`、`orbd` 到 `~/.local/bin`（可用 `ORBCUE_BIN` 改目录）。这是开发路径，也是 `ORBCUE_BACKEND=wsl` 回滚路径。普通用户的 `orb` 由 Windows 桌面程序在首次启动时安装。
+编译并安装 `orb`、`orbd` 到 `~/.local/bin`（可用 `ORBCUE_BIN` 改目录）。这是开发路径，也是已冻结的 `ORBCUE_BACKEND=wsl` 回滚仍会用到的二进制。普通用户的 `orb` 由 Windows 桌面程序在首次启动时安装。
 
 ## 检查与测试
 
@@ -122,7 +120,7 @@ npm run tauri -- build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-
 
 Windows 桌面程序是唯一的状态服务：对本机 named pipe 做 `attach_or_listen`。WSL 里的 `orb` 把查询和事件转发给它。`connect`、`agents`、`run`、`alias` 在工具所在的系统上执行。
 
-同一用户不要同时跑两份 daemon。开发调试时可用 `ORBCUE_BACKEND=wsl` 强制切到 WSL 本地 `orbd`。这是显式回滚，不要和默认的 Windows presenter 同时开，否则两边各有一份状态（裂脑）。不要在两条路径之间做静默探测切换。
+同一用户不要同时跑两份 daemon。`ORBCUE_BACKEND=wsl` 曾把 daemon 放到 WSL，这是**已冻结的回滚**，后续版本会删；不要新依赖它，也不要和默认的 Windows presenter 同时开（裂脑）。不要在两条路径之间做静默探测切换。
 
 排「状态不更新」时先确认：当前 `orb` 连的是 Windows 命名管道，还是 WSL 的 socket；以及有没有残留的 `orbd`。
 

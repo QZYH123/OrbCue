@@ -1,8 +1,9 @@
 //! Revocable, zero-reinstall Agent connections.
 //!
-//! This crate discovers commands already present on PATH, in common install
-//! directories, and in folders the user adds. It writes user-level wrappers/hooks
-//! and never replaces an Agent executable.
+//! Discovers Claude, Grok, Codex, and Cursor already on PATH or in folders the
+//! user adds, then writes native hooks. It never replaces an Agent executable.
+//! Other tools emit events with `orb start` / `orb complete`; leftover wrapper
+//! records can still be disconnected.
 
 mod discover;
 mod grok_compat;
@@ -10,12 +11,7 @@ mod run_alias;
 mod user_path;
 mod wsl_cli;
 
-pub use discover::{
-    agent_is_connectable, agent_origin, agents_in_dir, choose_discovered, discover_agents,
-    discover_agents_with_extras, looks_like_cursor_cli_path, merge_search_path,
-    parse_login_path_output, probe_login_path, InventorySnapshotCache, ProbeOutput, LOGIN_PATH_END,
-    LOGIN_PATH_START,
-};
+pub use discover::looks_like_cursor_cli_path;
 pub use grok_compat::{
     connection_warnings, grok_compat_cursor_hooks_enabled, GROK_COMPAT_CURSOR_HOOKS_WARNING,
 };
@@ -59,8 +55,12 @@ const PATH_END: &str = "# <<< orbcue PATH <<<";
 const LEGACY_PATH_START: &str = "# >>> agent-activity-dock PATH >>>";
 const LEGACY_PATH_END: &str = "# <<< agent-activity-dock PATH <<<";
 
+/// Agents the connections page can attach through native hooks.
+pub const FIRST_PARTY_AGENTS: &[&str] = &["claude", "codex", "cursor", "grok"];
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ConnectionMethod {
+    /// Leftover records from before hook-only connect. New connects never create these.
     Wrapper,
     ClaudeHook,
     GrokHook,
@@ -71,7 +71,9 @@ pub enum ConnectionMethod {
 impl ConnectionMethod {
     pub fn limitation(self) -> &'static str {
         match self {
-            Self::Wrapper => "看不到「正在等你输入」",
+            Self::Wrapper => {
+                "遗留包装连接，看不到「正在等你输入」。可断开后改用 `orb start` / `orb complete`"
+            }
             Self::ClaudeHook => "",
             Self::GrokHook => "",
             Self::CodexHook => {
@@ -351,8 +353,7 @@ impl ConnectionManager {
         }
         let record = match method {
             ConnectionMethod::Wrapper => {
-                let wrapper = self.install_wrapper(name, original)?;
-                connection_record(name, original, method, Some(wrapper), None, None)
+                return Err(unsupported_connect_name(name));
             }
             ConnectionMethod::ClaudeHook => {
                 let (hook, settings_backup) = self.install_claude_hook()?;
@@ -442,36 +443,12 @@ impl ConnectionManager {
 
     fn preview_files(&self, name: &str, method: ConnectionMethod) -> Vec<PreviewFile> {
         match method {
-            ConnectionMethod::Wrapper => self.preview_wrapper_files(name),
+            ConnectionMethod::Wrapper => unreachable!("new connections are hook-only: {name}"),
             ConnectionMethod::ClaudeHook => self.preview_claude_files(),
             ConnectionMethod::GrokHook => self.preview_grok_files(),
             ConnectionMethod::CodexHook => self.preview_codex_files(),
             ConnectionMethod::CursorHook => self.preview_cursor_files(),
         }
-    }
-
-    fn preview_wrapper_files(&self, name: &str) -> Vec<PreviewFile> {
-        let wrapper = wrapper_path(&self.data_dir, name);
-        let mut files = vec![
-            PreviewFile {
-                path: wrapper.clone(),
-                action: preview_action(&wrapper),
-                entries: vec!["started".into(), "completed".into(), "failed".into()],
-            },
-            self.preview_connections_file(),
-        ];
-        for profile in self.profile_targets() {
-            let existing = fs::read_to_string(&profile).unwrap_or_default();
-            if existing.contains(PATH_START) || existing.contains(LEGACY_PATH_START) {
-                continue;
-            }
-            files.push(PreviewFile {
-                path: profile.clone(),
-                action: preview_action(&profile),
-                entries: vec![PATH_START.to_owned()],
-            });
-        }
-        files
     }
 
     fn preview_claude_files(&self) -> Vec<PreviewFile> {
@@ -583,32 +560,6 @@ impl ConnectionManager {
             action: preview_action(&self.config_path),
             entries: vec!["connection record".to_owned()],
         }
-    }
-
-    fn install_wrapper(&self, name: &str, original: &Path) -> Result<PathBuf, String> {
-        fs::create_dir_all(&self.data_dir).map_err(|error| error.to_string())?;
-        set_mode(&self.data_dir, 0o700)?;
-        let wrapper = wrapper_path(&self.data_dir, name);
-        if wrapper == original {
-            return Err(format!(
-                "refusing to replace the real {name} executable with its own wrapper"
-            ));
-        }
-        if wrapper.exists() {
-            let existing = fs::read_to_string(&wrapper).map_err(|error| error.to_string())?;
-            if !existing.contains("Agent Activity Dock generated wrapper")
-                && !existing.contains("OrbCue generated wrapper")
-            {
-                return Err(format!(
-                    "refusing to overwrite non-OrbCue file {}",
-                    wrapper.display()
-                ));
-            }
-        }
-        let script = wrapper_script(name, &self.dock_binary, original);
-        atomic_write(&wrapper, script.as_bytes(), 0o700)?;
-        self.ensure_path_snippet()?;
-        Ok(wrapper)
     }
 
     fn write_hook_script(&self, name: &str) -> Result<PathBuf, String> {
@@ -778,27 +729,6 @@ impl ConnectionManager {
         Ok(())
     }
 
-    fn ensure_path_snippet(&self) -> Result<(), String> {
-        if let Err(error) = crate::ensure_dir_on_user_path(&self.data_dir) {
-            eprintln!(
-                "OrbCue: could not add {} to user PATH: {error}",
-                self.data_dir.display()
-            );
-        }
-        for profile in self.profile_targets() {
-            let old = fs::read_to_string(&profile).unwrap_or_default();
-            if old.contains(PATH_START) {
-                continue;
-            }
-            let stripped =
-                strip_path_block(&old, LEGACY_PATH_START, LEGACY_PATH_END).unwrap_or(old);
-            let block = snippet_for(&profile, &self.data_dir);
-            let mode = existing_mode(&profile, 0o600);
-            atomic_write(&profile, format!("{stripped}{block}").as_bytes(), mode)?;
-        }
-        Ok(())
-    }
-
     fn remove_path_snippet(&self) -> Result<(), String> {
         for profile in self.profile_candidates() {
             let Ok(old) = fs::read_to_string(&profile) else {
@@ -816,39 +746,6 @@ impl ConnectionManager {
 
     fn remove_empty_data_dir(&self) {
         let _ = fs::remove_dir(&self.data_dir);
-    }
-
-    fn profile_targets(&self) -> Vec<PathBuf> {
-        let mut targets: Vec<PathBuf> = self
-            .profile_candidates()
-            .into_iter()
-            .filter(|path| path.is_file())
-            .collect();
-        #[cfg(not(windows))]
-        {
-            let shell = env::var("SHELL").unwrap_or_default();
-            if shell.rsplit('/').next() == Some("zsh")
-                && !targets.iter().any(|path| is_zsh_profile(path))
-            {
-                targets.push(self.home.join(".zshrc"));
-            }
-            if matches!(
-                shell.rsplit('/').next(),
-                Some("pwsh" | "powershell" | "pwsh.exe" | "powershell.exe")
-            ) && !targets.iter().any(|path| is_powershell_profile(path))
-            {
-                targets.push(self.linux_powershell_profile());
-            }
-            if shell.rsplit('/').next() == Some("fish")
-                && !targets.iter().any(|path| is_fish_profile(path))
-            {
-                targets.push(self.home.join(".config").join("fish").join("config.fish"));
-            }
-        }
-        if targets.is_empty() {
-            targets.push(self.default_profile());
-        }
-        targets
     }
 
     fn profile_candidates(&self) -> Vec<PathBuf> {
@@ -890,20 +787,6 @@ impl ConnectionManager {
             .join(".config")
             .join("powershell")
             .join("Microsoft.PowerShell_profile.ps1")
-    }
-
-    fn default_profile(&self) -> PathBuf {
-        #[cfg(windows)]
-        {
-            self.home
-                .join("Documents")
-                .join("PowerShell")
-                .join("Microsoft.PowerShell_profile.ps1")
-        }
-        #[cfg(not(windows))]
-        {
-            self.home.join(".profile")
-        }
     }
 
     fn load(&self) -> ConnectionFile {
@@ -1200,17 +1083,6 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
     }
 }
 
-fn wrapper_path(data_dir: &Path, name: &str) -> PathBuf {
-    #[cfg(windows)]
-    {
-        data_dir.join(format!("{name}.cmd"))
-    }
-    #[cfg(not(windows))]
-    {
-        data_dir.join(name)
-    }
-}
-
 fn preview_action(path: &Path) -> PreviewAction {
     if path.is_file() {
         PreviewAction::Modify
@@ -1453,14 +1325,20 @@ fn cursor_unbounded_events() -> &'static [&'static str] {
     &["sessionStart", "afterAgentResponse", "stop", "sessionEnd"]
 }
 
-fn connection_method_for(name: &str) -> ConnectionMethod {
+fn connection_method_for(name: &str) -> Option<ConnectionMethod> {
     match name {
-        "claude" => ConnectionMethod::ClaudeHook,
-        "grok" => ConnectionMethod::GrokHook,
-        "codex" => ConnectionMethod::CodexHook,
-        "cursor" => ConnectionMethod::CursorHook,
-        _ => ConnectionMethod::Wrapper,
+        "claude" => Some(ConnectionMethod::ClaudeHook),
+        "grok" => Some(ConnectionMethod::GrokHook),
+        "codex" => Some(ConnectionMethod::CodexHook),
+        "cursor" => Some(ConnectionMethod::CursorHook),
+        _ => None,
     }
+}
+
+fn unsupported_connect_name(name: &str) -> String {
+    format!(
+        "OrbCue 只连接 Claude、Grok、Codex 和 Cursor（{name} 不行）。其他工具请用 `orb start` / `orb complete` 接入"
+    )
 }
 
 fn hook_path(config_dir: &Path, name: &str) -> PathBuf {
@@ -1481,34 +1359,6 @@ fn current_hook_script(config_dir: &Path, method: ConnectionMethod) -> Option<Pa
         ConnectionMethod::CodexHook => Some(hook_path(config_dir, "codex")),
         ConnectionMethod::CursorHook => Some(hook_path(config_dir, "cursor")),
         ConnectionMethod::Wrapper => None,
-    }
-}
-
-fn wrapper_script(name: &str, dock_binary: &Path, original: &Path) -> String {
-    #[cfg(windows)]
-    {
-        let dock = windows_batch_quote(&dock_binary.to_string_lossy());
-        let original = windows_batch_quote(&original.to_string_lossy());
-        let source = windows_batch_quote(name);
-        return format!(
-            "@echo off\r\nrem OrbCue generated wrapper; never reads Agent content.\r\nsetlocal\r\nif not defined ORBCUE_TASK_ID set \"ORBCUE_TASK_ID={name}-%RANDOM%\"\r\n{dock} start \"%ORBCUE_TASK_ID%\" --source {source} >nul 2>&1\r\ncall {original} %*\r\nset \"CODE=%ERRORLEVEL%\"\r\nif \"%CODE%\"==\"0\" ({dock} complete \"%ORBCUE_TASK_ID%\" --source {source} >nul 2>&1) else ({dock} fail \"%ORBCUE_TASK_ID%\" --source {source} >nul 2>&1)\r\nexit /b %CODE%\r\n",
-            name = name,
-            dock = dock,
-            original = original,
-            source = source,
-        );
-    }
-    #[cfg(not(windows))]
-    {
-        let dock = shell_quote(&dock_binary.to_string_lossy());
-        let original = shell_quote(&original.to_string_lossy());
-        let source = shell_quote(name);
-        format!(
-            "#!/bin/sh\n# OrbCue generated wrapper; never reads Agent content.\nset -u\nTASK_ID=${{ORBCUE_TASK_ID:-{source}-$$-$(date +%s%N)}}\n{dock} start \"$TASK_ID\" --source {source} >/dev/null 2>&1 || true\nCHILD=\"\"\nforward_signal() {{\n  SIGNAL=\"$1\"\n  if [ -n \"${{CHILD:-}}\" ]; then kill -$SIGNAL \"$CHILD\" 2>/dev/null || true; fi\n}}\ntrap 'forward_signal TERM' TERM\ntrap 'forward_signal INT' INT\ntrap 'forward_signal HUP' HUP\ntrap 'forward_signal QUIT' QUIT\n{original} \"$@\" &\nCHILD=$!\nwait \"$CHILD\"\nCODE=$?\ntrap - TERM INT HUP QUIT\nif [ $CODE -eq 0 ]; then {dock} complete \"$TASK_ID\" --source {source} >/dev/null 2>&1 || true; else {dock} fail \"$TASK_ID\" --source {source} >/dev/null 2>&1 || true; fi\nexit $CODE\n",
-            source = source,
-            dock = dock,
-            original = original,
-        )
     }
 }
 
@@ -1553,16 +1403,6 @@ fn install_grok_hooks(hooks_path: &Path, hook: &Path) -> Result<(), String> {
     atomic_write(hooks_path, &bytes, 0o600)
 }
 
-fn snippet_for(profile: &Path, data_dir: &Path) -> String {
-    if is_powershell_profile(profile) {
-        powershell_path_snippet(data_dir)
-    } else if is_fish_profile(profile) {
-        fish_path_snippet(data_dir)
-    } else {
-        posix_path_snippet(data_dir)
-    }
-}
-
 fn strip_path_block(old: &str, start: &str, end: &str) -> Option<String> {
     let marker_start = old.find(start)?;
     let line_start = old[..marker_start]
@@ -1582,70 +1422,9 @@ fn strip_path_block(old: &str, start: &str, end: &str) -> Option<String> {
     Some(cleaned)
 }
 
-fn wrap_path_block(body: &str) -> String {
-    #[cfg(windows)]
-    {
-        format!("\r\n{PATH_START}\r\n{body}\r\n{PATH_END}\r\n")
-    }
-    #[cfg(not(windows))]
-    {
-        format!("\n{PATH_START}\n{body}\n{PATH_END}\n")
-    }
-}
-
-fn posix_path_snippet(data_dir: &Path) -> String {
-    wrap_path_block(&format!(
-        "export PATH=\"{}:$PATH\"",
-        escape_double_quoted(&data_dir.to_string_lossy())
-    ))
-}
-
-fn powershell_path_snippet(data_dir: &Path) -> String {
-    let separator = if cfg!(windows) { ";" } else { ":" };
-    wrap_path_block(&format!(
-        "$env:PATH = \"{}{separator}\" + $env:PATH",
-        powershell_double_quoted(&data_dir.to_string_lossy())
-    ))
-}
-
-fn fish_path_snippet(data_dir: &Path) -> String {
-    wrap_path_block(&format!(
-        "set -gx PATH \"{}\" $PATH",
-        escape_double_quoted(&data_dir.to_string_lossy())
-    ))
-}
-
-fn is_powershell_profile(path: &Path) -> bool {
-    path.extension().and_then(|ext| ext.to_str()) == Some("ps1")
-        || path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.contains("PowerShell_profile"))
-}
-
-fn is_fish_profile(path: &Path) -> bool {
-    path.file_name().and_then(|name| name.to_str()) == Some("config.fish")
-}
-
-#[cfg(not(windows))]
-fn is_zsh_profile(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some(".zshrc" | ".zprofile" | ".zshenv")
-    )
-}
-
 #[cfg(windows)]
 fn windows_batch_quote(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
-}
-
-fn powershell_double_quoted(value: &str) -> String {
-    value.replace('`', "``").replace('"', "`\"")
-}
-
-fn escape_double_quoted(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 #[cfg(not(windows))]
@@ -1673,7 +1452,7 @@ fn validate_connection_request(name: &str, original: &Path) -> Result<Connection
             original.display()
         ));
     }
-    Ok(connection_method_for(name))
+    connection_method_for(name).ok_or_else(|| unsupported_connect_name(name))
 }
 
 fn now_string() -> String {

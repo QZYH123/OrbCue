@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  auditAttentionNote,
   auditProjectLabel,
-  cleanWindowTitle,
   displayAgent,
   folderName,
   filterSessionSections,
@@ -10,9 +8,7 @@ import {
   isAuditVisible,
   presentAuditRows,
   presentSessionSections,
-  sessionDetail,
   sessionDomKey,
-  shortSessionId,
 } from './sessionIdentity';
 
 describe('folderName', () => {
@@ -33,7 +29,6 @@ describe('displayAgent', () => {
     expect(displayAgent('claude')).toBe('Claude');
     expect(displayAgent('GROK')).toBe('Grok');
     expect(displayAgent('cursor')).toBe('Cursor');
-    expect(displayAgent('dsh')).toBe('DSH');
     expect(displayAgent('my-bot')).toBe('My-bot');
     expect(displayAgent('')).toBe('Agent');
   });
@@ -44,30 +39,6 @@ describe('sessionDomKey', () => {
     const first = { source: 'grok', session_id: 'resume-id', terminal_id: 'term-a' };
     const second = { source: 'grok', session_id: 'resume-id', terminal_id: 'term-b' };
     expect(sessionDomKey(first)).not.toBe(sessionDomKey(second));
-  });
-});
-
-describe('shortSessionId', () => {
-  it('keeps short ids and shortens UUIDs and long names', () => {
-    expect(shortSessionId('task-1')).toBe('task-1');
-    expect(shortSessionId('a1b2c3d4-e5f6-7890-abcd-ef1234567890')).toBe('a1b2c3d4');
-    expect(shortSessionId('very-long-custom-session-name')).toBe('very-lon…');
-  });
-});
-
-describe('auditAttentionNote', () => {
-  it('only labels waiting-for-user on needs_attention rows', () => {
-    expect(
-      auditAttentionNote({ state: 'completed', attention_reason: 'completed' }),
-    ).toBeNull();
-    expect(auditAttentionNote({ state: 'failed', attention_reason: 'failed' })).toBeNull();
-    expect(auditAttentionNote({ state: 'working', attention_reason: null })).toBeNull();
-    expect(
-      auditAttentionNote({ state: 'needs_attention', attention_reason: 'input' }),
-    ).toBe('需要输入');
-    expect(
-      auditAttentionNote({ state: 'needs_attention', attention_reason: 'permission' }),
-    ).toBe('授权请求');
   });
 });
 
@@ -140,39 +111,6 @@ describe('auditProjectLabel', () => {
   });
 });
 
-describe('cleanWindowTitle', () => {
-  it('strips terminal chrome and dock markers', () => {
-    expect(cleanWindowTitle('Windows Terminal - orb:ab12cd · grok · dock')).toBe(
-      'grok · dock',
-    );
-    expect(cleanWindowTitle('orb:ff00aa · claude · app')).toBe('claude · app');
-    expect(
-      cleanWindowTitle('Windows Terminal - agent-activity-dock · grok · orb:ab12cd'),
-    ).toBe('agent-activity-dock · grok');
-    expect(cleanWindowTitle('app · claude · orb:ff00aa')).toBe('app · claude');
-    expect(cleanWindowTitle('just a title')).toBe('just a title');
-  });
-});
-
-describe('sessionDetail', () => {
-  it('prefers a dock tab suffix over the raw session id', () => {
-    expect(
-      sessionDetail({
-        source: 'claude',
-        session_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
-        terminal_id: 'orb:ab12cd',
-      }),
-    ).toBe('ab12cd');
-    expect(
-      sessionDetail({
-        source: 'claude',
-        session_id: 'task-1',
-        terminal_id: null,
-      }),
-    ).toBe('task-1');
-  });
-});
-
 describe('presentSessionSections', () => {
   it('uses the project folder as the section and the agent as the row title', () => {
     const sections = presentSessionSections(
@@ -233,14 +171,14 @@ describe('presentSessionSections', () => {
   it('still uses the agent name when there is no project', () => {
     const sections = presentSessionSections([
       {
-        source: 'dsh',
+        source: 'cursor',
         session_id: 'x1',
         project_path: null,
         window_title: 'Windows Terminal - notes',
       },
     ]);
     expect(sections[0]?.label).toBe('其他');
-    expect(sections[0]?.rows[0]?.title).toBe('DSH');
+    expect(sections[0]?.rows[0]?.title).toBe('Cursor');
     expect(sections[0]?.rows[0]?.index).toBe('01');
   });
 
