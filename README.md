@@ -13,7 +13,7 @@ OrbCue 在 Windows 桌面上放一个小球：orb 是形态，cue 是该你出�
   <img src="docs/screenshots/demo.gif" width="480" alt="工作时只显示数量，需要处理时出现问号，点开按项目分组的列表，并切换五套外观">
 </p>
 
-当前 **0.2.5**，桌面程序只在 Windows 上提供。安装包见 [GitHub Releases](https://github.com/QZYH123/OrbCue/releases/latest)。
+当前 **0.2.6**，桌面程序只在 Windows 上提供。安装包见 [GitHub Releases](https://github.com/QZYH123/OrbCue/releases/latest)。
 
 - 不读取对话、提示词、命令或代码，也不替你操作这些工具
 - 默认不联网；状态只保存在本机当前用户目录
