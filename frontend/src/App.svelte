@@ -111,9 +111,11 @@
   let runAliasDraft = '';
   let runAliasHint = '';
   let runAliasError = '';
+  let replaceTabOnRun = false;
   const shortcut = 'CommandOrControl+Shift+Space';
   const BADGE_KEY = 'orbcue-hide-ball-badge';
   const SIDE_DOCK_KEY = 'orbcue-side-dock';
+  const REPLACE_TAB_KEY = 'orbcue-replace-tab';
   let badgeChannel: BroadcastChannel | null = null;
   let sideDockChannel: BroadcastChannel | null = null;
   let unsubscribe: (() => void) | undefined;
@@ -208,6 +210,7 @@
     );
     sideDockChannel = sideDockPreference.channel;
     void loadRunAlias();
+    void loadReplaceTab();
     if (previewMode) {
       const pageQ = new URLSearchParams(window.location.search).get('page');
       if (pageQ === 'audit' || pageQ === 'connections' || pageQ === 'settings' || pageQ === 'activity') {
@@ -867,6 +870,36 @@
     }
   }
 
+  async function loadReplaceTab() {
+    if (previewMode) {
+      replaceTabOnRun = localStorage.getItem(REPLACE_TAB_KEY) === 'true';
+      return;
+    }
+    try {
+      replaceTabOnRun = await invoke<boolean>('replace_tab_on_run');
+    } catch (error) {
+      console.warn('Could not load replace-tab preference', error);
+    }
+  }
+
+  async function toggleReplaceTab() {
+    const next = !replaceTabOnRun;
+    if (previewMode) {
+      replaceTabOnRun = next;
+      try {
+        localStorage.setItem(REPLACE_TAB_KEY, String(next));
+      } catch {
+        /* ignore quota */
+      }
+      return;
+    }
+    try {
+      replaceTabOnRun = await invoke<boolean>('set_replace_tab_on_run', { enabled: next });
+    } catch (error) {
+      console.warn('Could not update replace-tab preference', error);
+    }
+  }
+
   async function saveRunAlias(event: SubmitEvent) {
     event.preventDefault();
     const name = runAliasDraft.trim();
@@ -1333,6 +1366,9 @@
         </div>
         {#if runAliasError}<p class="alias-hint error">{runAliasError}</p>
         {:else if runAliasHint}<p class="alias-hint">{runAliasHint}</p>{/if}
+        <button class="setting-row" aria-pressed={replaceTabOnRun} onclick={() => void toggleReplaceTab()}>
+          <span><strong>启动时替换当前标签页</strong><small>orb run 开出新标签后关掉当前这个</small></span><span class:enabled={replaceTabOnRun} class="switch"><i></i></span>
+        </button>
         <button class="setting-row" aria-pressed={hideBallBadge} onclick={toggleHideBallBadge}>
           <span><strong>隐藏圆标</strong><small>小球右上角的 ? / ! 不再显示</small></span><span class:enabled={hideBallBadge} class="switch"><i></i></span>
         </button>

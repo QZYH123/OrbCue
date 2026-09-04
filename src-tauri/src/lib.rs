@@ -505,6 +505,25 @@ fn set_run_alias(name: String) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+fn replace_tab_on_run() -> Result<bool, String> {
+    Ok(orbcue_connect::replace_tab_on_run())
+}
+
+#[tauri::command]
+fn set_replace_tab_on_run(enabled: bool) -> Result<bool, String> {
+    let local = orbcue_connect::set_replace_tab_on_run(enabled)?;
+    #[cfg(windows)]
+    {
+        if let Err(error) = wsl_session::set_replace_tab_on_run(enabled) {
+            if !orbcue_connect::wsl_side_is_absent(&error) {
+                eprintln!("OrbCue: WSL 替换标签页设置未更新: {error}");
+            }
+        }
+    }
+    Ok(local)
+}
+
+#[tauri::command]
 fn disconnect_agent(app: AppHandle, name: String, side: String) -> Result<bool, String> {
     match AgentSide::parse(&side)? {
         AgentSide::Wsl => {
@@ -972,7 +991,9 @@ pub fn run() {
             highlight_session,
             activate_attention,
             run_alias,
-            set_run_alias
+            set_run_alias,
+            replace_tab_on_run,
+            set_replace_tab_on_run
         ])
         .build(tauri::generate_context!())
         .expect("error while building OrbCue")

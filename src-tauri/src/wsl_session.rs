@@ -131,6 +131,34 @@ pub fn set_run_alias(name: Option<&str>) -> Result<Option<String>, String> {
     alias_from_json(parsed)
 }
 
+#[derive(Debug, Deserialize)]
+struct ReplaceTabJson {
+    ok: bool,
+    #[serde(default)]
+    replace_tab: bool,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+fn replace_tab_from_json(parsed: ReplaceTabJson) -> Result<bool, String> {
+    if parsed.ok {
+        Ok(parsed.replace_tab)
+    } else {
+        Err(parsed
+            .error
+            .unwrap_or_else(|| "无法更新替换标签页设置".to_owned()))
+    }
+}
+
+pub fn set_replace_tab_on_run(enabled: bool) -> Result<bool, String> {
+    let parsed = if enabled {
+        wsl_dock_json::<ReplaceTabJson>(&["replace-tab", "--enable", "--json"])?
+    } else {
+        wsl_dock_json::<ReplaceTabJson>(&["replace-tab", "--disable", "--json"])?
+    };
+    replace_tab_from_json(parsed)
+}
+
 fn subscribe_bridge() -> mpsc::Receiver<SnapshotMessage> {
     let (sender, receiver) = mpsc::channel();
     let _ = thread::Builder::new()

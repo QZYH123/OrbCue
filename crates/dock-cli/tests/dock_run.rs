@@ -222,3 +222,28 @@ fn dock_run_close_keeps_the_launcher_when_stdin_is_not_a_tty() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn dock_run_replace_tab_preference_keeps_the_launcher_when_stdin_is_not_a_tty() {
+    let root = isolated_root("orbcue-run");
+    let bin = setup_bin(&root);
+    write_exec(&bin.join("fakeagent"), "#!/bin/sh\nexit 0\n");
+    let enabled = orb_cmd()
+        .args(["replace-tab", "--enable", "--json"])
+        .env("HOME", root.join("home"))
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("ORBCUE_SOCKET", root.join("orb.sock"))
+        .env("ORBCUE_BACKEND", "wsl")
+        .env("ORBCUE_ORBD", root.join("missing-orbd"))
+        .env_remove("XDG_RUNTIME_DIR")
+        .output()
+        .expect("enable replace-tab");
+    assert!(enabled.status.success(), "{enabled:?}");
+    let (started, stderr) = run_json(&root, &bin, &["--json", "run", "fakeagent"]);
+    assert_eq!(started["ok"], true, "stdout={started} stderr={stderr}");
+    assert_eq!(
+        started["closed_launcher"], false,
+        "piped stdin must not SIGHUP the test process: {started}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}

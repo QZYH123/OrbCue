@@ -48,7 +48,7 @@
 面板「回去」按以下阶梯，只在用户点击时执行，不做状态推断：
 
 1. **精确（deep_link）**：会话带 `deep_link` 时打开该链接。
-2. **精确（orb 标签）**：`terminal_id` 形如 `orb:` + 6 位十六进制时，按窗口标题含该标记聚焦；活动标签未命中则用 UI Automation 按 TabItem 名切换。找不到则报找不到窗口。`orb run` 用 `wt.exe nt --profile {当前 WT_PROFILE_ID} --title "{项目} · {agent} · {marker}"` 创建标签，并加 `--suppressApplicationTitle`。内部命令与 WT 命令行分开：WSL inner 仍是 `wsl.exe -d … --cd … -- shell -l script`；纯 Windows inner 是 `--startingDirectory` + `--env ORBCUE_TERMINAL_ID=` + Windows 可执行文件。`BACKEND=local` 时 WSL `orb run` 把准备好的 spec 交给 `orb.exe run --from-wsl`，Windows 侧不再 `resolve_agent`。默认不关启动页；`orb run --close` 仅在新标签启动成功且 stdin 是交互式 TTY 时向父 shell 发 SIGHUP。WSL 内经 OSC 改标题在常见 Win+WSL 环境会被中继吞掉，不能当作跳回通道；手开标签的标题通常仍是配置文件名。`--profile` 只影响新标签的外观/配置文件，不改变命令行（仍跑 orb 的启动脚本）。
+2. **精确（orb 标签）**：`terminal_id` 形如 `orb:` + 6 位十六进制时，按窗口标题含该标记聚焦；活动标签未命中则用 UI Automation 按 TabItem 名切换。找不到则报找不到窗口。`orb run` 用 `wt.exe nt --profile {当前 WT_PROFILE_ID} --title "{项目} · {agent} · {marker}"` 创建标签，并加 `--suppressApplicationTitle`。内部命令与 WT 命令行分开：WSL inner 仍是 `wsl.exe -d … --cd … -- shell -l script`；纯 Windows inner 是 `--startingDirectory` + `--env ORBCUE_TERMINAL_ID=` + Windows 可执行文件。`BACKEND=local` 时 WSL `orb run` 把准备好的 spec 交给 `orb.exe run --from-wsl`，Windows 侧不再 `resolve_agent`。默认不关启动页；设置「启动时替换当前标签页」或 `orb run --close` 时，仅在新标签启动成功且 stdin 是交互式 TTY 时向父 shell 发 SIGHUP。WSL 内经 OSC 改标题在常见 Win+WSL 环境会被中继吞掉，不能当作跳回通道；手开标签的标题通常仍是配置文件名。`--profile` 只影响新标签的外观/配置文件，不改变命令行（仍跑 orb 的启动脚本）。
 3. **窗口级兜底**：使用 presenter 在新会话或转入 working 时捕获的前台终端 HWND。使用前校验窗口仍存在且仍是终端类；否则删除记录并继续降级。成功时前端标明「已回到最近交互的窗口」，不冒充标签级精确。
 4. **诚实失败**：以上都不可用时报「找不到该会话的窗口」，并提示用 `orb run` 获得精确跳回。不再按项目名末段或 `source` 子串做模糊标题级联（在标题恒为发行版名的环境里只会误报）。
 

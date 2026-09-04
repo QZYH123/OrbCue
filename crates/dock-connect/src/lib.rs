@@ -7,6 +7,7 @@
 
 mod discover;
 mod grok_compat;
+mod replace_tab;
 mod run_alias;
 mod user_path;
 mod wsl_cli;
@@ -14,6 +15,10 @@ mod wsl_cli;
 pub use discover::looks_like_cursor_cli_path;
 pub use grok_compat::{
     connection_warnings, grok_compat_cursor_hooks_enabled, GROK_COMPAT_CURSOR_HOOKS_WARNING,
+};
+pub use replace_tab::{
+    current as replace_tab_on_run, set as set_replace_tab_on_run, view_err as replace_tab_err,
+    view_ok as replace_tab_ok, ReplaceTabView,
 };
 pub use run_alias::{
     current as current_run_alias, preferred as preferred_run_alias, set as set_run_alias,

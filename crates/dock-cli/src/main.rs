@@ -101,6 +101,14 @@ enum Command {
         #[arg(long)]
         clear: bool,
     },
+    /// Persist whether `orb run` replaces the current tab. Used by the panel.
+    #[command(hide = true, name = "replace-tab")]
+    ReplaceTab {
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        #[arg(long)]
+        disable: bool,
+    },
     /// Start an Agent in a dedicated Windows Terminal tab.
     Run {
         /// Windows Terminal profile name or GUID. Defaults to the current tab.
@@ -180,6 +188,13 @@ fn main() {
         }
         return;
     }
+    if let Command::ReplaceTab { enable, disable } = &cli.command {
+        let status = run_replace_tab_command(*enable, *disable, cli.json);
+        if status != 0 {
+            std::process::exit(status);
+        }
+        return;
+    }
     if matches!(
         &cli.command,
         Command::Agents | Command::Connect { .. } | Command::Disconnect { .. }
@@ -219,10 +234,11 @@ fn main() {
                 eprintln!("orb run: missing agent name");
                 std::process::exit(1);
             };
+            let close = *close || orbcue_connect::replace_tab_on_run();
             if should_delegate_run_to_windows() {
-                run_via_windows_terminal(agent, args, profile.as_deref(), *close, cli.json)
+                run_via_windows_terminal(agent, args, profile.as_deref(), close, cli.json)
             } else {
-                terminal::run_command(agent, args, profile.as_deref(), *close, cli.json)
+                terminal::run_command(agent, args, profile.as_deref(), close, cli.json)
             }
         };
         if status != 0 {
@@ -321,6 +337,44 @@ fn run_alias_command(name: Option<&str>, clear: bool, json_output: bool) -> i32 
                 );
             } else {
                 eprintln!("orb alias: {error}");
+            }
+            1
+        }
+    }
+}
+
+fn run_replace_tab_command(enable: bool, disable: bool, json_output: bool) -> i32 {
+    let result = if enable {
+        orbcue_connect::set_replace_tab_on_run(true)
+    } else if disable {
+        orbcue_connect::set_replace_tab_on_run(false)
+    } else {
+        Ok(orbcue_connect::replace_tab_on_run())
+    };
+    match result {
+        Ok(enabled) => {
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string(&orbcue_connect::replace_tab_ok(enabled))
+                        .expect("replace-tab view serializes")
+                );
+            } else if enabled {
+                println!("orb run 会替换当前标签页");
+            } else {
+                println!("orb run 会留下当前标签页");
+            }
+            0
+        }
+        Err(error) => {
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string(&orbcue_connect::replace_tab_err(error.clone()))
+                        .expect("replace-tab error serializes")
+                );
+            } else {
+                eprintln!("orb replace-tab: {error}");
             }
             1
         }
@@ -609,6 +663,7 @@ fn request_for(command: &Command) -> Result<IpcRequest, String> {
         | Command::Down
         | Command::Bridge
         | Command::Alias { .. }
+        | Command::ReplaceTab { .. }
         | Command::Run { .. } => return Err("command is handled before event parsing".to_owned()),
     };
     Ok(request)
@@ -1448,6 +1503,7 @@ fn stays_on_agent_os(command: &Command) -> bool {
             | Command::Connect { .. }
             | Command::Disconnect { .. }
             | Command::Alias { .. }
+            | Command::ReplaceTab { .. }
             | Command::Run { .. }
             | Command::LivenessCheck
     )
@@ -2559,6 +2615,10 @@ mod tests {
             name: "grok".to_owned()
         }));
         assert!(stays_on_agent_os(&run_command()));
+        assert!(stays_on_agent_os(&Command::ReplaceTab {
+            enable: false,
+            disable: false
+        }));
         assert!(trampoline_to_windows_predicate(
             true,
             true,
