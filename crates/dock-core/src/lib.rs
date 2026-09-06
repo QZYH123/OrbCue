@@ -343,9 +343,6 @@ impl DockState {
             {
                 continue;
             }
-            let terminal_id = normalize_optional(&item.terminal_id)
-                .filter(|value| valid_len(value, MAX_TERMINAL_ID_LEN))
-                .map(str::to_owned);
             let project_path = normalize_optional(&item.project_path)
                 .filter(|value| valid_len(value, MAX_METADATA_VALUE_LEN))
                 .map(str::to_owned);
@@ -354,6 +351,12 @@ impl DockState {
                 item.agent_pid,
                 item.agent_starttime,
                 item.agent_wsl_distro.clone(),
+            );
+            let terminal_id = fill_missing_terminal_id(
+                normalize_optional(&item.terminal_id)
+                    .filter(|value| valid_len(value, MAX_TERMINAL_ID_LEN))
+                    .map(str::to_owned),
+                liveness.as_ref(),
             );
             let key = persist_instance_key(
                 &state,
@@ -515,7 +518,7 @@ impl DockState {
         );
         let key = self.resolve_session_key(&event, creating);
         if creating && !self.sessions.contains_key(&key) {
-            if let Some(terminal_id) = normalize_optional(&event.terminal_id).map(str::to_owned) {
+            if let Some(terminal_id) = terminal_id_from_event(&event) {
                 if self.ignore_nested_start_on_running_terminal(&terminal_id, &event) {
                     self.remember_event(&event.event_id);
                     return self.accepted(None);
@@ -901,7 +904,7 @@ impl SessionRecord {
             requires_user_action: event.requires_user_action.unwrap_or(false),
             acknowledged: reason.is_none(),
             occurred_at: event.occurred_at.clone(),
-            terminal_id: normalize_optional(&event.terminal_id).map(str::to_owned),
+            terminal_id: terminal_id_from_event(event),
             liveness: liveness_from_event(event),
         }
     }
@@ -939,6 +942,10 @@ fn update_record(record: &mut SessionRecord, event: &DockEvent) {
     }
     if let Some(terminal_id) = normalize_optional(&event.terminal_id) {
         record.terminal_id = Some(terminal_id.to_owned());
+    } else if record.terminal_id.is_none() {
+        if let Some(live) = liveness_from_event(event) {
+            record.terminal_id = Some(liveness_terminal_id(live.pid, live.starttime));
+        }
     }
     record.liveness = merge_liveness(record.liveness.take(), liveness_from_event(event));
     record.occurred_at = event.occurred_at.clone();
@@ -997,6 +1004,27 @@ fn complete_liveness(
         starttime: starttime?,
         distro: normalize_optional(&distro).map(str::to_owned),
     })
+}
+
+/// Terminal identity derived from hook liveness when the CLI could not see a
+/// tty / WT session / `orb run` marker. Lets reset and same-process replacement
+/// distinguish instances that share `source`+`session_id`.
+pub fn liveness_terminal_id(pid: u32, starttime: u64) -> String {
+    format!("live:{pid}:{starttime}")
+}
+
+fn terminal_id_from_event(event: &DockEvent) -> Option<String> {
+    if let Some(terminal_id) = normalize_optional(&event.terminal_id) {
+        return Some(terminal_id.to_owned());
+    }
+    liveness_from_event(event).map(|live| liveness_terminal_id(live.pid, live.starttime))
+}
+
+fn fill_missing_terminal_id(
+    terminal_id: Option<String>,
+    liveness: Option<&AgentLiveness>,
+) -> Option<String> {
+    terminal_id.or_else(|| liveness.map(|live| liveness_terminal_id(live.pid, live.starttime)))
 }
 
 /// SHA-256 prefix so a 256-byte session_id still fits `MAX_EVENT_ID_LEN`.

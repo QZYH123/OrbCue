@@ -1232,7 +1232,11 @@ fn linux_agent_liveness() -> Option<(u32, u64)> {
 
 #[cfg(unix)]
 fn is_short_lived_hook_parent(comm: &str) -> bool {
-    matches!(comm, "sh" | "dash" | "bash" | "zsh" | "fish" | "orb")
+    // Generated hooks are `#!/bin/sh` + exec. Skip that wrapper (and `orb`
+    // trampolines), but not bash/zsh/fish: those are often the user's
+    // interactive shell or an agent launcher. Walking past them records a
+    // PID that outlives the session, so close is never detected.
+    matches!(comm, "sh" | "dash" | "orb")
 }
 
 fn hook_source_from_identities(provider: &str, identities: &[String]) -> String {
@@ -2559,6 +2563,10 @@ mod tests {
     fn unix_hook_skips_detached_orb_parent() {
         assert!(super::is_short_lived_hook_parent("orb"));
         assert!(super::is_short_lived_hook_parent("sh"));
+        assert!(super::is_short_lived_hook_parent("dash"));
+        assert!(!super::is_short_lived_hook_parent("bash"));
+        assert!(!super::is_short_lived_hook_parent("zsh"));
+        assert!(!super::is_short_lived_hook_parent("fish"));
         assert!(!super::is_short_lived_hook_parent("grok"));
         assert!(!super::is_short_lived_hook_parent("claude"));
     }

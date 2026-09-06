@@ -1,4 +1,4 @@
-use orbcue_core::{DockEvent, DockState, EventKind, SessionState};
+use orbcue_core::{liveness_terminal_id, DockEvent, DockState, EventKind, SessionState};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 fn event(id: &str, kind: EventKind, session: &str) -> DockEvent {
@@ -750,6 +750,108 @@ fn reset_one_resume_leaves_the_other() {
     let snapshot = state.snapshot();
     assert_eq!(snapshot.tracked_count, 1);
     assert_eq!(snapshot.sessions[0].terminal_id.as_deref(), Some("term-a"));
+}
+
+#[test]
+fn liveness_without_tty_becomes_terminal_id() {
+    let mut state = DockState::new();
+    let mut started = DockEvent::new("e1", EventKind::Working, "grok", "sid");
+    started.cwd = Some("/tmp/same-project".to_owned());
+    attach_liveness(&mut started, 11, 100);
+    state.apply(started);
+    assert_eq!(
+        state.snapshot().sessions[0].terminal_id.as_deref(),
+        Some(liveness_terminal_id(11, 100).as_str())
+    );
+}
+
+#[test]
+fn reset_one_liveness_instance_leaves_the_other_in_the_same_project() {
+    let mut state = DockState::new();
+    let mut first = DockEvent::new("e1", EventKind::Working, "grok", "resume-id");
+    first.cwd = Some("/tmp/same-project".to_owned());
+    attach_liveness(&mut first, 11, 100);
+    state.apply(first);
+    let mut second = DockEvent::new("e2", EventKind::Idle, "grok", "resume-id");
+    second.cwd = Some("/tmp/same-project".to_owned());
+    attach_liveness(&mut second, 22, 200);
+    state.apply(second);
+    assert_eq!(state.snapshot().tracked_count, 2);
+
+    state.reset("grok", "resume-id", Some(&liveness_terminal_id(22, 200)));
+    let snapshot = state.snapshot();
+    assert_eq!(snapshot.tracked_count, 1);
+    assert_eq!(
+        snapshot.sessions[0].terminal_id.as_deref(),
+        Some(liveness_terminal_id(11, 100).as_str())
+    );
+    assert_eq!(snapshot.working_count, 1);
+}
+
+#[test]
+fn same_process_without_tty_replaces_the_previous_session() {
+    let mut state = DockState::new();
+    let mut first = DockEvent::new("e1", EventKind::Working, "grok", "old");
+    first.cwd = Some("/tmp/same-project".to_owned());
+    attach_liveness(&mut first, 11, 100);
+    state.apply(first);
+
+    let mut second = DockEvent::new("e2", EventKind::Idle, "grok", "fresh");
+    second.cwd = Some("/tmp/same-project".to_owned());
+    attach_liveness(&mut second, 11, 100);
+    let replaced = state.apply(second);
+    assert_eq!(replaced.snapshot.tracked_count, 1);
+    assert_eq!(replaced.snapshot.sessions[0].session_id, "fresh");
+    assert!(replaced
+        .snapshot
+        .audit
+        .iter()
+        .any(|entry| entry.session_id == "old" && entry.state == SessionState::Closed));
+}
+
+#[test]
+fn persisted_liveness_without_tty_round_trips_as_distinct_resumes() {
+    let mut state = DockState::new();
+    let mut first = DockEvent::new("e1", EventKind::Working, "grok", "resume-id");
+    attach_liveness(&mut first, 11, 100);
+    state.apply(first);
+    let mut second = DockEvent::new("e2", EventKind::Idle, "grok", "resume-id");
+    attach_liveness(&mut second, 22, 200);
+    state.apply(second);
+
+    let mut restored = DockState::from_persisted(state.persisted());
+    assert_eq!(restored.snapshot().tracked_count, 2);
+    restored.reset("grok", "resume-id", Some(&liveness_terminal_id(22, 200)));
+    let snapshot = restored.snapshot();
+    assert_eq!(snapshot.tracked_count, 1);
+    assert_eq!(
+        snapshot.sessions[0].terminal_id.as_deref(),
+        Some(liveness_terminal_id(11, 100).as_str())
+    );
+}
+
+#[test]
+fn old_state_with_liveness_but_no_terminal_id_fills_live_terminal() {
+    let restored = DockState::from_persisted(
+        serde_json::from_str(
+            r#"{"version":1,"sessions":[{"source":"grok","session_id":"s1","state":"idle","attention_reason":null,"requires_user_action":false,"acknowledged":true,"occurred_at":"2026-08-23T00:00:00Z","agent_os":"linux","agent_pid":11,"agent_starttime":100}]}"#,
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        restored.snapshot().sessions[0].terminal_id.as_deref(),
+        Some(liveness_terminal_id(11, 100).as_str())
+    );
+}
+
+#[test]
+fn closed_without_identity_still_closes_a_unique_liveness_session() {
+    let mut state = DockState::new();
+    let mut started = DockEvent::new("e1", EventKind::Working, "grok", "sid");
+    attach_liveness(&mut started, 11, 100);
+    state.apply(started);
+    let closed = state.apply(DockEvent::new("e2", EventKind::Closed, "grok", "sid"));
+    assert_eq!(closed.snapshot.tracked_count, 0);
 }
 
 #[test]
