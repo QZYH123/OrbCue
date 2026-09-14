@@ -372,6 +372,19 @@ fn sided_connection(record: ConnectionRecord, side: AgentSide) -> InventoryConne
     InventoryConnection { record, side }
 }
 
+fn spawn_deferred_wsl_work(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("orb-wsl-deferred".to_owned())
+        .spawn(move || {
+            // Let the UI thread start pumping before wsl.exe can SendMessage it.
+            std::thread::sleep(Duration::from_millis(800));
+            #[cfg(windows)]
+            wsl_cli_install::spawn(handle.clone());
+            spawn_inventory_refresh(handle);
+        });
+}
+
 fn spawn_inventory_refresh(app: AppHandle) {
     if INVENTORY_REFRESH_IN_FLIGHT.swap(true, Ordering::SeqCst) {
         return;
@@ -912,6 +925,24 @@ fn start_session() -> (
     start_local_session()
 }
 
+fn apply_snapshot_update(
+    previous_sessions: &mut Vec<orbcue_core::SessionSnapshot>,
+    update: &SnapshotMessage,
+    sink: &PresenterToastSink,
+) {
+    focus::apply_snapshot_captures(previous_sessions, &update.snapshot.sessions);
+    *previous_sessions = update.snapshot.sessions.clone();
+    if let ToastDispatch::Failed { error, .. } = dispatch_attention_toast(
+        sink,
+        update.attention.as_ref(),
+        NOTIFICATIONS_ENABLED.load(Ordering::Relaxed),
+    ) {
+        if !NOTIFICATION_FAIL_LOGGED.swap(true, Ordering::Relaxed) {
+            eprintln!("OrbCue: cannot show system notification: {error}");
+        }
+    }
+}
+
 pub fn run() {
     let (session, updates, initial) = start_session();
 
@@ -930,8 +961,6 @@ pub fn run() {
             configure_windows(&app_handle);
             prepare_windows_notifications(&app_handle);
             install_windows_trampoline_cli(&app_handle);
-            #[cfg(windows)]
-            wsl_cli_install::spawn(app_handle.clone());
             position_ball(&app_handle);
             region::apply_ball_region_for(&app_handle);
             install_tray(app);
@@ -942,31 +971,27 @@ pub fn run() {
             std::thread::Builder::new()
                 .name("dock-ui-updates".to_owned())
                 .spawn(move || {
-                    for update in updates {
-                        focus::apply_snapshot_captures(
-                            &previous_sessions,
-                            &update.snapshot.sessions,
-                        );
-                        previous_sessions = update.snapshot.sessions.clone();
-                        let attention = update.attention.clone();
+                    // Coalesce: WebView2 ExecuteScript is marshalled onto the UI
+                    // thread. Emitting every PostToolUse from this worker can
+                    // block that thread in COM while the daemon keeps running.
+                    let sink = PresenterToastSink {
+                        app: handle.clone(),
+                    };
+                    loop {
+                        let Ok(first) = updates.recv() else {
+                            break;
+                        };
+                        let mut update = first;
+                        while let Ok(next) = updates.try_recv() {
+                            apply_snapshot_update(&mut previous_sessions, &update, &sink);
+                            update = next;
+                        }
+                        apply_snapshot_update(&mut previous_sessions, &update, &sink);
                         if handle.emit("orb:snapshot", &update).is_err() {
                             break;
                         }
-                        let sink = PresenterToastSink {
-                            app: handle.clone(),
-                        };
-                        if let ToastDispatch::Failed { error, .. } = dispatch_attention_toast(
-                            &sink,
-                            attention.as_ref(),
-                            NOTIFICATIONS_ENABLED.load(Ordering::Relaxed),
-                        ) {
-                            if !NOTIFICATION_FAIL_LOGGED.swap(true, Ordering::Relaxed) {
-                                eprintln!("OrbCue: cannot show system notification: {error}");
-                            }
-                        }
                     }
                 })?;
-            spawn_inventory_refresh(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1012,6 +1037,10 @@ pub fn run() {
                         }
                     }
                 }
+            }
+            tauri::RunEvent::Ready => {
+                region::apply_ball_region_for(app);
+                spawn_deferred_wsl_work(app);
             }
             tauri::RunEvent::WindowEvent { label, event, .. } => match (label.as_str(), event) {
                 ("ball", tauri::WindowEvent::Moved(position)) => {
@@ -1173,6 +1202,8 @@ fn monitor_work_area(
     (work.position, work.size)
 }
 
+const BALL_LAUNCH_INSET: i32 = 24;
+
 fn clamp_to_monitor(
     monitor: &tauri::Monitor,
     size: tauri::PhysicalSize<u32>,
@@ -1180,14 +1211,12 @@ fn clamp_to_monitor(
     y: i32,
 ) -> PhysicalPosition<i32> {
     let (origin, area) = monitor_work_area(monitor);
-    let min_x = origin.x;
-    let min_y = origin.y;
-    let max_x = origin.x + area.width as i32 - size.width as i32;
-    let max_y = origin.y + area.height as i32 - size.height as i32;
-    PhysicalPosition::new(
-        x.clamp(min_x, max_x.max(min_x)),
-        y.clamp(min_y, max_y.max(min_y)),
-    )
+    let (x, y) = region::clamp_into_work_area(
+        (origin.x, origin.y, area.width as i32, area.height as i32),
+        (x, y, size.width as i32, size.height as i32),
+        BALL_LAUNCH_INSET,
+    );
+    PhysicalPosition::new(x, y)
 }
 
 fn ball_position_path() -> PathBuf {

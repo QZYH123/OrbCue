@@ -271,7 +271,9 @@ button {
     overflow: hidden;
     border-radius: 50%;
     cursor: grab;
-    touch-action: none
+    touch-action: none;
+    appearance: none;
+    -webkit-appearance: none
 }
 .badge {
     position: absolute;

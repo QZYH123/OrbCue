@@ -40,3 +40,10 @@ windows = { version = "0.61", features = [
     "Win32_UI_Accessibility",
     "Win32_UI_Shell",
 ] }
+
+[features]
+# Production loads bundled frontendDist. Without this, `cargo build` (and cargo-xwin)
+# keeps cfg(dev) and the WebView opens http://localhost:1420 — ERR_CONNECTION_REFUSED
+# when Vite is not running. `tauri dev` disables the default features.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

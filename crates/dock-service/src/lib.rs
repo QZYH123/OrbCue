@@ -28,6 +28,8 @@ use thiserror::Error;
 #[cfg(windows)]
 fn hide_windows_console(command: &mut std::process::Command) {
     use std::os::windows::process::CommandExt;
+    // Do not combine with DETACHED_PROCESS: MSDN says CREATE_NO_WINDOW is then
+    // ignored, so wsl.exe opens a visible console every liveness tick.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     command.creation_flags(CREATE_NO_WINDOW);
 }

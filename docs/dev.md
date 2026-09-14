@@ -112,6 +112,8 @@ npm ci --prefix frontend
 npm run tauri -- build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle
 ```
 
+`src-tauri` 默认开启 `custom-protocol`。直接 `cargo xwin build -p orbcue --release` 也可以；不要加 `--no-default-features`，否则 WebView 会去连 `http://localhost:1420`，Vite 没开时球上就是 `ERR_CONNECTION_REFUSED`。`tauri dev` 会关掉该 feature 以热更新。
+
 产物在 `target/x86_64-pc-windows-msvc/release/`。免安装 exe 要把 Linux 版 `orb-wsl` 和主程序放在同一目录，才具备自动安装 WSL 侧命令行的能力。
 
 推送 `v*` tag（例如 `v0.2.0`）会跑 [`.github/workflows/release.yml`](../.github/workflows/release.yml)：测试通过后打 NSIS，并创建一个 GitHub Release，只挂 Windows 安装包。

@@ -1196,3 +1196,30 @@ fn hashed_liveness_event_id_fits_a_256_byte_session_id() {
     assert!(closed.accepted);
     assert_eq!(closed.snapshot.tracked_count, 0);
 }
+
+/// Completed/idle rows stay in RAM until reset or `session.closed`. Persist
+/// only keeps 100, so a long-lived presenter can keep growing the snapshot
+/// that every event clones while holding the service lock.
+#[test]
+fn unique_completed_sessions_are_not_evicted_from_memory() {
+    let mut state = DockState::new();
+    const N: usize = 250;
+    for i in 0..N {
+        let session = format!("s{i:04}");
+        assert!(
+            state
+                .apply(event(&format!("s{i}-start"), EventKind::Started, &session))
+                .accepted
+        );
+        assert!(
+            state
+                .apply(event(&format!("s{i}-done"), EventKind::Completed, &session))
+                .accepted
+        );
+    }
+    let persisted = state.persisted();
+    assert_eq!(persisted.sessions.len(), 100);
+    assert_eq!(state.snapshot().tracked_count, N);
+    let applied = state.apply(event("late-start", EventKind::Started, "late"));
+    assert_eq!(applied.snapshot.tracked_count, N + 1);
+}

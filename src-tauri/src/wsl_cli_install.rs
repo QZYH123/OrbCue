@@ -6,8 +6,9 @@ use orbcue_connect::{
 };
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
 
 enum InstallOutcome {
@@ -215,10 +216,7 @@ fn wslpath(windows_path: &Path, distro: Option<&str>) -> Result<String, String> 
 }
 
 fn run_wsl(command: &mut Command) -> std::io::Result<Output> {
-    command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
+    wsl_session::run_with_timeout(command, Duration::from_secs(20))
 }
 
 fn output_detail(output: &Output) -> String {

@@ -132,6 +132,48 @@ fn query_absent(path: &std::path::Path) -> bool {
 }
 
 #[test]
+fn event_flood_with_subscriber_does_not_deadlock() {
+    let path = endpoint();
+    let service = spawn(&path).unwrap();
+    let mut stream = UnixStream::connect(&path).unwrap();
+    stream
+        .write_all(
+            br#"{"query":"subscribe"}
+"#,
+        )
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert!(line.contains("subscribed"));
+
+    let workers: Vec<_> = (0..8)
+        .map(|worker| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for i in 0..40 {
+                    let event = DockEvent::new(
+                        &format!("w{worker}-{i}"),
+                        EventKind::Started,
+                        "claude",
+                        &format!("s{worker}-{i}"),
+                    );
+                    let response = send(&path, event);
+                    assert!(response.accepted, "{response:?}");
+                }
+            })
+        })
+        .collect();
+    for worker in workers {
+        worker.join().expect("event worker panicked");
+    }
+
+    let snapshot = send(&path, serde_json::json!({"query": "snapshot"}));
+    assert_eq!(snapshot.snapshot.tracked_count, 320);
+    service.shutdown();
+}
+
+#[test]
 fn desktop_attaches_to_an_already_running_daemon() {
     let path = endpoint();
     let service = spawn(&path).unwrap();

@@ -249,8 +249,7 @@ fn query_bridge(request: &IpcRequest) -> Result<WireResponse, String> {
 }
 
 fn wsl_dock_json<T: for<'de> Deserialize<'de>>(args: &[&str]) -> Result<T, String> {
-    let output = wsl_dock_command(args)?
-        .output()
+    let output = run_with_timeout(&mut wsl_dock_command(args)?, Duration::from_secs(8))
         .map_err(|error| missing_wsl_or_dock(error))?;
     let stdout = orbcue_connect::decode_console_output(&output.stdout);
     let stderr = orbcue_connect::decode_console_output(&output.stderr);
@@ -357,8 +356,37 @@ fn wsl_dock_command(args: &[&str]) -> Result<Command, String> {
     Ok(command)
 }
 
+pub(crate) fn run_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+) -> std::io::Result<std::process::Output> {
+    hide_console(command);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    let child = command.spawn()?;
+    let pid = child.id();
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = sender.send(child.wait_with_output());
+    });
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(_) => {
+            let mut kill = Command::new("taskkill");
+            hide_console(&mut kill);
+            let _ = kill.args(["/PID", &pid.to_string(), "/F"]).status();
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "wsl.exe timed out",
+            ))
+        }
+    }
+}
+
 fn hide_console(command: &mut Command) {
     use std::os::windows::process::CommandExt;
+    // CREATE_NO_WINDOW is ignored if combined with DETACHED_PROCESS, which
+    // makes wsl.exe flash a console on every inventory/liveness call.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     command.creation_flags(CREATE_NO_WINDOW);
 }

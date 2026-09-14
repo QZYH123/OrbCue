@@ -12,6 +12,27 @@ pub struct CircleRegion {
     pub bottom: i32,
 }
 
+/// Keep the ball fully on-screen and off the pixel edge. Restoring a saved
+/// side-dock coordinate (`x=0`) then applying SetWindowRgn at startup has hung
+/// the UI thread before the event loop pumps.
+pub fn clamp_into_work_area(
+    work: (i32, i32, i32, i32),
+    window: (i32, i32, i32, i32),
+    inset: i32,
+) -> (i32, i32) {
+    let (origin_x, origin_y, area_w, area_h) = work;
+    let (x, y, size_w, size_h) = window;
+    let inset = inset.max(0);
+    let min_x = origin_x + inset;
+    let min_y = origin_y + inset;
+    let max_x = origin_x + area_w - size_w - inset;
+    let max_y = origin_y + area_h - size_h - inset;
+    (
+        x.clamp(min_x, max_x.max(min_x)),
+        y.clamp(min_y, max_y.max(min_y)),
+    )
+}
+
 pub fn physical_circle_region(physical_width: i32, physical_height: i32) -> Option<CircleRegion> {
     if physical_width <= 0 || physical_height <= 0 {
         return None;
@@ -40,6 +61,10 @@ const WM_NCPAINT: u32 = 0x0085;
 const WM_NCACTIVATE: u32 = 0x0086;
 const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
 const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
+const WM_NCLBUTTONDOWN: u32 = 0x00A1;
+const WM_SYSCOMMAND: u32 = 0x0112;
+const HTCAPTION: usize = 2;
+const SC_MOVE: usize = 0xF010;
 
 pub fn suppresses_non_client_paint(msg: u32) -> bool {
     matches!(msg, WM_NCPAINT | WM_NCUAHDRAWCAPTION | WM_NCUAHDRAWFRAME)
@@ -52,6 +77,17 @@ pub fn rewrites_ncactivate(msg: u32) -> bool {
 /// `WM_NCACTIVATE` with this lParam skips the default caption redraw.
 pub fn ncactivate_skip_redraw_lparam() -> isize {
     -1
+}
+
+/// Map tao `startDragging` (`WM_NCLBUTTONDOWN` / `HTCAPTION`) onto a
+/// captionless move loop. Without `WS_CAPTION`, DefWindowProc ignores
+/// `HTCAPTION` and the OS never starts tracking.
+pub fn caption_drag_to_syscommand(msg: u32, wparam: usize) -> Option<(u32, usize)> {
+    if msg == WM_NCLBUTTONDOWN && wparam == HTCAPTION {
+        Some((WM_SYSCOMMAND, SC_MOVE | HTCAPTION))
+    } else {
+        None
+    }
 }
 
 pub fn apply_ball_region_for(app: &AppHandle) {
@@ -127,6 +163,7 @@ mod win32 {
         fn GetCursorPos(point: *mut Point) -> i32;
         fn GetWindowLongW(hwnd: isize, index: i32) -> i32;
         fn SetWindowLongW(hwnd: isize, index: i32, value: i32) -> i32;
+        fn ReleaseCapture() -> i32;
     }
 
     #[link(name = "comctl32")]
@@ -258,6 +295,11 @@ mod win32 {
         if super::rewrites_ncactivate(msg) {
             return DefSubclassProc(hwnd, msg, wparam, super::ncactivate_skip_redraw_lparam());
         }
+        if let Some((sys_msg, sys_wparam)) = super::caption_drag_to_syscommand(msg, wparam) {
+            // SC_MOVE keeps the OS move loop, which tracks the cursor without IPC.
+            let _ = ReleaseCapture();
+            return DefSubclassProc(hwnd, sys_msg, sys_wparam, 0);
+        }
         DefSubclassProc(hwnd, msg, wparam, lparam)
     }
 
@@ -307,6 +349,33 @@ mod win32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clamp_into_work_area_pulls_a_left_edge_restore_inward() {
+        assert_eq!(
+            clamp_into_work_area((0, 0, 1920, 1080), (0, 208, 56, 56), 24),
+            (24, 208)
+        );
+    }
+
+    #[test]
+    fn clamp_into_work_area_keeps_an_interior_point() {
+        assert_eq!(
+            clamp_into_work_area((0, 0, 1920, 1080), (400, 200, 56, 56), 8),
+            (400, 200)
+        );
+    }
+
+    #[test]
+    fn caption_drag_rewrites_to_syscommand_move() {
+        assert_eq!(
+            caption_drag_to_syscommand(WM_NCLBUTTONDOWN, HTCAPTION),
+            Some((WM_SYSCOMMAND, SC_MOVE | HTCAPTION))
+        );
+        assert_eq!(caption_drag_to_syscommand(WM_NCLBUTTONDOWN, 1), None);
+        assert_eq!(caption_drag_to_syscommand(WM_SYSCOMMAND, HTCAPTION), None);
+        assert_eq!(style_without_caption_chrome(WS_CAPTION) & WS_CAPTION, 0);
+    }
 
     #[test]
     fn style_without_caption_chrome_strips_tao_undecorated_defaults() {

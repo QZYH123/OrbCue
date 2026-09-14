@@ -36,7 +36,10 @@ Thumbs.db
 .mindfs/
 
 # Design screenshots / local probes
-.scratch/design/
+.scratch/
+/*.png
+/audit-after-fix.yml
+/panel-boxes.yml
 
 # Tauri generated bindings
 /src-tauri/gen/

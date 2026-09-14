@@ -52,16 +52,17 @@ export function initialTheme(): DockTheme {
 export function applyTheme(theme: DockTheme) {
   if (typeof document === 'undefined') return;
   document.documentElement.dataset.theme = theme;
-  let el = document.getElementById('dock-theme') as HTMLLinkElement | null;
-  if (!el) {
-    el = document.createElement('link');
+  const existing = document.getElementById('dock-theme');
+  const el =
+    existing instanceof HTMLLinkElement ? existing : document.createElement('link');
+  if (existing !== el) {
+    existing?.remove();
     el.id = 'dock-theme';
     el.rel = 'stylesheet';
     document.head.appendChild(el);
   }
-  const href = HREFS[theme];
   if (el.dataset.current !== theme) {
-    el.href = href;
+    el.href = HREFS[theme];
     el.dataset.current = theme;
   }
 }
