@@ -2,11 +2,13 @@
 
 mod common;
 
-use common::isolated_root;
+use common::{isolated_root, orb_cmd};
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 fn isolate<'a>(command: &'a mut Command, root: &Path, socket: &Path) -> &'a mut Command {
     command
@@ -192,6 +194,101 @@ fn wrapper_start_and_setsid_hook_share_the_same_pty_id() {
         terminals,
         [pty.clone()],
         "wrapper and setsid hook must share {pty}: {terminals:?}"
+    );
+
+    service.shutdown();
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn wait_status(root: &Path, socket: &Path, pred: impl Fn(&Value) -> bool) -> Value {
+    let started = Instant::now();
+    loop {
+        let output = isolate(orb_cmd().args(["--json", "status"]), root, socket)
+            .output()
+            .expect("status");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let value: Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|error| {
+            panic!(
+                "status json ({error}): {stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        if pred(&value) {
+            return value;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "timed out waiting for snapshot: {value}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn detach_post_tool_use_keeps_the_pty_session() {
+    let root = isolated_root("orbcue-setsid");
+    let socket = root.join("orb.sock");
+    fs::create_dir_all(root.join("home")).unwrap();
+    let state_path = root.join("state.json");
+    let service =
+        orbcue_service::spawn_persistent(&socket, &state_path).expect("spawn isolated orbd");
+
+    let payload_start = root.join("start.json");
+    let payload_tool = root.join("tool.json");
+    fs::write(
+        &payload_start,
+        r#"{"hookEventName":"session_start","sessionId":"sess-detach","cwd":"/tmp/project","event_id":"e-start"}"#,
+    )
+    .unwrap();
+    fs::write(
+        &payload_tool,
+        r#"{"hookEventName":"post_tool_use","sessionId":"sess-detach","promptId":"turn-1","toolName":"run_terminal_command","event_id":"e-tool"}"#,
+    )
+    .unwrap();
+
+    let orb = env!("CARGO_BIN_EXE_orb");
+    let pty_file = root.join("pty");
+    let out_start = root.join("out-start.json");
+    let inner = format!(
+        "set -eu\ntty > {pty}\n{dock} --socket {sock} --json hook grok < {start} > {os}\n{dock} --socket {sock} hook grok --detach < {tool}\n",
+        pty = pty_file.display(),
+        dock = orb,
+        sock = socket.display(),
+        start = payload_start.display(),
+        os = out_start.display(),
+        tool = payload_tool.display(),
+    );
+    run_script(&root, &socket, &root.join("capture"), &inner);
+
+    let pty = fs::read_to_string(&pty_file).unwrap().trim().to_owned();
+    assert!(pty.starts_with("/dev/pts/"), "got {pty:?}");
+
+    let started = read_json(&out_start);
+    assert_eq!(session_ids(&started), ["sess-detach"], "{started}");
+    assert_eq!(started["snapshot"]["tracked_count"], 1);
+
+    let working = wait_status(&root, &socket, |value| {
+        value["snapshot"]["sessions"]
+            .as_array()
+            .is_some_and(|sessions| {
+                sessions.iter().any(|session| {
+                    session["session_id"] == "sess-detach" && session["state"] == "working"
+                })
+            })
+    });
+    assert_eq!(
+        working["snapshot"]["tracked_count"], 1,
+        "detach PostToolUse must not fork a second grok row: {working}"
+    );
+    let terminals = persisted_terminal_ids(&state_path);
+    assert_eq!(
+        terminals,
+        [pty.clone()],
+        "detach must keep the script pty {pty}, not a live: relay id: {terminals:?}"
+    );
+    assert!(
+        !terminals.iter().any(|id| id.starts_with("live:")),
+        "WSL relay liveness must not become a session: {terminals:?}"
     );
 
     service.shutdown();

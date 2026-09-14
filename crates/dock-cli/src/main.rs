@@ -592,6 +592,7 @@ fn detach_hook(provider: HookProvider) {
     command.stdin(Stdio::piped());
     command.stdout(Stdio::null());
     command.stderr(Stdio::null());
+    inherit_hook_identity(&mut command);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -609,6 +610,43 @@ fn detach_hook(provider: HookProvider) {
             eprintln!("orb hook: cannot write detached hook stdin: {error}");
         }
     }
+}
+
+/// Snapshot tty + agent liveness while this process is still in the agent's
+/// tree, then copy them onto the detached child. After `--detach` the parent
+/// exits; on WSL the child is reparented to the distro `/init` Relay, which
+/// has no tty and outlives the session.
+fn inherit_hook_identity(command: &mut ProcessCommand) {
+    if std::env::var_os("ORBCUE_TERMINAL_ID").is_none() {
+        if let Some(terminal_id) = resolve_terminal_id() {
+            command.env("ORBCUE_TERMINAL_ID", terminal_id);
+        }
+    }
+    if std::env::var_os("ORBCUE_AGENT_PID").is_none() {
+        if let Some((pid, starttime)) = platform_parent_liveness() {
+            command.env("ORBCUE_AGENT_PID", pid.to_string());
+            command.env("ORBCUE_AGENT_STARTTIME", starttime.to_string());
+        }
+    }
+}
+
+fn platform_parent_liveness() -> Option<(u32, u64)> {
+    #[cfg(unix)]
+    {
+        return linux_agent_liveness();
+    }
+    #[cfg(windows)]
+    {
+        return windows_parent_liveness();
+    }
+    #[cfg(not(any(unix, windows)))]
+    None
+}
+
+fn liveness_from_env() -> Option<(u32, u64)> {
+    let pid = std::env::var("ORBCUE_AGENT_PID").ok()?.parse().ok()?;
+    let starttime = std::env::var("ORBCUE_AGENT_STARTTIME").ok()?.parse().ok()?;
+    (pid > 0).then_some((pid, starttime))
 }
 
 fn spawn_detached_hook(command: &mut ProcessCommand) -> std::io::Result<std::process::Child> {
@@ -733,42 +771,34 @@ fn attach_liveness(event: &mut DockEvent) {
     ) {
         return;
     }
+    let Some((pid, starttime)) = liveness_from_env().or_else(platform_parent_liveness) else {
+        return;
+    };
+    event
+        .metadata
+        .insert("agent_os".to_owned(), current_agent_os().to_owned());
+    event
+        .metadata
+        .insert("agent_pid".to_owned(), pid.to_string());
+    event
+        .metadata
+        .insert("agent_starttime".to_owned(), starttime.to_string());
     #[cfg(unix)]
-    {
-        let Some((pid, starttime)) = linux_agent_liveness() else {
-            return;
-        };
-        event
-            .metadata
-            .insert("agent_os".to_owned(), "linux".to_owned());
-        event
-            .metadata
-            .insert("agent_pid".to_owned(), pid.to_string());
-        event
-            .metadata
-            .insert("agent_starttime".to_owned(), starttime.to_string());
-        if let Ok(distro) = std::env::var("WSL_DISTRO_NAME") {
-            let trimmed = distro.trim();
-            if !trimmed.is_empty() {
-                event
-                    .metadata
-                    .insert("agent_wsl_distro".to_owned(), trimmed.to_owned());
-            }
+    if let Ok(distro) = std::env::var("WSL_DISTRO_NAME") {
+        let trimmed = distro.trim();
+        if !trimmed.is_empty() {
+            event
+                .metadata
+                .insert("agent_wsl_distro".to_owned(), trimmed.to_owned());
         }
     }
-    #[cfg(windows)]
-    {
-        if let Some((pid, starttime)) = windows_parent_liveness() {
-            event
-                .metadata
-                .insert("agent_os".to_owned(), "windows".to_owned());
-            event
-                .metadata
-                .insert("agent_pid".to_owned(), pid.to_string());
-            event
-                .metadata
-                .insert("agent_starttime".to_owned(), starttime.to_string());
-        }
+}
+
+fn current_agent_os() -> &'static str {
+    if cfg!(windows) {
+        "windows"
+    } else {
+        "linux"
     }
 }
 
@@ -1221,7 +1251,10 @@ fn linux_agent_liveness() -> Option<(u32, u64)> {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
         let (ppid, _, starttime) = parse_proc_stat(&stat)?;
         let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
-        if is_short_lived_hook_parent(comm.trim()) && ppid > 1 {
+        if should_skip_linux_liveness_parent(comm.trim()) {
+            if ppid <= 1 || ppid == pid {
+                return None;
+            }
             pid = ppid;
             continue;
         }
@@ -1231,12 +1264,25 @@ fn linux_agent_liveness() -> Option<(u32, u64)> {
 }
 
 #[cfg(unix)]
+fn should_skip_linux_liveness_parent(comm: &str) -> bool {
+    is_short_lived_hook_parent(comm) || is_wsl_session_plumbing(comm)
+}
+
+#[cfg(unix)]
 fn is_short_lived_hook_parent(comm: &str) -> bool {
     // Generated hooks are `#!/bin/sh` + exec. Skip that wrapper (and `orb`
     // trampolines), but not bash/zsh/fish: those are often the user's
     // interactive shell or an agent launcher. Walking past them records a
     // PID that outlives the session, so close is never detected.
     matches!(comm, "sh" | "dash" | "orb")
+}
+
+/// WSL session plumbing outlives every agent in the tab. A detached hook
+/// reparented here must not stamp that PID as the agent, or resume-fork
+/// opens a ghost row that liveness never reaps.
+#[cfg(unix)]
+fn is_wsl_session_plumbing(comm: &str) -> bool {
+    comm == "SessionLeader" || comm.starts_with("Relay(") || comm.starts_with("init-systemd")
 }
 
 fn hook_source_from_identities(provider: &str, identities: &[String]) -> String {
@@ -2569,6 +2615,43 @@ mod tests {
         assert!(!super::is_short_lived_hook_parent("fish"));
         assert!(!super::is_short_lived_hook_parent("grok"));
         assert!(!super::is_short_lived_hook_parent("claude"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_hook_skips_wsl_session_plumbing() {
+        assert!(super::is_wsl_session_plumbing("Relay(50997)"));
+        assert!(super::is_wsl_session_plumbing("SessionLeader"));
+        assert!(super::is_wsl_session_plumbing("init-systemd(Ubuntu)"));
+        assert!(!super::is_wsl_session_plumbing("grok"));
+        assert!(!super::is_wsl_session_plumbing("zsh"));
+        assert!(!super::is_wsl_session_plumbing("init"));
+        assert!(super::should_skip_linux_liveness_parent("Relay(50997)"));
+        assert!(super::should_skip_linux_liveness_parent("sh"));
+        assert!(!super::should_skip_linux_liveness_parent("bash"));
+        assert!(!super::should_skip_linux_liveness_parent("grok"));
+    }
+
+    #[test]
+    fn liveness_from_env_requires_pid_and_starttime() {
+        let _guard = lock_env();
+        let previous_pid = std::env::var_os("ORBCUE_AGENT_PID");
+        let previous_start = std::env::var_os("ORBCUE_AGENT_STARTTIME");
+        std::env::remove_var("ORBCUE_AGENT_PID");
+        std::env::remove_var("ORBCUE_AGENT_STARTTIME");
+        assert_eq!(super::liveness_from_env(), None);
+
+        std::env::set_var("ORBCUE_AGENT_PID", "51326");
+        assert_eq!(super::liveness_from_env(), None);
+
+        std::env::set_var("ORBCUE_AGENT_STARTTIME", "3827748");
+        assert_eq!(super::liveness_from_env(), Some((51326, 3827748)));
+
+        std::env::set_var("ORBCUE_AGENT_PID", "0");
+        assert_eq!(super::liveness_from_env(), None);
+
+        restore_env("ORBCUE_AGENT_PID", previous_pid);
+        restore_env("ORBCUE_AGENT_STARTTIME", previous_start);
     }
 
     #[test]
