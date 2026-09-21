@@ -1,4 +1,4 @@
-import type { AgentInventory, Snapshot } from './types';
+import type { AgentInventory, AuditEntry, SessionSnapshot, Snapshot } from './types';
 
 export function tauriAvailable(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -13,34 +13,61 @@ export function applyPreviewDocument(label: 'ball' | 'panel') {
   document.documentElement.classList.add('preview');
   document.documentElement.classList.toggle('preview-ball', label === 'ball');
   const demo = new URLSearchParams(window.location.search).get('demo');
-  if (demo === 'ball' || demo === 'panel') {
-    const style = document.createElement('style');
-    style.textContent =
-      demo === 'ball'
-        ? `html, body { width: 480px !important; height: 448px !important; }
-           html.preview.preview-ball #app { transform: scale(2.8); }`
-        : `html, body { width: 480px !important; height: 448px !important; }
-           html.preview body {
-             display: flex !important;
-             align-items: center !important;
-             justify-content: flex-end !important;
-             padding: 24px 24px 24px 0 !important;
-           }`;
-    document.head.appendChild(style);
-  }
+  if (demo !== 'ball' && demo !== 'panel') return;
+  const style = document.createElement('style');
+  style.textContent =
+    demo === 'ball'
+      ? `html, body { width: 480px !important; height: 448px !important; }
+         html.preview.preview-ball #app { transform: scale(2.8); }`
+      : `html, body { width: 480px !important; height: 448px !important; }
+         html.preview body {
+           display: flex !important;
+           align-items: center !important;
+           justify-content: flex-end !important;
+           padding: 24px 24px 24px 0 !important;
+         }`;
+  document.head.appendChild(style);
 }
 
 export function previewSnapshot(): Snapshot {
   const cue = new URLSearchParams(window.location.search).get('cue');
-  if (cue === 'working') {
-    return {
-      ...demoSnapshot,
-      pending_count: 0,
-      pending_mark: '',
-      border_state: 'working',
-    };
-  }
-  return demoSnapshot;
+  if (cue !== 'working') return demoSnapshot;
+  return { ...demoSnapshot, pending_count: 0, pending_mark: '' };
+}
+
+const PROJECT = '/home/qingz/projects/agent-activity-dock';
+const AT = '2026-08-22T';
+
+function session(
+  source: SessionSnapshot['source'],
+  session_id: string,
+  state: SessionSnapshot['state'],
+  extra: Partial<SessionSnapshot> = {},
+): SessionSnapshot {
+  return {
+    source,
+    session_id,
+    state,
+    mark: '',
+    attention_reason: null,
+    summary: null,
+    deep_link: null,
+    project_path: PROJECT,
+    terminal_id: null,
+    acknowledged: true,
+    occurred_at: `${AT}10:00:00Z`,
+    ...extra,
+  };
+}
+
+function audit(
+  source: AuditEntry['source'],
+  session_id: string,
+  state: AuditEntry['state'],
+  occurred_at: string,
+  extra: Partial<AuditEntry> = {},
+): AuditEntry {
+  return { source, session_id, state, attention_reason: null, occurred_at, project_path: PROJECT, ...extra };
 }
 
 export const demoSnapshot: Snapshot = {
@@ -49,129 +76,48 @@ export const demoSnapshot: Snapshot = {
   pending_count: 3,
   pending_mark: '?',
   count_label: '2/5',
-  border_state: 'working',
   sessions: [
-    {
-      source: 'claude',
-      session_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
-      state: 'working',
-      mark: '',
-      attention_reason: null,
+    session('claude', 'a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'working', {
       summary: '正在重做小球与展开面板',
-      deep_link: null,
-      project_path: '/home/qingz/projects/agent-activity-dock',
-      window_title: 'agent-activity-dock · claude · orb:ab12cd',
       terminal_id: 'orb:ab12cd',
-      requires_user_action: false,
-      acknowledged: true,
-      occurred_at: '2026-08-22T10:00:00Z',
-    },
-    {
-      source: 'grok',
-      session_id: 'b2c3d4e5-f6a7-8901-bcde-f12345678901',
-      state: 'needs_attention',
+    }),
+    session('grok', 'b2c3d4e5-f6a7-8901-bcde-f12345678901', 'needs_attention', {
       mark: '?',
       attention_reason: 'input',
       summary: '等待你确认新的会话标题规则',
-      deep_link: null,
-      project_path: '/home/qingz/projects/agent-activity-dock',
-      window_title: 'agent-activity-dock · grok · orb:ff00aa',
       terminal_id: 'orb:ff00aa',
-      requires_user_action: true,
       acknowledged: false,
-      occurred_at: '2026-08-22T10:04:00Z',
-    },
-    {
-      source: 'claude',
-      session_id: 'c3d4e5f6-a7b8-9012-cdef-123456789012',
-      state: 'working',
-      mark: '',
-      attention_reason: null,
+      occurred_at: `${AT}10:04:00Z`,
+    }),
+    session('claude', 'c3d4e5f6-a7b8-9012-cdef-123456789012', 'working', {
       summary: '已写完 jump-back 测试',
-      deep_link: null,
-      project_path: '/home/qingz/projects/agent-activity-dock',
-      window_title: null,
-      terminal_id: null,
-      requires_user_action: false,
       acknowledged: false,
-      occurred_at: '2026-08-22T09:40:00Z',
-    },
-    {
-      source: 'codex',
-      session_id: 'docs-pass',
-      state: 'failed',
+      occurred_at: `${AT}09:40:00Z`,
+    }),
+    session('codex', 'docs-pass', 'failed', {
       mark: '!',
-      attention_reason: null,
       summary: '生成 API 草稿时失败',
-      deep_link: null,
       project_path: '/home/qingz/projects/docs-site',
-      window_title: null,
-      terminal_id: null,
-      requires_user_action: false,
       acknowledged: false,
-      occurred_at: '2026-08-22T09:12:00Z',
-    },
-    {
-      source: 'cursor',
-      session_id: 'notes-1',
-      state: 'idle',
+      occurred_at: `${AT}09:12:00Z`,
+    }),
+    session('cursor', 'notes-1', 'idle', {
       mark: 'o',
-      attention_reason: null,
-      summary: null,
-      deep_link: null,
       project_path: null,
-      window_title: 'Windows Terminal - scratch notes',
-      terminal_id: null,
-      requires_user_action: false,
-      acknowledged: true,
-      occurred_at: '2026-08-22T08:50:00Z',
-    },
+      occurred_at: `${AT}08:50:00Z`,
+    }),
   ],
   audit: [
-    {
-      source: 'codex',
-      session_id: 'docs-pass',
-      state: 'failed',
-      attention_reason: null,
-      occurred_at: '2026-08-22T09:12:00Z',
-      project_path: '/home/qingz/projects/docs-site',
-    },
-    {
-      source: 'claude',
-      session_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
-      state: 'completed',
-      attention_reason: null,
-      occurred_at: '2026-08-22T10:00:00Z',
-      project_path: '/home/qingz/projects/agent-activity-dock',
-    },
-    {
-      source: 'grok',
-      session_id: 'b2c3d4e5-f6a7-8901-bcde-f12345678901',
-      state: 'needs_attention',
-      attention_reason: 'input',
-      occurred_at: '2026-08-22T10:04:00Z',
-      project_path: '/home/qingz/projects/agent-activity-dock',
-    },
-    {
-      source: 'grok',
-      session_id: '01a02d1d-7c3d-7401-ad5b-0b33cdba9b0d',
-      state: 'closed',
-      attention_reason: null,
-      occurred_at: '2026-08-22T10:08:00Z',
-      project_path: '/home/qingz/projects/agent-activity-dock',
-    },
+    audit('codex', 'docs-pass', 'failed', `${AT}09:12:00Z`, { project_path: '/home/qingz/projects/docs-site' }),
+    audit('claude', 'a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'completed', `${AT}10:00:00Z`),
+    audit('grok', 'b2c3d4e5-f6a7-8901-bcde-f12345678901', 'needs_attention', `${AT}10:04:00Z`, { attention_reason: 'input' }),
+    audit('grok', '01a02d1d-7c3d-7401-ad5b-0b33cdba9b0d', 'closed', `${AT}10:08:00Z`),
     ...Array.from({ length: 12 }, (_, index) => {
       const source = (['claude', 'grok', 'codex', 'cursor'] as const)[index % 4];
       const state = (['completed', 'failed', 'needs_attention', 'closed'] as const)[index % 4];
-      const minute = String(12 + index).padStart(2, '0');
-      return {
-        source,
-        session_id: `audit-row-${index}`,
-        state,
+      return audit(source, `audit-row-${index}`, state, `${AT}10:${String(12 + index).padStart(2, '0')}:00Z`, {
         attention_reason: state === 'needs_attention' ? 'input' : null,
-        occurred_at: `2026-08-22T10:${minute}:00Z`,
-        project_path: '/home/qingz/projects/agent-activity-dock',
-      };
+      });
     }),
   ],
 };
@@ -187,9 +133,9 @@ export const demoInventory: AgentInventory = {
       original: '/home/qingz/.local/bin/claude',
       method: 'ClaudeHook',
       wrapper: null,
-      hook_script: '/home/qingz/.claude/hooks/dock.sh',
+      hook_script: '/home/qingz/.claude/hooks/orbcue.sh',
       settings_backup: '/home/qingz/.claude/settings.json.orbcue.bak',
-      capabilities: ['start', 'complete', 'failed', 'waiting'],
+      capabilities: ['started', 'waiting', 'completed', 'failed'],
       limitation: 'Hook 只转发明确的生命周期事件',
       installed_at: '2026-08-01T00:00:00Z',
       side: 'wsl',

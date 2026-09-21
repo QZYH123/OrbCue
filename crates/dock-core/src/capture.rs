@@ -4,6 +4,8 @@
 use crate::SessionState;
 use std::collections::HashMap;
 
+/// Conversation identity for HWND capture. Dual resume of the same chat
+/// shares this key; last writer wins. List rows still split on `terminal_id`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionKey {
     pub source: String,
@@ -24,7 +26,6 @@ pub struct CaptureSession {
     pub source: String,
     pub session_id: String,
     pub state: SessionState,
-    pub parent_session_id: Option<String>,
 }
 
 impl CaptureSession {
@@ -37,24 +38,11 @@ impl CaptureSession {
             source: source.into(),
             session_id: session_id.into(),
             state,
-            parent_session_id: None,
         }
-    }
-
-    pub fn with_parent(mut self, parent_session_id: impl Into<String>) -> Self {
-        let parent = parent_session_id.into();
-        self.parent_session_id = (!parent.trim().is_empty()).then_some(parent);
-        self
     }
 
     pub fn key(&self) -> SessionKey {
         SessionKey::new(self.source.clone(), self.session_id.clone())
-    }
-
-    fn has_parent(&self) -> bool {
-        self.parent_session_id
-            .as_deref()
-            .is_some_and(|parent| !parent.trim().is_empty())
     }
 }
 
@@ -62,7 +50,7 @@ impl CaptureSession {
 ///
 /// New main sessions and transitions *into* `working` capture.
 /// `working` → `working` and every other transition do not.
-/// Child sessions (parent set) never capture, even if they appear or go working.
+/// Snapshot rows are main sessions only; children never appear here.
 pub fn sessions_to_capture(
     previous: &[CaptureSession],
     current: &[CaptureSession],
@@ -73,7 +61,6 @@ pub fn sessions_to_capture(
         .collect();
     current
         .iter()
-        .filter(|session| !session.has_parent())
         .filter_map(|session| match previous_by_key.get(&session.key()) {
             None => Some(session.key()),
             Some(previous_state)
@@ -138,16 +125,6 @@ mod tests {
     fn working_to_working_is_not_captured() {
         let previous = [sess("s1", SessionState::Working)];
         let current = [sess("s1", SessionState::Working)];
-        assert!(sessions_to_capture(&previous, &current).is_empty());
-    }
-
-    #[test]
-    fn parent_session_is_not_captured() {
-        let current = [sess("child", SessionState::Working).with_parent("parent")];
-        assert!(sessions_to_capture(&[], &current).is_empty());
-
-        let previous = [sess("child", SessionState::Idle).with_parent("parent")];
-        let current = [sess("child", SessionState::Working).with_parent("parent")];
         assert!(sessions_to_capture(&previous, &current).is_empty());
     }
 

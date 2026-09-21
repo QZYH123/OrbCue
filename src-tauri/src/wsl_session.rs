@@ -1,64 +1,8 @@
-use crate::PresenterSession;
 use orbcue_connect::{ConnectionPreview, ConnectionRecord, DiscoveredAgent};
-use orbcue_ipc::{encode_request, IpcRequest, SnapshotView, WireResponse};
-use orbcue_service::SnapshotMessage;
 use serde::Deserialize;
 use std::env;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
+use std::process::{Command, Stdio};
 use std::time::Duration;
-
-pub struct WslSession;
-
-impl WslSession {
-    pub fn connect() -> Self {
-        Self
-    }
-}
-
-impl PresenterSession for WslSession {
-    fn snapshot(&self) -> Result<SnapshotView, String> {
-        Ok(query_bridge(&IpcRequest::Snapshot)?.snapshot)
-    }
-
-    fn acknowledge(
-        &self,
-        source: &str,
-        session_id: &str,
-        terminal_id: Option<&str>,
-    ) -> Result<SnapshotView, String> {
-        Ok(query_bridge(&IpcRequest::Acknowledge {
-            source: source.to_owned(),
-            session_id: session_id.to_owned(),
-            terminal_id: terminal_id.map(str::to_owned),
-        })?
-        .snapshot)
-    }
-
-    fn reset(
-        &self,
-        source: &str,
-        session_id: &str,
-        terminal_id: Option<&str>,
-    ) -> Result<SnapshotView, String> {
-        Ok(query_bridge(&IpcRequest::Reset {
-            source: source.to_owned(),
-            session_id: session_id.to_owned(),
-            terminal_id: terminal_id.map(str::to_owned),
-        })?
-        .snapshot)
-    }
-
-    fn subscribe(&self) -> mpsc::Receiver<SnapshotMessage> {
-        subscribe_bridge()
-    }
-
-    fn request_shutdown(&self) {}
-
-    fn wait_for_shutdown(&self) {}
-}
 
 #[derive(Debug, Deserialize)]
 struct InventoryJson {
@@ -110,12 +54,14 @@ struct AliasJson {
 }
 
 fn alias_from_json(parsed: AliasJson) -> Result<Option<String>, String> {
-    if parsed.ok {
-        Ok(parsed.alias)
+    json_ok(parsed.ok, parsed.alias, parsed.error, "无法更新启动别名")
+}
+
+fn json_ok<T>(ok: bool, value: T, error: Option<String>, fallback: &str) -> Result<T, String> {
+    if ok {
+        Ok(value)
     } else {
-        Err(parsed
-            .error
-            .unwrap_or_else(|| "无法更新启动别名".to_owned()))
+        Err(error.unwrap_or_else(|| fallback.to_owned()))
     }
 }
 
@@ -141,13 +87,12 @@ struct ReplaceTabJson {
 }
 
 fn replace_tab_from_json(parsed: ReplaceTabJson) -> Result<bool, String> {
-    if parsed.ok {
-        Ok(parsed.replace_tab)
-    } else {
-        Err(parsed
-            .error
-            .unwrap_or_else(|| "无法更新替换标签页设置".to_owned()))
-    }
+    json_ok(
+        parsed.ok,
+        parsed.replace_tab,
+        parsed.error,
+        "无法更新替换标签页设置",
+    )
 }
 
 pub fn set_replace_tab_on_run(enabled: bool) -> Result<bool, String> {
@@ -159,102 +104,13 @@ pub fn set_replace_tab_on_run(enabled: bool) -> Result<bool, String> {
     replace_tab_from_json(parsed)
 }
 
-fn subscribe_bridge() -> mpsc::Receiver<SnapshotMessage> {
-    let (sender, receiver) = mpsc::channel();
-    let _ = thread::Builder::new()
-        .name("dock-ui-subscribe".to_owned())
-        .spawn(move || {
-            let mut backoff = Duration::from_millis(200);
-            loop {
-                match subscribe_once(&sender) {
-                    Ok(()) => break,
-                    Err(error) => {
-                        eprintln!("OrbCue bridge: {error}");
-                        thread::sleep(backoff);
-                        backoff = (backoff * 2).min(Duration::from_secs(2));
-                    }
-                }
-            }
-        });
-    receiver
-}
-
-fn subscribe_once(sender: &mpsc::Sender<SnapshotMessage>) -> Result<(), String> {
-    let mut child = spawn_bridge(Stdio::inherit())?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "orb bridge stdin is unavailable".to_owned())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "orb bridge stdout is unavailable".to_owned())?;
-    stdin
-        .write_all(b"{\"query\":\"subscribe\"}\n")
-        .map_err(|error| format!("cannot write subscribe to orb bridge: {error}"))?;
-    stdin
-        .flush()
-        .map_err(|error| format!("cannot flush orb bridge subscribe: {error}"))?;
-    let mut reader = BufReader::new(stdout);
-    loop {
-        let mut line = String::new();
-        let read = reader
-            .read_line(&mut line)
-            .map_err(|error| format!("orb bridge subscribe closed: {error}"))?;
-        if read == 0 {
-            let detail = wait_bridge_detail(&mut child);
-            drop(stdin);
-            return Err(format!("Dock subscribe closed{detail}"));
-        }
-        let message: SnapshotMessage = serde_json::from_str(line.trim())
-            .map_err(|error| format!("invalid orb bridge snapshot ({error}): {}", line.trim()))?;
-        if sender.send(message).is_err() {
-            drop(stdin);
-            let _ = child.kill();
-            let _ = child.wait();
-            return Ok(());
-        }
-    }
-}
-
-fn query_bridge(request: &IpcRequest) -> Result<WireResponse, String> {
-    let mut child = spawn_bridge(Stdio::piped())?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "orb bridge stdin is unavailable".to_owned())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "orb bridge stdout is unavailable".to_owned())?;
-    let mut stderr = child.stderr.take();
-    let line = encode_request(request).map_err(|error| error.to_string())?;
-    stdin
-        .write_all(&line)
-        .map_err(|error| format!("cannot write to orb bridge: {error}"))?;
-    drop(stdin);
-    let mut response = String::new();
-    BufReader::new(stdout)
-        .read_line(&mut response)
-        .map_err(|error| format!("cannot read dock bridge: {error}"))?;
-    if response.trim().is_empty() {
-        let detail = wait_bridge_detail(&mut child);
-        let stderr_text = stderr.as_mut().map(read_utf8).unwrap_or_default();
-        return Err(bridge_failure(detail, &stderr_text));
-    }
-    let parsed = serde_json::from_str(response.trim())
-        .map_err(|error| format!("invalid orb bridge response ({error}): {}", response.trim()))?;
-    let _ = child.wait();
-    Ok(parsed)
-}
-
 fn wsl_dock_json<T: for<'de> Deserialize<'de>>(args: &[&str]) -> Result<T, String> {
     let output = run_with_timeout(&mut wsl_dock_command(args)?, Duration::from_secs(8))
         .map_err(|error| missing_wsl_or_dock(error))?;
     let stdout = orbcue_connect::decode_console_output(&output.stdout);
     let stderr = orbcue_connect::decode_console_output(&output.stderr);
     if !output.status.success() {
-        return Err(bridge_failure(format_exit_status(output.status), &stderr));
+        return Err(wsl_orb_failed(format_exit_status(output.status), &stderr));
     }
     parse_wsl_json(&stdout)
 }
@@ -274,33 +130,6 @@ fn parse_wsl_json<T: for<'de> Deserialize<'de>>(stdout: &str) -> Result<T, Strin
         .map_err(|error| format!("cannot parse WSL dock JSON ({error}): {trimmed}"))
 }
 
-fn spawn_bridge(stderr: Stdio) -> Result<Child, String> {
-    let mut command = bridge_command()?;
-    hide_console(&mut command);
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(stderr)
-        .spawn()
-        .map_err(missing_wsl_or_dock)
-}
-
-fn bridge_command() -> Result<Command, String> {
-    if let Some(override_cmd) =
-        env::var_os("ORBCUE_BRIDGE_COMMAND").filter(|value| !value.is_empty())
-    {
-        let line = override_cmd.to_string_lossy();
-        let parts = split_command_line(&line);
-        let (program, args) = parts
-            .split_first()
-            .ok_or_else(|| "ORBCUE_BRIDGE_COMMAND is empty".to_owned())?;
-        let mut command = Command::new(program);
-        command.args(args);
-        return Ok(command);
-    }
-    wsl_dock_command(&["bridge"])
-}
-
 pub(crate) fn wsl_base_command() -> Command {
     if let Ok(distro) = env::var("ORBCUE_WSL_DISTRO") {
         if !distro.is_empty() {
@@ -308,7 +137,7 @@ pub(crate) fn wsl_base_command() -> Command {
         }
     }
     let mut command = Command::new("wsl.exe");
-    hide_console(&mut command);
+    orbcue_ipc::hide_windows_console(&mut command);
     command
 }
 
@@ -317,14 +146,14 @@ pub(crate) fn wsl_command_for_distro(distro: &str) -> Command {
     if !distro.is_empty() {
         command.args(["-d", distro]);
     }
-    hide_console(&mut command);
+    orbcue_ipc::hide_windows_console(&mut command);
     command
 }
 
 pub(crate) fn wsl_list_command() -> Command {
     let mut command = Command::new("wsl.exe");
     command.args(["-l", "-q"]);
-    hide_console(&mut command);
+    orbcue_ipc::hide_windows_console(&mut command);
     command
 }
 
@@ -338,8 +167,7 @@ fn wsl_dock_command(args: &[&str]) -> Result<Command, String> {
         "sh",
     ]);
     command.args(args);
-    let backend = orbcue_ipc::resolve_backend();
-    command.env("ORBCUE_BACKEND", backend.as_str());
+    command.env("ORBCUE_BACKEND", "local");
     let extra = "ORBCUE_BACKEND/u";
     match env::var("WSLENV") {
         Ok(existing)
@@ -360,64 +188,10 @@ pub(crate) fn run_with_timeout(
     command: &mut Command,
     timeout: Duration,
 ) -> std::io::Result<std::process::Output> {
-    hide_console(command);
+    orbcue_ipc::hide_windows_console(command);
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-    let child = command.spawn()?;
-    let pid = child.id();
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = sender.send(child.wait_with_output());
-    });
-    match receiver.recv_timeout(timeout) {
-        Ok(result) => result,
-        Err(_) => {
-            let mut kill = Command::new("taskkill");
-            hide_console(&mut kill);
-            let _ = kill.args(["/PID", &pid.to_string(), "/F"]).status();
-            Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "wsl.exe timed out",
-            ))
-        }
-    }
-}
-
-fn hide_console(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    // CREATE_NO_WINDOW is ignored if combined with DETACHED_PROCESS, which
-    // makes wsl.exe flash a console on every inventory/liveness call.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-fn split_command_line(input: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut current = String::new();
-    let mut in_quotes = false;
-    for character in input.chars() {
-        match character {
-            '"' => in_quotes = !in_quotes,
-            character if character.is_whitespace() && !in_quotes => {
-                if !current.is_empty() {
-                    parts.push(std::mem::take(&mut current));
-                }
-            }
-            character => current.push(character),
-        }
-    }
-    if !current.is_empty() {
-        parts.push(current);
-    }
-    parts
-}
-
-fn wait_bridge_detail(child: &mut Child) -> String {
-    match child.wait() {
-        Ok(status) if status.success() => String::new(),
-        Ok(status) => format_exit_status(status),
-        Err(error) => format!(" ({error})"),
-    }
+    orbcue_ipc::wait_child_timeout(command.spawn()?, timeout)
 }
 
 fn format_exit_status(status: std::process::ExitStatus) -> String {
@@ -427,23 +201,17 @@ fn format_exit_status(status: std::process::ExitStatus) -> String {
     }
 }
 
-fn read_utf8(reader: &mut impl Read) -> String {
-    let mut bytes = Vec::new();
-    let _ = reader.read_to_end(&mut bytes);
-    orbcue_connect::decode_console_output(&bytes)
-}
-
 fn missing_wsl_or_dock(error: std::io::Error) -> String {
     format!(
-        "cannot start WSL orb via wsl.exe ({error}). Install WSL and run `bash scripts/install-cli.sh`, or set ORBCUE_BRIDGE_COMMAND"
+        "cannot start WSL orb via wsl.exe ({error}). Install WSL, or start OrbCue so it can install the WSL CLI"
     )
 }
 
-fn bridge_failure(status: String, stderr: &str) -> String {
+fn wsl_orb_failed(status: String, stderr: &str) -> String {
     let stderr = stderr.trim();
     if stderr.is_empty() {
-        format!("WSL orb bridge failed{status}")
+        format!("WSL orb failed{status}")
     } else {
-        format!("WSL orb bridge failed{status}: {stderr}")
+        format!("WSL orb failed{status}: {stderr}")
     }
 }

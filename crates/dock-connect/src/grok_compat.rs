@@ -7,7 +7,7 @@ use std::path::Path;
 pub const GROK_COMPAT_CURSOR_HOOKS_WARNING: &str =
     "检测到 Grok 的 compat.cursor.hooks 已开启：Grok 会话可能重复执行 Cursor 的钩子，导致任务重复计数。建议在 ~/.grok/settings.json 里关掉它。";
 
-pub fn grok_compat_cursor_hooks_enabled(grok_home: &Path) -> bool {
+pub(crate) fn grok_compat_cursor_hooks_enabled(grok_home: &Path) -> bool {
     let Ok(bytes) = fs::read(grok_home.join("settings.json")) else {
         return false;
     };
@@ -21,7 +21,7 @@ pub fn grok_compat_cursor_hooks_enabled(grok_home: &Path) -> bool {
     }
 }
 
-pub fn connection_warnings(name: &str, grok_home: &Path) -> Vec<String> {
+pub(crate) fn connection_warnings(name: &str, grok_home: &Path) -> Vec<String> {
     match name {
         "cursor" | "grok" if grok_compat_cursor_hooks_enabled(grok_home) => {
             vec![GROK_COMPAT_CURSOR_HOOKS_WARNING.to_owned()]

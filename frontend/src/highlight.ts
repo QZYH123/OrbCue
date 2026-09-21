@@ -1,3 +1,5 @@
+/** Conversation identity for toast / `orb:highlight`. Two live resumes of
+ *  the same chat share this key on purpose — jump feedback uses `sessionDomKey`. */
 export function sessionHighlightKey(source: string, sessionId: string): string {
   return `${source}\0${sessionId}`;
 }

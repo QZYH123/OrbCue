@@ -1,3 +1,5 @@
+#![cfg(windows)]
+
 mod focus;
 mod region;
 mod toast;
@@ -15,7 +17,7 @@ use orbcue_core::{
     attention_click_followup, attention_jump, dispatch_attention_toast, highlight_target,
     AttentionClickFollowup, AttentionJump, ToastDispatch,
 };
-use orbcue_ipc::{DockBackend, SnapshotView};
+use orbcue_ipc::SnapshotView;
 use orbcue_service::{attach_or_listen, DockSession, SnapshotMessage};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -33,7 +35,7 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use toast::{prepare_windows_notifications, preview_attention_toast, PresenterToastSink};
 
-struct AppService(Mutex<Option<Arc<dyn PresenterSession>>>);
+struct AppService(Mutex<Option<Arc<DockSession>>>);
 static LAST_BALL_SAVE_MS: AtomicU64 = AtomicU64::new(0);
 static NOTIFICATIONS_ENABLED: AtomicBool = AtomicBool::new(true);
 static NOTIFICATION_FAIL_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -80,61 +82,6 @@ pub(crate) struct AgentInventory {
     connected: Vec<InventoryConnection>,
     #[serde(default)]
     wsl_error: Option<String>,
-}
-
-pub(crate) trait PresenterSession: Send + Sync {
-    fn snapshot(&self) -> Result<SnapshotView, String>;
-    fn acknowledge(
-        &self,
-        source: &str,
-        session_id: &str,
-        terminal_id: Option<&str>,
-    ) -> Result<SnapshotView, String>;
-    fn reset(
-        &self,
-        source: &str,
-        session_id: &str,
-        terminal_id: Option<&str>,
-    ) -> Result<SnapshotView, String>;
-    fn subscribe(&self) -> mpsc::Receiver<SnapshotMessage>;
-    fn request_shutdown(&self);
-    fn wait_for_shutdown(&self);
-}
-
-impl PresenterSession for DockSession {
-    fn snapshot(&self) -> Result<SnapshotView, String> {
-        DockSession::snapshot(self)
-    }
-
-    fn acknowledge(
-        &self,
-        source: &str,
-        session_id: &str,
-        terminal_id: Option<&str>,
-    ) -> Result<SnapshotView, String> {
-        DockSession::acknowledge(self, source, session_id, terminal_id)
-    }
-
-    fn reset(
-        &self,
-        source: &str,
-        session_id: &str,
-        terminal_id: Option<&str>,
-    ) -> Result<SnapshotView, String> {
-        DockSession::reset(self, source, session_id, terminal_id)
-    }
-
-    fn subscribe(&self) -> mpsc::Receiver<SnapshotMessage> {
-        DockSession::subscribe(self)
-    }
-
-    fn request_shutdown(&self) {
-        DockSession::request_shutdown(self);
-    }
-
-    fn wait_for_shutdown(&self) {
-        DockSession::wait_for_shutdown(self);
-    }
 }
 
 fn connection_manager(app: &AppHandle) -> ConnectionManager {
@@ -188,27 +135,14 @@ fn install_windows_trampoline_cli(app: &AppHandle) {
 }
 
 fn sidecar_name() -> String {
-    let target = if cfg!(all(windows, target_arch = "x86_64")) {
-        return "orb-x86_64-pc-windows-msvc.exe".to_owned();
+    if cfg!(all(windows, target_arch = "x86_64")) {
+        "orb-x86_64-pc-windows-msvc.exe".to_owned()
     } else if cfg!(all(windows, target_arch = "aarch64")) {
-        return "orb-aarch64-pc-windows-msvc.exe".to_owned();
+        "orb-aarch64-pc-windows-msvc.exe".to_owned()
     } else if cfg!(windows) {
-        return "orb.exe".to_owned();
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        "x86_64-unknown-linux-gnu"
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        "aarch64-unknown-linux-gnu"
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        "x86_64-apple-darwin"
-    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        "aarch64-apple-darwin"
+        "orb.exe".to_owned()
     } else {
-        "orb"
-    };
-    if target == "orb" {
-        target.to_owned()
-    } else {
-        format!("orb-{target}")
+        "orb".to_owned()
     }
 }
 
@@ -232,6 +166,7 @@ fn dockd_binary_path() -> Option<PathBuf> {
                 .join("orbd.exe"),
         );
     }
+    #[cfg(not(windows))]
     if let Some(home) = std::env::var_os("HOME") {
         candidates.push(PathBuf::from(home).join(".local/bin").join(file_name));
     }
@@ -247,11 +182,7 @@ fn dockd_sidecar_name() -> String {
     sidecar_name().replacen("orb", "orbd", 1)
 }
 
-fn presenter_backend() -> DockBackend {
-    orbcue_ipc::resolve_backend()
-}
-
-fn current_session(state: &AppService) -> Result<Arc<dyn PresenterSession>, String> {
+fn current_session(state: &AppService) -> Result<Arc<DockSession>, String> {
     state
         .0
         .lock()
@@ -268,7 +199,6 @@ fn empty_snapshot() -> SnapshotView {
         pending_count: 0,
         pending_mark: String::new(),
         count_label: "0/0".to_owned(),
-        border_state: "idle".to_owned(),
         sessions: Vec::new(),
         audit: Vec::new(),
     }
@@ -507,13 +437,10 @@ fn set_run_alias(name: String) -> Result<Option<String>, String> {
     };
     let local = orbcue_connect::set_run_alias(parsed.as_deref())?;
     #[cfg(windows)]
-    {
-        if let Err(error) = wsl_session::set_run_alias(parsed.as_deref()) {
-            if !orbcue_connect::wsl_side_is_absent(&error) {
-                eprintln!("OrbCue: WSL 启动别名未更新: {error}");
-            }
-        }
-    }
+    warn_wsl(
+        wsl_session::set_run_alias(parsed.as_deref()),
+        "WSL 启动别名未更新",
+    );
     Ok(local)
 }
 
@@ -526,14 +453,20 @@ fn replace_tab_on_run() -> Result<bool, String> {
 fn set_replace_tab_on_run(enabled: bool) -> Result<bool, String> {
     let local = orbcue_connect::set_replace_tab_on_run(enabled)?;
     #[cfg(windows)]
-    {
-        if let Err(error) = wsl_session::set_replace_tab_on_run(enabled) {
-            if !orbcue_connect::wsl_side_is_absent(&error) {
-                eprintln!("OrbCue: WSL 替换标签页设置未更新: {error}");
-            }
+    warn_wsl(
+        wsl_session::set_replace_tab_on_run(enabled),
+        "WSL 替换标签页设置未更新",
+    );
+    Ok(local)
+}
+
+#[cfg(windows)]
+fn warn_wsl<T>(result: Result<T, String>, label: &str) {
+    if let Err(error) = result {
+        if !orbcue_connect::wsl_side_is_absent(&error) {
+            eprintln!("OrbCue: {label}: {error}");
         }
     }
-    Ok(local)
 }
 
 #[tauri::command]
@@ -608,11 +541,6 @@ fn set_notification_enabled(enabled: bool) {
 #[tauri::command]
 fn preview_notification(app: AppHandle) -> Result<(), String> {
     preview_attention_toast(&app)
-}
-
-#[tauri::command]
-fn highlight_session(source: String, session_id: String, app: AppHandle) {
-    open_and_highlight(&app, &source, &session_id);
 }
 
 #[tauri::command]
@@ -842,8 +770,8 @@ fn refresh_tray_ball_label(app: &AppHandle) {
     }
 }
 
-fn start_local_session() -> (
-    Arc<dyn PresenterSession>,
+fn start_session() -> (
+    Arc<DockSession>,
     mpsc::Receiver<SnapshotMessage>,
     SnapshotMessage,
 ) {
@@ -871,58 +799,7 @@ fn start_local_session() -> (
         Ok(snapshot) => SnapshotMessage::subscribed(snapshot),
         Err(_) => SnapshotMessage::subscribed(empty_snapshot()),
     };
-    (
-        Arc::new(session) as Arc<dyn PresenterSession>,
-        updates,
-        initial,
-    )
-}
-
-#[cfg(windows)]
-fn start_wsl_bridge_session() -> (
-    Arc<dyn PresenterSession>,
-    mpsc::Receiver<SnapshotMessage>,
-    SnapshotMessage,
-) {
-    let session: Arc<dyn PresenterSession> = Arc::new(wsl_session::WslSession::connect());
-    let updates = session.subscribe();
-    let initial = match updates.recv_timeout(Duration::from_secs(8)) {
-        Ok(message) => {
-            eprintln!("OrbCue attached via WSL dock bridge");
-            message
-        }
-        Err(_) => {
-            eprintln!(
-                "OrbCue: cannot reach WSL orb via wsl.exe. Install WSL and run `bash scripts/install-cli.sh`, or set ORBCUE_BRIDGE_COMMAND"
-            );
-            SnapshotMessage::subscribed(empty_snapshot())
-        }
-    };
-    (session, updates, initial)
-}
-
-#[cfg(windows)]
-fn start_session() -> (
-    Arc<dyn PresenterSession>,
-    mpsc::Receiver<SnapshotMessage>,
-    SnapshotMessage,
-) {
-    match presenter_backend() {
-        DockBackend::Wsl => start_wsl_bridge_session(),
-        DockBackend::Local => start_local_session(),
-    }
-}
-
-#[cfg(not(windows))]
-fn start_session() -> (
-    Arc<dyn PresenterSession>,
-    mpsc::Receiver<SnapshotMessage>,
-    SnapshotMessage,
-) {
-    if presenter_backend() == DockBackend::Wsl {
-        eprintln!("OrbCue: ORBCUE_BACKEND=wsl is ignored on this OS");
-    }
-    start_local_session()
+    (Arc::new(session), updates, initial)
 }
 
 fn apply_snapshot_update(
@@ -1013,7 +890,6 @@ pub fn run() {
             focus_source,
             set_notification_enabled,
             preview_notification,
-            highlight_session,
             activate_attention,
             run_alias,
             set_run_alias,

@@ -3,7 +3,6 @@
 use interprocess::local_socket::{
     prelude::*, GenericFilePath, ListenerOptions, Stream as InterprocessStream,
 };
-use interprocess::TryClone;
 use orbcue_core::{ApplyResult, Attention, AuditEntry, DockEvent, DockSnapshot, SessionSnapshot};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -54,10 +53,6 @@ fn ignore_unsupported_timeout(result: io::Result<()>) -> io::Result<()> {
     }
 }
 
-pub fn local_try_clone(stream: &LocalStream) -> io::Result<LocalStream> {
-    stream.try_clone()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IpcRequest {
     Event(DockEvent),
@@ -94,7 +89,6 @@ pub struct SnapshotView {
     pub pending_count: usize,
     pub pending_mark: String,
     pub count_label: String,
-    pub border_state: String,
     pub sessions: Vec<SessionSnapshot>,
     pub audit: Vec<AuditEntry>,
 }
@@ -107,11 +101,6 @@ impl From<&DockSnapshot> for SnapshotView {
             pending_count: snapshot.pending_count,
             pending_mark: snapshot.pending_mark.clone(),
             count_label: snapshot.count_label(),
-            border_state: if snapshot.is_working() {
-                "working".to_owned()
-            } else {
-                "idle".to_owned()
-            },
             sessions: snapshot.sessions.clone(),
             audit: snapshot.audit.clone(),
         }
@@ -178,7 +167,6 @@ fn parse_session_query(value: &Value, query: &str) -> Result<IpcRequest, FrameEr
         .to_owned();
     let session_id = value
         .get("session_id")
-        .or_else(|| value.get("task_id"))
         .and_then(Value::as_str)
         .unwrap_or("*")
         .to_owned();
@@ -310,42 +298,30 @@ pub fn default_state_path() -> PathBuf {
     state_home.join("orbcue").join("state.json")
 }
 
-/// Canonical daemon topology. Compile default is GUI-OS local listen.
+/// Canonical daemon topology: GUI-OS local listen.
 ///
-/// `Local` is the supported path: Windows named pipe, WSL `orb` trampolines in.
-/// `Wsl` is a frozen rollback (`ORBCUE_BACKEND=wsl`). It still resolves, but
-/// do not add features; it is scheduled for removal.
+/// Windows named pipe; WSL `orb` trampolines in. `ORBCUE_BACKEND=wsl` is gone.
+#[cfg(any(test, windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DockBackend {
-    /// Frozen: daemon in WSL, Windows presenter bridges in.
-    Wsl,
-    /// Supported: daemon on the GUI OS.
+enum DockBackend {
     Local,
 }
 
-impl DockBackend {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Wsl => "wsl",
-            Self::Local => "local",
-        }
-    }
-}
-
-pub fn default_backend_for_build() -> DockBackend {
-    DockBackend::Local
-}
-
-pub fn parse_backend(value: &str) -> Option<DockBackend> {
+#[cfg(any(test, windows))]
+fn parse_backend(value: &str) -> Option<DockBackend> {
     match value.trim() {
         value if value.eq_ignore_ascii_case("local") => Some(DockBackend::Local),
-        value if value.eq_ignore_ascii_case("wsl") => Some(DockBackend::Wsl),
         _ => None,
     }
 }
 
-pub fn parse_backend_file(contents: &str) -> Option<DockBackend> {
+#[cfg(any(test, windows))]
+fn parse_backend_file(contents: &str) -> Option<DockBackend> {
     parse_backend(contents.lines().next().unwrap_or(""))
+}
+
+fn requests_removed_wsl_backend(value: &str) -> bool {
+    value.trim().eq_ignore_ascii_case("wsl")
 }
 
 fn env_nonempty(key: &str) -> bool {
@@ -385,69 +361,45 @@ fn discover_windows_app_data_dir() -> Option<PathBuf> {
     }
 }
 
-pub fn backend_file_path() -> Option<PathBuf> {
+fn backend_file_path() -> Option<PathBuf> {
     windows_app_data_dir().map(|dir| dir.join(WINDOWS_APP_FOLDER).join("backend"))
 }
 
-pub fn resolve_backend() -> DockBackend {
-    let backend = resolve_backend_unwarned();
-    warn_frozen_wsl_backend(backend);
-    backend
-}
-
-fn resolve_backend_unwarned() -> DockBackend {
-    if let Some(value) = env::var("ORBCUE_BACKEND")
-        .ok()
-        .as_deref()
-        .and_then(parse_backend)
-    {
-        return value;
-    }
-    if should_read_windows_backend_file() {
-        if let Some(backend) = backend_file_path()
-            .and_then(|path| fs::read_to_string(path).ok())
-            .as_deref()
-            .and_then(parse_backend_file)
-        {
-            return backend;
-        }
-    } else if !cfg!(windows) {
-        return DockBackend::Local;
-    }
-    default_backend_for_build()
-}
-
-fn warn_frozen_wsl_backend(backend: DockBackend) {
+fn warn_removed_wsl_backend() {
     static WARNED: AtomicBool = AtomicBool::new(false);
-    if backend != DockBackend::Wsl {
+    let env_wsl = env::var("ORBCUE_BACKEND")
+        .ok()
+        .is_some_and(|value| requests_removed_wsl_backend(&value));
+    let file_wsl = should_read_windows_backend_file()
+        && backend_file_path()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .is_some_and(|contents| {
+                requests_removed_wsl_backend(contents.lines().next().unwrap_or(""))
+            });
+    if !env_wsl && !file_wsl {
         return;
     }
     if WARNED.swap(true, Ordering::Relaxed) {
         return;
     }
     eprintln!(
-        "orb: ORBCUE_BACKEND=wsl is frozen and will be removed. Use the default Windows daemon; WSL orb already forwards events to it."
+        "orb: ORBCUE_BACKEND=wsl has been removed. Using the Windows daemon; WSL orb already forwards events to it."
     );
 }
 
 pub fn persist_default_backend_file() {
-    if env::var("ORBCUE_BACKEND")
-        .ok()
-        .as_deref()
-        .and_then(parse_backend)
-        .is_some()
-    {
-        return;
-    }
-    if default_backend_for_build() != DockBackend::Local {
-        return;
-    }
+    warn_removed_wsl_backend();
     #[cfg(windows)]
     {
         let Some(path) = backend_file_path() else {
             return;
         };
-        if path.exists() {
+        let existing = fs::read_to_string(&path).ok();
+        let already_local = existing
+            .as_deref()
+            .and_then(parse_backend_file)
+            .is_some_and(|backend| backend == DockBackend::Local);
+        if already_local {
             return;
         }
         if let Some(parent) = path.parent() {
@@ -457,28 +409,52 @@ pub fn persist_default_backend_file() {
     }
 }
 
+#[cfg(windows)]
+pub fn hide_windows_console(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(windows)]
+pub fn wait_child_timeout(
+    child: std::process::Child,
+    timeout: Duration,
+) -> io::Result<std::process::Output> {
+    let pid = child.id();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(child.wait_with_output());
+    });
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(_) => {
+            let mut kill = std::process::Command::new("taskkill");
+            hide_windows_console(&mut kill);
+            let _ = kill.args(["/PID", &pid.to_string(), "/F"]).status();
+            Err(io::Error::new(io::ErrorKind::TimedOut, "wsl.exe timed out"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{default_backend_for_build, parse_backend, parse_backend_file, DockBackend};
+    use super::{parse_backend, parse_backend_file, DockBackend};
 
     #[test]
     fn backend_env_parses_case_insensitively() {
         assert_eq!(parse_backend("local"), Some(DockBackend::Local));
         assert_eq!(parse_backend("LOCAL"), Some(DockBackend::Local));
-        assert_eq!(parse_backend(" wsl "), Some(DockBackend::Wsl));
-        assert_eq!(parse_backend("WSL"), Some(DockBackend::Wsl));
+        assert_eq!(parse_backend(" wsl "), None);
+        assert_eq!(parse_backend("WSL"), None);
         assert_eq!(parse_backend(""), None);
         assert_eq!(parse_backend("probe"), None);
-        assert_eq!(default_backend_for_build(), DockBackend::Local);
     }
 
     #[test]
     fn backend_file_uses_the_first_line() {
         assert_eq!(parse_backend_file("local\n"), Some(DockBackend::Local));
-        assert_eq!(
-            parse_backend_file("wsl\n{\"note\":\"ignored\"}\n"),
-            Some(DockBackend::Wsl)
-        );
+        assert_eq!(parse_backend_file("wsl\n{\"note\":\"ignored\"}\n"), None);
         assert_eq!(parse_backend_file("# comment"), None);
     }
 }

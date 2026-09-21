@@ -16,9 +16,7 @@ export interface SessionSnapshot {
   summary: string | null;
   deep_link: string | null;
   project_path: string | null;
-  window_title: string | null;
   terminal_id: string | null;
-  requires_user_action: boolean;
   acknowledged: boolean;
   occurred_at: string;
 }
@@ -38,7 +36,6 @@ export interface Snapshot {
   pending_count: number;
   pending_mark: string;
   count_label: string;
-  border_state: 'working' | 'idle';
   sessions: SessionSnapshot[];
   audit: AuditEntry[];
 }
@@ -114,7 +111,6 @@ export const emptySnapshot: Snapshot = {
   pending_count: 0,
   pending_mark: '',
   count_label: '0/0',
-  border_state: 'idle',
   sessions: [],
   audit: [],
 };

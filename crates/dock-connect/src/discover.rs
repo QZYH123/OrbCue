@@ -314,16 +314,7 @@ fn find_all_on_path(name: &str, path: &OsStr, excluded_dir: Option<&Path>) -> Ve
                 .into_iter()
                 .map(move |candidate| dir.join(candidate))
         })
-        .filter(|candidate| {
-            excluded_dir
-                .map(|excluded| !candidate.starts_with(excluded))
-                .unwrap_or(true)
-        })
-        .filter(|candidate| {
-            let text = candidate.to_string_lossy().replace('\\', "/");
-            !is_windows_interop_path(&text)
-        })
-        .filter(|candidate| candidate.is_file())
+        .filter(|candidate| usable_file(candidate, excluded_dir))
         .collect()
 }
 

@@ -4,12 +4,12 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-pub const PACKAGED_LINUX_DOCK_NAME: &str = "orb-wsl";
-pub const WSL_DOCK_BIN_DIR: &str = "$HOME/.local/bin";
-pub const WSL_DOCK_TMP_NAME: &str = ".orb.tmp";
-pub const WSL_DOCK_DEST_NAME: &str = "orb";
+const PACKAGED_LINUX_DOCK_NAME: &str = "orb-wsl";
+const WSL_DOCK_BIN_DIR: &str = "$HOME/.local/bin";
+const WSL_DOCK_TMP_NAME: &str = ".orb.tmp";
+const WSL_DOCK_DEST_NAME: &str = "orb";
 
-pub fn parse_dock_version_output(output: &str) -> Option<String> {
+fn parse_dock_version_output(output: &str) -> Option<String> {
     let trimmed = output.trim();
     if trimmed.is_empty() {
         return None;
@@ -72,7 +72,7 @@ pub fn choose_packaged_linux_dock(
         .cloned()
 }
 
-pub fn looks_like_linux_dock(bytes: &[u8]) -> bool {
+fn looks_like_linux_dock(bytes: &[u8]) -> bool {
     bytes.starts_with(b"\x7fELF")
 }
 
@@ -137,13 +137,6 @@ pub fn parse_wsl_distro_list(bytes: &[u8]) -> Vec<String> {
 pub fn is_infrastructure_wsl_distro(name: &str) -> bool {
     let lowered = name.to_ascii_lowercase();
     lowered.starts_with("docker-desktop") || lowered.starts_with("rancher-desktop")
-}
-
-pub fn parse_installable_wsl_distros(bytes: &[u8]) -> Vec<String> {
-    parse_wsl_distro_list(bytes)
-        .into_iter()
-        .filter(|name| !is_infrastructure_wsl_distro(name))
-        .collect()
 }
 
 fn decode_utf16_le(bytes: &[u8]) -> String {
@@ -253,8 +246,8 @@ mod tests {
         )));
         assert_eq!(decode_console_output(b"dock 0.2.0\n"), "dock 0.2.0\n");
         assert_eq!(
-            decode_console_output(b"invalid orb bridge response"),
-            "invalid orb bridge response"
+            decode_console_output(b"invalid WSL orb response"),
+            "invalid WSL orb response"
         );
     }
 
@@ -282,7 +275,10 @@ mod tests {
             ]
         );
         assert_eq!(
-            parse_installable_wsl_distros(&bytes),
+            parse_wsl_distro_list(&bytes)
+                .into_iter()
+                .filter(|name| !is_infrastructure_wsl_distro(name))
+                .collect::<Vec<_>>(),
             ["Ubuntu-24.04", "Debian"]
         );
         assert!(is_infrastructure_wsl_distro("docker-desktop"));
@@ -295,7 +291,10 @@ mod tests {
     fn parse_wsl_distro_list_accepts_utf8_and_drops_blank_lines() {
         let text = "\nUbuntu\n\n  \ndocker-desktop\nFedoraLinux-42\n";
         assert_eq!(
-            parse_installable_wsl_distros(text.as_bytes()),
+            parse_wsl_distro_list(text.as_bytes())
+                .into_iter()
+                .filter(|name| !is_infrastructure_wsl_distro(name))
+                .collect::<Vec<_>>(),
             ["Ubuntu", "FedoraLinux-42"]
         );
     }

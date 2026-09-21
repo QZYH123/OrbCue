@@ -23,13 +23,6 @@ impl DockSession {
         matches!(self, Self::Owned(_))
     }
 
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Self::Owned(_) => "owned",
-            Self::Remote { .. } => "remote",
-        }
-    }
-
     pub fn endpoint(&self) -> &Path {
         match self {
             Self::Owned(handle) => handle.endpoint(),

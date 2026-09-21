@@ -1,8 +1,25 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod hop;
+mod liveness;
 mod terminal;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use hop::{
+    looks_like_wsl, should_delegate_run_to_windows, should_trampoline_argv,
+    should_trampoline_to_windows, trampoline_to_windows,
+};
+#[cfg(test)]
+use hop::{newest_windows_dock_under_mnt, stays_on_agent_os, trampoline_to_windows_predicate};
+#[cfg(unix)]
+use liveness::is_short_lived_hook_parent;
+#[cfg(test)]
+use liveness::liveness_from_env;
+use liveness::{attach_liveness, parse_proc_stat, platform_parent_liveness, run_liveness_check};
+#[cfg(any(windows, test))]
+use liveness::{is_short_lived_windows_hook_parent, resolve_windows_liveness_pid};
+#[cfg(windows)]
+use liveness::{windows_process_tree, WindowsProcess};
 use orbcue_adapters::{claude_hook, codex_hook, cursor_hook, grok_hook};
 use orbcue_connect::{ConnectionManager, ConnectionMethod, ConnectionPreview, PreviewAction};
 use orbcue_core::{
@@ -11,15 +28,13 @@ use orbcue_core::{
 };
 use orbcue_ipc::{
     default_endpoint, default_state_path, encode_request, local_connect, local_set_recv_timeout,
-    local_set_send_timeout, local_try_clone, persist_default_backend_file, resolve_backend,
-    DockBackend, IpcRequest, SnapshotView, WireResponse, WINDOWS_APP_FOLDER,
+    local_set_send_timeout, persist_default_backend_file, IpcRequest, SnapshotView, WireResponse,
+    WINDOWS_APP_FOLDER,
 };
-#[cfg(not(windows))]
-use orbcue_service::attach_or_listen;
 use orbcue_service::connect_or_spawn_detached;
 use serde_json::Value;
+#[cfg(windows)]
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::fs;
 use std::io::Read;
 use std::io::{BufRead, BufReader, Write};
@@ -44,16 +59,15 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
-enum Command {
+pub(crate) enum Command {
     Start(EventArgs),
     Working(EventArgs),
     Waiting(EventArgs),
     Permission(EventArgs),
+    #[command(aliases = ["completed", "stop"])]
     Complete(EventArgs),
-    #[command(alias = "stop")]
-    Completed(EventArgs),
+    #[command(alias = "error")]
     Fail(EventArgs),
-    Error(EventArgs),
     Cancel(EventArgs),
     Status,
     Acknowledge(AcknowledgeArgs),
@@ -85,8 +99,6 @@ enum Command {
     Up,
     /// Stop the local Dock daemon.
     Down,
-    /// Forward stdin/stdout NDJSON to the current-user Dock socket.
-    Bridge,
     /// Receive one DockEvent JSON on stdin and send it to the local daemon.
     #[command(hide = true)]
     Emit,
@@ -151,10 +163,6 @@ struct EventArgs {
     cwd: Option<String>,
     #[arg(long)]
     workspace_root: Option<String>,
-    #[arg(long)]
-    window_title: Option<String>,
-    #[arg(long)]
-    requires_user_action: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -175,98 +183,11 @@ fn main() {
         .clone()
         .or_else(|| std::env::var_os("ORBCUE_SOCKET").map(PathBuf::from))
         .unwrap_or_else(default_endpoint);
-    if should_forward_to_wsl(&cli.command, &endpoint) {
-        std::process::exit(forward_to_wsl());
-    }
     if should_trampoline_argv(&cli.command) {
         std::process::exit(trampoline_to_windows());
     }
-    if let Command::Alias { name, clear } = &cli.command {
-        let status = run_alias_command(name.as_deref(), *clear, cli.json);
-        if status != 0 {
-            std::process::exit(status);
-        }
-        return;
-    }
-    if let Command::ReplaceTab { enable, disable } = &cli.command {
-        let status = run_replace_tab_command(*enable, *disable, cli.json);
-        if status != 0 {
-            std::process::exit(status);
-        }
-        return;
-    }
-    if matches!(
-        &cli.command,
-        Command::Agents | Command::Connect { .. } | Command::Disconnect { .. }
-    ) {
-        let status = run_connection_command(&cli.command, cli.json);
-        if status != 0 {
-            std::process::exit(status);
-        }
-        return;
-    }
-    if matches!(&cli.command, Command::Up | Command::Down) {
-        let status = run_daemon_command(&cli.command, &endpoint, cli.json);
-        if status != 0 {
-            std::process::exit(status);
-        }
-        return;
-    }
-    if matches!(&cli.command, Command::Bridge) {
-        let status = run_bridge(&endpoint);
-        if status != 0 {
-            std::process::exit(status);
-        }
-        return;
-    }
-    if let Command::Run {
-        agent,
-        args,
-        profile,
-        close,
-        from_wsl,
-    } = &cli.command
-    {
-        let status = if *from_wsl {
-            terminal::run_from_wsl_stdin(cli.json)
-        } else {
-            let Some(agent) = agent.as_deref() else {
-                eprintln!("orb run: missing agent name");
-                std::process::exit(1);
-            };
-            let close = *close || orbcue_connect::replace_tab_on_run();
-            if should_delegate_run_to_windows() {
-                run_via_windows_terminal(agent, args, profile.as_deref(), close, cli.json)
-            } else {
-                terminal::run_command(agent, args, profile.as_deref(), close, cli.json)
-            }
-        };
-        if status != 0 {
-            std::process::exit(status);
-        }
-        return;
-    }
-    if matches!(&cli.command, Command::LivenessCheck) {
-        let status = run_liveness_check();
-        if status != 0 {
-            std::process::exit(status);
-        }
-        return;
-    }
-    if matches!(&cli.command, Command::Emit) {
-        let status = run_emit(&endpoint, cli.json);
-        if status != 0 {
-            std::process::exit(status);
-        }
-        return;
-    }
-    if let Command::Hook { provider, detach } = &cli.command {
-        if *detach {
-            detach_hook(*provider);
-            return;
-        }
-        run_hook(*provider, &endpoint, cli.json);
-        return;
+    if let Some(status) = run_early_command(&cli.command, &endpoint, cli.json) {
+        std::process::exit(status);
     }
     let request = match request_for(&cli.command) {
         Ok(request) => request,
@@ -303,6 +224,52 @@ fn main() {
             std::process::exit(2);
         }
     }
+}
+
+fn run_early_command(command: &Command, endpoint: &Path, json_output: bool) -> Option<i32> {
+    Some(match command {
+        Command::Alias { name, clear } => run_alias_command(name.as_deref(), *clear, json_output),
+        Command::ReplaceTab { enable, disable } => {
+            run_replace_tab_command(*enable, *disable, json_output)
+        }
+        Command::Agents | Command::Connect { .. } | Command::Disconnect { .. } => {
+            run_connection_command(command, json_output)
+        }
+        Command::Up | Command::Down => run_daemon_command(command, endpoint, json_output),
+        Command::Run {
+            agent,
+            args,
+            profile,
+            close,
+            from_wsl,
+        } => {
+            if *from_wsl {
+                terminal::run_from_wsl_stdin(json_output)
+            } else {
+                let Some(agent) = agent.as_deref() else {
+                    eprintln!("orb run: missing agent name");
+                    return Some(1);
+                };
+                let close = *close || orbcue_connect::replace_tab_on_run();
+                if should_delegate_run_to_windows() {
+                    run_via_windows_terminal(agent, args, profile.as_deref(), close, json_output)
+                } else {
+                    terminal::run_command(agent, args, profile.as_deref(), close, json_output)
+                }
+            }
+        }
+        Command::LivenessCheck => run_liveness_check(),
+        Command::Emit => run_emit(endpoint, json_output),
+        Command::Hook { provider, detach } => {
+            if *detach {
+                detach_hook(*provider);
+            } else {
+                run_hook(*provider, endpoint, json_output);
+            }
+            0
+        }
+        _ => return None,
+    })
 }
 
 fn run_alias_command(name: Option<&str>, clear: bool, json_output: bool) -> i32 {
@@ -492,7 +459,7 @@ fn run_connection_command(command: &Command, json_output: bool) -> i32 {
     }
 }
 
-fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
+fn run_hook(provider: HookProvider, endpoint: &Path, json_output: bool) {
     let cursor_ack = matches!(provider, HookProvider::Cursor) && !json_output;
     let mut input = String::new();
     if let Err(error) = std::io::stdin().read_to_string(&mut input) {
@@ -533,7 +500,7 @@ fn run_hook(provider: HookProvider, endpoint: &PathBuf, json_output: bool) {
         provider,
         detach: false,
     }) {
-        let _ = trampoline_emit_with_stdout(&event, Stdio::null());
+        let _ = trampoline_emit_with_stdout(&event, false);
         acknowledge_cursor_hook(cursor_ack);
         return;
     }
@@ -630,25 +597,6 @@ fn inherit_hook_identity(command: &mut ProcessCommand) {
     }
 }
 
-fn platform_parent_liveness() -> Option<(u32, u64)> {
-    #[cfg(unix)]
-    {
-        return linux_agent_liveness();
-    }
-    #[cfg(windows)]
-    {
-        return windows_parent_liveness();
-    }
-    #[cfg(not(any(unix, windows)))]
-    None
-}
-
-fn liveness_from_env() -> Option<(u32, u64)> {
-    let pid = std::env::var("ORBCUE_AGENT_PID").ok()?.parse().ok()?;
-    let starttime = std::env::var("ORBCUE_AGENT_STARTTIME").ok()?.parse().ok()?;
-    (pid > 0).then_some((pid, starttime))
-}
-
 fn spawn_detached_hook(command: &mut ProcessCommand) -> std::io::Result<std::process::Child> {
     #[cfg(windows)]
     {
@@ -686,10 +634,8 @@ fn request_for(command: &Command) -> Result<IpcRequest, String> {
         Command::Working(args) => event_request(args, EventKind::Working)?,
         Command::Waiting(args) => event_request(args, EventKind::WaitingInput)?,
         Command::Permission(args) => event_request(args, EventKind::PermissionRequested)?,
-        Command::Complete(args) | Command::Completed(args) => {
-            event_request(args, EventKind::Completed)?
-        }
-        Command::Fail(args) | Command::Error(args) => event_request(args, EventKind::Failed)?,
+        Command::Complete(args) => event_request(args, EventKind::Completed)?,
+        Command::Fail(args) => event_request(args, EventKind::Failed)?,
         Command::Cancel(args) => event_request(args, EventKind::Cancelled)?,
         Command::Hook { .. } | Command::Emit | Command::LivenessCheck => {
             return Err("hook is handled before event parsing".to_owned())
@@ -699,7 +645,6 @@ fn request_for(command: &Command) -> Result<IpcRequest, String> {
         | Command::Disconnect { .. }
         | Command::Up
         | Command::Down
-        | Command::Bridge
         | Command::Alias { .. }
         | Command::ReplaceTab { .. }
         | Command::Run { .. } => return Err("command is handled before event parsing".to_owned()),
@@ -737,12 +682,6 @@ fn event_request(args: &EventArgs, kind: EventKind) -> Result<IpcRequest, String
     if let Some(workspace_root) = &args.workspace_root {
         event.workspace_root = Some(workspace_root.clone());
     }
-    if let Some(window_title) = &args.window_title {
-        event.window_title = Some(window_title.clone());
-    }
-    if args.requires_user_action {
-        event = event.requiring_user_action(true);
-    }
     attach_terminal_id(&mut event);
     maybe_set_terminal_title(&event);
     Ok(IpcRequest::Event(event))
@@ -754,272 +693,10 @@ fn attach_terminal_id(event: &mut DockEvent) {
     }
 }
 
-fn attach_liveness(event: &mut DockEvent) {
-    if event
-        .parent_session_id
-        .as_deref()
-        .is_some_and(|value| !value.is_empty())
-    {
-        return;
-    }
-    // Completed/Failed/Cancelled update the live record; a short-lived hook
-    // parent must not replace the agent PID. Closed only uses liveness to pick
-    // which instance to remove and does not merge onto remaining sessions.
-    if matches!(
-        event.kind,
-        EventKind::Completed | EventKind::Failed | EventKind::Cancelled
-    ) {
-        return;
-    }
-    let Some((pid, starttime)) = liveness_from_env().or_else(platform_parent_liveness) else {
-        return;
-    };
-    event
-        .metadata
-        .insert("agent_os".to_owned(), current_agent_os().to_owned());
-    event
-        .metadata
-        .insert("agent_pid".to_owned(), pid.to_string());
-    event
-        .metadata
-        .insert("agent_starttime".to_owned(), starttime.to_string());
-    #[cfg(unix)]
-    if let Ok(distro) = std::env::var("WSL_DISTRO_NAME") {
-        let trimmed = distro.trim();
-        if !trimmed.is_empty() {
-            event
-                .metadata
-                .insert("agent_wsl_distro".to_owned(), trimmed.to_owned());
-        }
-    }
-}
-
-fn current_agent_os() -> &'static str {
-    if cfg!(windows) {
-        "windows"
-    } else {
-        "linux"
-    }
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-fn is_short_lived_windows_hook_parent(exe: &str) -> bool {
-    let name = exe.rsplit(['/', '\\']).next().unwrap_or(exe).trim();
-    let stem = strip_ascii_suffix_ignore_case(name, ".exe");
-    matches!(
-        stem.to_ascii_lowercase().as_str(),
-        "cmd" | "conhost" | "cmd.com" | "orb"
-    )
-}
-
-fn strip_ascii_suffix_ignore_case<'a>(value: &'a str, suffix: &str) -> &'a str {
-    let start = value.len().saturating_sub(suffix.len());
-    if value
-        .get(start..)
-        .is_some_and(|end| end.eq_ignore_ascii_case(suffix))
-    {
-        &value[..start]
-    } else {
-        value
-    }
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-fn resolve_windows_liveness_pid(current: u32, processes: &[(u32, u32, &str)]) -> Option<u32> {
-    let mut by_pid = HashMap::with_capacity(processes.len());
-    for (pid, parent, name) in processes {
-        by_pid.insert(*pid, (*parent, *name));
-    }
-    let mut pid = by_pid.get(&current)?.0;
-    if pid == 0 {
-        return None;
-    }
-    for _ in 0..8 {
-        let (parent, name) = *by_pid.get(&pid)?;
-        if !is_short_lived_windows_hook_parent(name) {
-            return Some(pid);
-        }
-        if parent == 0 || parent == pid {
-            return None;
-        }
-        pid = parent;
-    }
-    None
-}
-
-#[cfg(windows)]
-#[link(name = "kernel32")]
-extern "system" {
-    fn CloseHandle(handle: isize) -> i32;
-}
-
 /// Return the current process id and a compact parent/name index for the
 /// Windows process tree. Both hook liveness and source detection need the same
 /// Toolhelp snapshot; keeping the FFI and enumeration in one place avoids two
 /// subtly different copies of it.
-#[cfg(windows)]
-fn windows_process_tree() -> Option<(u32, HashMap<u32, WindowsProcess>)> {
-    use std::mem::{size_of, zeroed};
-
-    #[repr(C)]
-    struct ProcessEntry32W {
-        dw_size: u32,
-        cnt_usage: u32,
-        th32_process_id: u32,
-        th32_default_heap_id: usize,
-        th32_module_id: u32,
-        cnt_threads: u32,
-        th32_parent_process_id: u32,
-        pc_pri_class_base: i32,
-        dw_flags: u32,
-        sz_exe_file: [u16; 260],
-    }
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetCurrentProcessId() -> u32;
-        fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> isize;
-        fn Process32FirstW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
-        fn Process32NextW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
-    }
-
-    const TH32CS_SNAPPROCESS: u32 = 0x2;
-    const INVALID: isize = -1;
-
-    unsafe {
-        let current = GetCurrentProcessId();
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snapshot == 0 || snapshot == INVALID {
-            return None;
-        }
-        let mut entry: ProcessEntry32W = zeroed();
-        entry.dw_size = size_of::<ProcessEntry32W>() as u32;
-        let mut processes = HashMap::new();
-        if Process32FirstW(snapshot, &mut entry) != 0 {
-            loop {
-                processes.insert(
-                    entry.th32_process_id,
-                    WindowsProcess {
-                        parent: entry.th32_parent_process_id,
-                        name: utf16_z(&entry.sz_exe_file),
-                    },
-                );
-                if Process32NextW(snapshot, &mut entry) == 0 {
-                    break;
-                }
-            }
-        }
-        CloseHandle(snapshot);
-        Some((current, processes))
-    }
-}
-
-#[cfg(windows)]
-struct WindowsProcess {
-    parent: u32,
-    name: String,
-}
-
-#[cfg(windows)]
-fn windows_parent_liveness() -> Option<(u32, u64)> {
-    let (current, by_pid) = windows_process_tree()?;
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
-        fn GetProcessTimes(
-            process: isize,
-            creation: *mut u64,
-            exit: *mut u64,
-            kernel: *mut u64,
-            user: *mut u64,
-        ) -> i32;
-        fn GetLastError() -> u32;
-    }
-    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-    unsafe {
-        let named: Vec<(u32, u32, &str)> = by_pid
-            .iter()
-            .map(|(pid, process)| (*pid, process.parent, process.name.as_str()))
-            .collect();
-        let pid = resolve_windows_liveness_pid(current, &named)?;
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle == 0 {
-            let _ = GetLastError();
-            return None;
-        }
-        let mut creation = 0u64;
-        let mut exit = 0u64;
-        let mut kernel = 0u64;
-        let mut user = 0u64;
-        let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
-        CloseHandle(handle);
-        if ok == 0 {
-            return None;
-        }
-        Some((pid, creation))
-    }
-}
-
-#[cfg(windows)]
-fn utf16_z(buf: &[u16]) -> String {
-    let end = buf.iter().position(|&unit| unit == 0).unwrap_or(buf.len());
-    String::from_utf16_lossy(&buf[..end])
-}
-
-fn linux_pid_is_dead(pid: u32, starttime: u64) -> Option<bool> {
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(stat) => {
-            let parsed = parse_proc_stat(&stat);
-            Some(match parsed {
-                Some((_, _, recorded)) => recorded != starttime,
-                None => true,
-            })
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(true),
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => None,
-        Err(_) => None,
-    }
-}
-
-fn run_liveness_check() -> i32 {
-    let mut input = String::new();
-    if let Err(error) = std::io::stdin().read_to_string(&mut input) {
-        eprintln!("orb liveness-check: cannot read stdin: {error}");
-        return 2;
-    }
-    let queries: Vec<Value> = match serde_json::from_str(input.trim()) {
-        Ok(value) => value,
-        Err(error) => {
-            eprintln!("orb liveness-check: invalid JSON ({error})");
-            return 2;
-        }
-    };
-    let mut dead = Vec::new();
-    for query in queries {
-        let Some(pid) = query
-            .get("pid")
-            .and_then(Value::as_u64)
-            .map(|value| value as u32)
-        else {
-            continue;
-        };
-        let Some(starttime) = query.get("starttime").and_then(Value::as_u64) else {
-            continue;
-        };
-        if linux_pid_is_dead(pid, starttime) != Some(true) {
-            continue;
-        }
-        dead.push(serde_json::json!({
-            "source": query.get("source").cloned().unwrap_or(Value::Null),
-            "session_id": query.get("session_id").cloned().unwrap_or(Value::Null),
-            "pid": pid,
-            "starttime": starttime,
-        }));
-    }
-    println!("{}", serde_json::json!({ "dead": dead }));
-    0
-}
-
 fn resolve_terminal_id() -> Option<String> {
     match std::env::var("ORBCUE_TERMINAL_ID") {
         Ok(value) => {
@@ -1241,50 +918,9 @@ fn looks_like_tty_path(path: &str) -> bool {
                 .is_some_and(|rest| !rest.is_empty()))
 }
 
-#[cfg(unix)]
-fn linux_agent_liveness() -> Option<(u32, u64)> {
-    let mut pid = unsafe { libc::getppid() };
-    if pid <= 1 {
-        return None;
-    }
-    for _ in 0..8 {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let (ppid, _, starttime) = parse_proc_stat(&stat)?;
-        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
-        if should_skip_linux_liveness_parent(comm.trim()) {
-            if ppid <= 1 || ppid == pid {
-                return None;
-            }
-            pid = ppid;
-            continue;
-        }
-        return Some((pid as u32, starttime));
-    }
-    None
-}
-
-#[cfg(unix)]
-fn should_skip_linux_liveness_parent(comm: &str) -> bool {
-    is_short_lived_hook_parent(comm) || is_wsl_session_plumbing(comm)
-}
-
-#[cfg(unix)]
-fn is_short_lived_hook_parent(comm: &str) -> bool {
-    // Generated hooks are `#!/bin/sh` + exec. Skip that wrapper (and `orb`
-    // trampolines), but not bash/zsh/fish: those are often the user's
-    // interactive shell or an agent launcher. Walking past them records a
-    // PID that outlives the session, so close is never detected.
-    matches!(comm, "sh" | "dash" | "orb")
-}
-
 /// WSL session plumbing outlives every agent in the tab. A detached hook
 /// reparented here must not stamp that PID as the agent, or resume-fork
 /// opens a ghost row that liveness never reaps.
-#[cfg(unix)]
-fn is_wsl_session_plumbing(comm: &str) -> bool {
-    comm == "SessionLeader" || comm.starts_with("Relay(") || comm.starts_with("init-systemd")
-}
-
 fn hook_source_from_identities(provider: &str, identities: &[String]) -> String {
     if !provider.eq_ignore_ascii_case("claude") {
         return provider.to_owned();
@@ -1412,6 +1048,7 @@ fn windows_hook_invoker_identities() -> Vec<String> {
             name: *mut u16,
             size: *mut u32,
         ) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
     }
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
     unsafe {
@@ -1450,21 +1087,6 @@ fn windows_hook_invoker_identities() -> Vec<String> {
         }
         identities
     }
-}
-
-fn parse_proc_stat(contents: &str) -> Option<(i32, u32, u64)> {
-    let end = contents.rfind(')')?;
-    let mut fields = contents.get(end + 1..)?.split_whitespace();
-    let _state = fields.next()?;
-    let ppid = fields.next()?.parse().ok()?;
-    let _pgrp = fields.next()?;
-    let _session = fields.next()?;
-    let tty_nr = fields.next()?.parse().ok()?;
-    for _ in 0..14 {
-        fields.next()?;
-    }
-    let starttime = fields.next()?.parse().ok()?;
-    Some((ppid, tty_nr, starttime))
 }
 
 #[cfg(unix)]
@@ -1535,178 +1157,6 @@ fn unix_ancestor_tty_id() -> Option<String> {
     None
 }
 
-fn is_forwardable_command(command: &Command) -> bool {
-    !matches!(
-        command,
-        Command::Agents
-            | Command::Connect { .. }
-            | Command::Disconnect { .. }
-            | Command::Up
-            | Command::Down
-    )
-}
-
-fn stays_on_agent_os(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::Agents
-            | Command::Connect { .. }
-            | Command::Disconnect { .. }
-            | Command::Alias { .. }
-            | Command::ReplaceTab { .. }
-            | Command::Run { .. }
-            | Command::LivenessCheck
-    )
-}
-
-fn explicit_wsl_forward() -> bool {
-    std::env::var("ORBCUE_FORWARD")
-        .ok()
-        .is_some_and(|value| value.eq_ignore_ascii_case("wsl"))
-}
-
-fn hop_token() -> Option<String> {
-    std::env::var("ORBCUE_HOP")
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-}
-
-fn looks_like_wsl() -> bool {
-    env_nonempty("WSL_DISTRO_NAME")
-        || env_nonempty("WSL_INTEROP")
-        || env_nonempty("ORBCUE_WINDOWS_ORB")
-}
-
-fn env_nonempty(key: &str) -> bool {
-    std::env::var(key)
-        .ok()
-        .is_some_and(|value| !value.trim().is_empty())
-}
-
-fn looks_like_windows_pipe(value: &OsString) -> bool {
-    let text = value.to_string_lossy();
-    text.starts_with(r"\\.\pipe\") || text.starts_with("//./pipe/")
-}
-
-fn local_daemon_present(endpoint: &Path) -> bool {
-    local_connect(endpoint).is_ok()
-}
-
-fn forward_to_wsl_predicate(
-    forwardable: bool,
-    is_windows: bool,
-    hop_set: bool,
-    backend: DockBackend,
-    explicit_forward: bool,
-    pipe_present: bool,
-) -> bool {
-    if !is_windows || !forwardable || hop_set {
-        return false;
-    }
-    match backend {
-        DockBackend::Local => explicit_forward,
-        DockBackend::Wsl => explicit_forward || !pipe_present,
-    }
-}
-
-fn trampoline_to_windows_predicate(
-    is_unix: bool,
-    like_wsl: bool,
-    hop_set: bool,
-    backend: DockBackend,
-    stays_on_agent_os: bool,
-) -> bool {
-    is_unix && like_wsl && !hop_set && backend == DockBackend::Local && !stays_on_agent_os
-}
-
-fn should_forward_to_wsl(command: &Command, endpoint: &Path) -> bool {
-    let hop_set = hop_token().is_some();
-    let backend = resolve_backend();
-    if hop_set
-        && cfg!(windows)
-        && forward_to_wsl_predicate(
-            is_forwardable_command(command),
-            true,
-            false,
-            backend,
-            explicit_wsl_forward(),
-            local_daemon_present(endpoint),
-        )
-    {
-        eprintln!("orb: refusing hop, ORBCUE_HOP already set");
-    }
-    if backend == DockBackend::Local && explicit_wsl_forward() && !hop_set && cfg!(windows) {
-        eprintln!("orb: ORBCUE_FORWARD=wsl with BACKEND=local is unsupported");
-    }
-    forward_to_wsl_predicate(
-        is_forwardable_command(command),
-        cfg!(windows),
-        hop_set,
-        backend,
-        explicit_wsl_forward(),
-        local_daemon_present(endpoint),
-    )
-}
-
-fn should_trampoline_to_windows(command: &Command) -> bool {
-    let hop_set = hop_token().is_some();
-    let would = trampoline_to_windows_predicate(
-        cfg!(unix),
-        looks_like_wsl(),
-        false,
-        resolve_backend(),
-        stays_on_agent_os(command),
-    );
-    if hop_set && would {
-        eprintln!("orb: refusing hop, ORBCUE_HOP already set");
-    }
-    trampoline_to_windows_predicate(
-        cfg!(unix),
-        looks_like_wsl(),
-        hop_set,
-        resolve_backend(),
-        stays_on_agent_os(command),
-    )
-}
-
-fn should_trampoline_argv(command: &Command) -> bool {
-    should_trampoline_to_windows(command) && !needs_local_event_prep(command)
-}
-
-fn needs_local_event_prep(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::Hook { .. }
-            | Command::Start(_)
-            | Command::Working(_)
-            | Command::Waiting(_)
-            | Command::Permission(_)
-            | Command::Complete(_)
-            | Command::Completed(_)
-            | Command::Fail(_)
-            | Command::Error(_)
-            | Command::Cancel(_)
-    )
-}
-
-fn inject_wsl_backend(command: &mut ProcessCommand, backend: DockBackend) {
-    command.env("ORBCUE_BACKEND", backend.as_str());
-    let extra = "ORBCUE_BACKEND/u";
-    match std::env::var("WSLENV") {
-        Ok(existing)
-            if existing
-                .split(':')
-                .any(|part| part.starts_with("ORBCUE_BACKEND")) => {}
-        Ok(existing) if !existing.is_empty() => {
-            command.env("WSLENV", format!("{existing}:{extra}"));
-        }
-        _ => {
-            command.env("WSLENV", extra);
-        }
-    }
-}
-
 #[cfg(windows)]
 fn attach_parent_console() {
     const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
@@ -1719,92 +1169,6 @@ fn attach_parent_console() {
     }
 }
 
-fn hide_windows_console(command: &mut ProcessCommand) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    let _ = command;
-}
-
-fn forward_to_wsl() -> i32 {
-    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let mut command = ProcessCommand::new("wsl.exe");
-    hide_windows_console(&mut command);
-    if let Ok(distro) = std::env::var("ORBCUE_WSL_DISTRO") {
-        if !distro.is_empty() {
-            command.args(["-d", &distro]);
-        }
-    }
-    command.args([
-        "-e",
-        "sh",
-        "-c",
-        r#"exec "$HOME/.local/bin/orb" "$@""#,
-        "sh",
-    ]);
-    command.args(&args);
-    command.env_remove("ORBCUE_FORWARD");
-    command.env("ORBCUE_HOP", "wsl");
-    inject_wsl_backend(&mut command, DockBackend::Wsl);
-    if std::env::var_os("ORBCUE_SOCKET")
-        .as_ref()
-        .is_some_and(looks_like_windows_pipe)
-    {
-        command.env_remove("ORBCUE_SOCKET");
-    }
-    match command.status() {
-        Ok(status) => status.code().unwrap_or(1),
-        Err(error) => {
-            eprintln!("orb: cannot forward to WSL via wsl.exe ({error})");
-            2
-        }
-    }
-}
-
-fn apply_windows_hop_env(command: &mut ProcessCommand) {
-    command.env("ORBCUE_HOP", "windows");
-    command.env("ORBCUE_BACKEND", resolve_backend().as_str());
-    command.env_remove("ORBCUE_SOCKET");
-    command.env_remove("XDG_RUNTIME_DIR");
-}
-
-fn trampoline_to_windows() -> i32 {
-    let exe = match find_windows_dock() {
-        Ok(path) => path,
-        Err(error) => {
-            eprintln!("orb: {error}");
-            return 2;
-        }
-    };
-    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let mut command = ProcessCommand::new(&exe);
-    command.args(&args);
-    command.stdin(Stdio::inherit());
-    command.stdout(Stdio::inherit());
-    command.stderr(Stdio::inherit());
-    apply_windows_hop_env(&mut command);
-    match command.status() {
-        Ok(status) => status.code().unwrap_or(1),
-        Err(error) => {
-            eprintln!("orb: cannot trampoline to {}: {error}", exe.display());
-            2
-        }
-    }
-}
-
-fn should_delegate_run_to_windows() -> bool {
-    trampoline_to_windows_predicate(
-        cfg!(unix),
-        looks_like_wsl(),
-        hop_token().is_some(),
-        resolve_backend(),
-        false,
-    )
-}
-
 fn run_via_windows_terminal(
     agent: &str,
     args: &[String],
@@ -1814,250 +1178,81 @@ fn run_via_windows_terminal(
 ) -> i32 {
     let spec = match terminal::prepare_wsl_run(agent, args, profile) {
         Ok(spec) => spec,
-        Err(error) => {
-            if json_output {
-                println!("{}", serde_json::json!({ "ok": false, "error": error }));
-            } else {
-                eprintln!("orb run: {error}");
-            }
-            return 1;
-        }
+        Err(error) => return terminal::print_run_error(&error, json_output),
     };
     match trampoline_from_wsl_run(&spec) {
         Ok(mut value) => {
             let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
-            let closed = if ok {
-                terminal::close_launcher_after_spawn(close)
-            } else {
-                false
-            };
+            if !ok {
+                return terminal::print_run_error(
+                    value
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Windows orb.exe run failed"),
+                    json_output,
+                );
+            }
+            let closed = terminal::close_launcher_after_spawn(close);
             if json_output {
                 value["closed_launcher"] = Value::Bool(closed);
                 println!("{value}");
-            } else if ok {
-                print!(
-                    "Started {} in Windows Terminal tab {}",
+            } else {
+                terminal::print_run_started(
                     value.get("agent").and_then(Value::as_str).unwrap_or(agent),
                     value
                         .get("marker")
                         .and_then(Value::as_str)
-                        .unwrap_or(&spec.marker)
-                );
-                if closed {
-                    print!("; closing this tab");
-                } else if close {
-                    print!("; current stdin is not a TTY, launcher tab kept");
-                }
-                println!();
-            } else {
-                eprintln!(
-                    "orb run: {}",
-                    value
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .unwrap_or("Windows orb.exe run failed")
+                        .unwrap_or(&spec.marker),
+                    closed,
+                    close,
                 );
             }
-            if ok {
-                0
-            } else {
-                1
-            }
+            0
         }
         Err(status) => status,
     }
 }
 
 fn trampoline_from_wsl_run(spec: &terminal::WslRunSpec) -> Result<Value, i32> {
-    let exe = match find_windows_dock() {
-        Ok(path) => path,
-        Err(error) => {
-            eprintln!("orb: {error}");
-            return Err(2);
-        }
-    };
-    let mut command = ProcessCommand::new(&exe);
-    command.args(["--json", "run", "--from-wsl"]);
-    command.stdin(Stdio::piped());
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::inherit());
-    apply_windows_hop_env(&mut command);
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            eprintln!("orb: cannot trampoline run to {}: {error}", exe.display());
-            return Err(2);
-        }
-    };
-    let Some(mut stdin) = child.stdin.take() else {
-        eprintln!("orb: trampoline run lost stdin");
-        return Err(2);
-    };
-    match serde_json::to_vec(spec) {
-        Ok(mut line) => {
-            line.push(b'\n');
-            if let Err(error) = stdin.write_all(&line) {
-                eprintln!("orb: cannot write run spec: {error}");
-                return Err(2);
-            }
-        }
-        Err(error) => {
-            eprintln!("orb: cannot serialize run spec: {error}");
-            return Err(2);
-        }
-    }
-    drop(stdin);
-    let output = match child.wait_with_output() {
-        Ok(output) => output,
-        Err(error) => {
-            eprintln!("orb: trampoline run failed: {error}");
-            return Err(2);
-        }
-    };
-    match serde_json::from_slice(&output.stdout) {
-        Ok(value) => Ok(value),
-        Err(error) => {
-            eprintln!(
-                "orb: Windows run did not return JSON ({error}): {}",
-                String::from_utf8_lossy(&output.stdout)
-            );
-            Err(output.status.code().unwrap_or(2))
-        }
-    }
+    let payload = serde_json::to_vec(spec).map_err(|error| {
+        eprintln!("orb: cannot serialize run spec: {error}");
+        2
+    })?;
+    let output =
+        hop::trampoline_payload(&["--json", "run", "--from-wsl"], &payload, Stdio::piped())?;
+    serde_json::from_slice(&output.stdout).map_err(|error| {
+        eprintln!(
+            "orb: Windows run did not return JSON ({error}): {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        output.status.code().unwrap_or(2)
+    })
 }
 
 fn trampoline_emit(event: &DockEvent) -> i32 {
-    trampoline_emit_with_stdout(event, Stdio::inherit())
+    trampoline_emit_with_stdout(event, true)
 }
 
-fn trampoline_emit_with_stdout(event: &DockEvent, stdout: Stdio) -> i32 {
-    let exe = match find_windows_dock() {
-        Ok(path) => path,
-        Err(error) => {
-            eprintln!("orb: {error}");
-            return 2;
-        }
-    };
-    let mut command = ProcessCommand::new(&exe);
-    command.arg("emit");
-    command.stdin(Stdio::piped());
-    command.stdout(stdout);
-    command.stderr(Stdio::inherit());
-    apply_windows_hop_env(&mut command);
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            eprintln!("orb: cannot trampoline to {}: {error}", exe.display());
-            return 2;
-        }
-    };
-    let Some(mut stdin) = child.stdin.take() else {
-        eprintln!("orb: trampoline emit lost stdin");
-        return 2;
-    };
-    match serde_json::to_vec(event) {
-        Ok(mut line) => {
-            line.push(b'\n');
-            if let Err(error) = stdin.write_all(&line) {
-                eprintln!("orb: cannot write emit payload: {error}");
-                return 2;
-            }
-        }
+fn trampoline_emit_with_stdout(event: &DockEvent, inherit_stdout: bool) -> i32 {
+    let payload = match serde_json::to_vec(event) {
+        Ok(payload) => payload,
         Err(error) => {
             eprintln!("orb: cannot serialize event: {error}");
             return 2;
         }
+    };
+    match hop::trampoline_payload(
+        &["emit"],
+        &payload,
+        if inherit_stdout {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        },
+    ) {
+        Ok(output) => output.status.code().unwrap_or(1),
+        Err(status) => status,
     }
-    drop(stdin);
-    match child.wait() {
-        Ok(status) => status.code().unwrap_or(1),
-        Err(error) => {
-            eprintln!("orb: trampoline emit failed: {error}");
-            2
-        }
-    }
-}
-
-fn find_windows_dock() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("ORBCUE_WINDOWS_ORB")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-    {
-        if path.is_file() {
-            return Ok(path);
-        }
-        return Err(format!(
-            "ORBCUE_WINDOWS_ORB is not a file: {}",
-            path.display()
-        ));
-    }
-    if let Some(path) = cached_windows_dock() {
-        return Ok(path);
-    }
-    Err("cannot find Windows orb.exe; install the presenter, or set ORBCUE_WINDOWS_ORB".to_owned())
-}
-
-fn cached_windows_dock() -> Option<PathBuf> {
-    static CACHED: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-    CACHED.get_or_init(discover_windows_dock).clone()
-}
-
-fn discover_windows_dock() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(user) = std::env::var("USER")
-        .ok()
-        .or_else(|| std::env::var("USERNAME").ok())
-    {
-        candidates.push(PathBuf::from(format!(
-            "/mnt/c/Users/{user}/AppData/Local/{WINDOWS_APP_FOLDER}/orb.exe"
-        )));
-    }
-    if let Some(local) = orbcue_ipc::windows_app_data_dir() {
-        candidates.push(local.join(WINDOWS_APP_FOLDER).join("orb.exe"));
-    }
-    if let Some(found) = candidates.into_iter().find(|path| path.is_file()) {
-        return Some(found);
-    }
-    newest_windows_dock_under_mnt(Path::new("/mnt"))
-}
-
-fn newest_windows_dock_under_mnt(mnt_root: &Path) -> Option<PathBuf> {
-    let mut hits = Vec::new();
-    let mounts = fs::read_dir(mnt_root).ok()?;
-    for mount in mounts.flatten() {
-        let name = mount.file_name();
-        let Some(letter) = name.to_str() else {
-            continue;
-        };
-        if letter.len() != 1
-            || !letter
-                .chars()
-                .next()
-                .is_some_and(|ch| ch.is_ascii_alphabetic())
-        {
-            continue;
-        }
-        let users = mount.path().join("Users");
-        let Ok(entries) = fs::read_dir(users) else {
-            continue;
-        };
-        for user in entries.flatten() {
-            let dock = user
-                .path()
-                .join("AppData")
-                .join("Local")
-                .join(WINDOWS_APP_FOLDER)
-                .join("orb.exe");
-            if !dock.is_file() {
-                continue;
-            }
-            let mtime = fs::metadata(&dock).and_then(|meta| meta.modified()).ok();
-            hits.push((mtime, dock));
-        }
-    }
-    hits.into_iter()
-        .max_by_key(|(mtime, _)| *mtime)
-        .map(|(_, path)| path)
 }
 
 fn run_emit(endpoint: &Path, json_output: bool) -> i32 {
@@ -2076,7 +1271,7 @@ fn run_emit(endpoint: &Path, json_output: bool) -> i32 {
             return 2;
         }
     };
-    match send(&endpoint.to_path_buf(), &IpcRequest::Event(event)) {
+    match send(endpoint, &IpcRequest::Event(event)) {
         Ok(response) => {
             if json_output {
                 println!(
@@ -2103,9 +1298,6 @@ fn run_emit(endpoint: &Path, json_output: bool) -> i32 {
 }
 
 fn ensure_cli_daemon(endpoint: &Path) -> Result<(), i32> {
-    if resolve_backend() != DockBackend::Local {
-        return Ok(());
-    }
     if looks_like_wsl() {
         return Ok(());
     }
@@ -2123,7 +1315,7 @@ fn ensure_cli_daemon(endpoint: &Path) -> Result<(), i32> {
     }
 }
 
-fn send(endpoint: &PathBuf, request: &IpcRequest) -> Result<WireResponse, String> {
+fn send(endpoint: &Path, request: &IpcRequest) -> Result<WireResponse, String> {
     let mut stream = local_connect(endpoint).map_err(|error| error.to_string())?;
     local_set_recv_timeout(&stream, Some(Duration::from_millis(500)))
         .map_err(|error| error.to_string())?;
@@ -2190,6 +1382,30 @@ fn connect_method_label(method: ConnectionMethod) -> &'static str {
     }
 }
 
+fn print_daemon_ready(json_output: bool, already_running: bool, response: &WireResponse) -> i32 {
+    if json_output {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "already_running": already_running,
+                "snapshot": response.snapshot
+            })
+        );
+    } else {
+        println!(
+            "{}",
+            if already_running {
+                "Dock daemon already running"
+            } else {
+                "orbd ready"
+            }
+        );
+        print_summary(response);
+    }
+    0
+}
+
 fn run_daemon_command(command: &Command, endpoint: &Path, json_output: bool) -> i32 {
     match command {
         Command::Up => start_daemon(endpoint, json_output),
@@ -2199,17 +1415,8 @@ fn run_daemon_command(command: &Command, endpoint: &Path, json_output: bool) -> 
 }
 
 fn start_daemon(endpoint: &Path, json_output: bool) -> i32 {
-    if let Ok(response) = send(&endpoint.to_path_buf(), &IpcRequest::Snapshot) {
-        if json_output {
-            println!(
-                "{}",
-                serde_json::json!({"ok":true,"already_running":true,"snapshot":response.snapshot})
-            );
-        } else {
-            println!("Dock daemon already running");
-            print_summary(&response);
-        }
-        return 0;
+    if let Ok(response) = send(endpoint, &IpcRequest::Snapshot) {
+        return print_daemon_ready(json_output, true, &response);
     }
 
     let dockd = dockd_binary();
@@ -2267,17 +1474,8 @@ fn start_daemon(endpoint: &Path, json_output: bool) -> i32 {
     }
 
     for _ in 0..25 {
-        if let Ok(response) = send(&endpoint.to_path_buf(), &IpcRequest::Snapshot) {
-            if json_output {
-                println!(
-                    "{}",
-                    serde_json::json!({"ok":true,"already_running":false,"snapshot":response.snapshot})
-                );
-            } else {
-                println!("orbd ready");
-                print_summary(&response);
-            }
-            return 0;
+        if let Ok(response) = send(endpoint, &IpcRequest::Snapshot) {
+            return print_daemon_ready(json_output, false, &response);
         }
         thread::sleep(Duration::from_millis(80));
     }
@@ -2313,7 +1511,7 @@ fn stop_daemon(endpoint: &Path, json_output: bool) -> i32 {
         let _ = ProcessCommand::new("pkill").args(["-x", "orbd"]).status();
     }
     thread::sleep(Duration::from_millis(200));
-    if send(&endpoint.to_path_buf(), &IpcRequest::Snapshot).is_ok() {
+    if send(endpoint, &IpcRequest::Snapshot).is_ok() {
         eprintln!(
             "orb down: daemon is still reachable at {}",
             endpoint.display()
@@ -2326,95 +1524,6 @@ fn stop_daemon(endpoint: &Path, json_output: bool) -> i32 {
         println!("Dock daemon stopped.");
     }
     0
-}
-
-fn run_bridge(endpoint: &Path) -> i32 {
-    let dockd = dockd_binary();
-    let dockd = dockd.is_file().then_some(dockd);
-    #[cfg(windows)]
-    {
-        if let Err(error) = connect_or_spawn_detached(endpoint, default_state_path(), dockd) {
-            eprintln!("orb bridge: {error}");
-            return 2;
-        }
-        return match forward_stdio(endpoint) {
-            Ok(()) => 0,
-            Err(error) => {
-                eprintln!("orb bridge: {error}");
-                2
-            }
-        };
-    }
-    #[cfg(not(windows))]
-    {
-        let session = match attach_or_listen(endpoint, default_state_path(), dockd) {
-            Ok(session) => session,
-            Err(error) => {
-                eprintln!("orb bridge: {error}");
-                return 2;
-            }
-        };
-        let status = match forward_stdio(endpoint) {
-            Ok(()) => 0,
-            Err(error) => {
-                eprintln!("orb bridge: {error}");
-                2
-            }
-        };
-        if session.owns_daemon() {
-            session.request_shutdown();
-            session.wait_for_shutdown();
-        }
-        status
-    }
-}
-
-fn forward_stdio(endpoint: &Path) -> Result<(), String> {
-    let stream = local_connect(endpoint).map_err(|error| error.to_string())?;
-    let mut writer = local_try_clone(&stream).map_err(|error| error.to_string())?;
-    let writer_thread = thread::spawn(move || -> Result<(), String> {
-        let mut stdin = BufReader::new(std::io::stdin());
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            let read = stdin
-                .read_until(b'\n', &mut line)
-                .map_err(|error| error.to_string())?;
-            if read == 0 {
-                break;
-            }
-            writer.write_all(&line).map_err(|error| error.to_string())?;
-        }
-        Ok(())
-    });
-    let (done_tx, done_rx) = std::sync::mpsc::channel();
-    let reader_thread = thread::spawn(move || -> Result<(), String> {
-        let mut reader = BufReader::new(stream);
-        let mut stdout = std::io::stdout();
-        let mut line = Vec::new();
-        let result = loop {
-            line.clear();
-            match reader.read_until(b'\n', &mut line) {
-                Ok(0) => break Ok(()),
-                Ok(_) => {
-                    if stdout.write_all(&line).is_err() || stdout.flush().is_err() {
-                        break Ok(());
-                    }
-                }
-                Err(error) => break Err(error.to_string()),
-            }
-        };
-        let _ = done_tx.send(());
-        result
-    });
-    let write_result = writer_thread
-        .join()
-        .unwrap_or_else(|_| Err("stdin forwarder panicked".to_owned()));
-    // One-shot queries close stdin after the request; wait briefly so the
-    // response can still reach stdout. A live subscribe keeps stdin open.
-    let _ = done_rx.recv_timeout(Duration::from_secs(2));
-    let _ = reader_thread;
-    write_result
 }
 
 fn dockd_binary() -> PathBuf {
@@ -2455,14 +1564,12 @@ fn runtime_state_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        forward_to_wsl_predicate, hook_source_from_identities, is_forwardable_command,
-        is_short_lived_windows_hook_parent, looks_like_claude_cli_identity,
-        looks_like_cursor_cli_identity, looks_like_windows_pipe, newest_windows_dock_under_mnt,
-        resolve_windows_liveness_pid, stays_on_agent_os, trampoline_to_windows_predicate, Command,
-        WINDOWS_APP_FOLDER,
+        hook_source_from_identities, is_short_lived_windows_hook_parent,
+        looks_like_claude_cli_identity, looks_like_cursor_cli_identity,
+        newest_windows_dock_under_mnt, resolve_windows_liveness_pid, stays_on_agent_os,
+        trampoline_to_windows_predicate, Command, WINDOWS_APP_FOLDER,
     };
     use orbcue_core::{DockEvent, EventKind};
-    use orbcue_ipc::DockBackend;
     use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -2491,15 +1598,6 @@ mod tests {
             original: None,
             dry_run: false,
         }
-    }
-
-    #[test]
-    fn event_and_query_commands_can_forward() {
-        assert!(is_forwardable_command(&Command::Status));
-        assert!(is_forwardable_command(&run_command()));
-        assert!(!is_forwardable_command(&Command::Agents));
-        assert!(!is_forwardable_command(&Command::Up));
-        assert!(!is_forwardable_command(&Command::Down));
     }
 
     #[test]
@@ -2620,16 +1718,20 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unix_hook_skips_wsl_session_plumbing() {
-        assert!(super::is_wsl_session_plumbing("Relay(50997)"));
-        assert!(super::is_wsl_session_plumbing("SessionLeader"));
-        assert!(super::is_wsl_session_plumbing("init-systemd(Ubuntu)"));
-        assert!(!super::is_wsl_session_plumbing("grok"));
-        assert!(!super::is_wsl_session_plumbing("zsh"));
-        assert!(!super::is_wsl_session_plumbing("init"));
-        assert!(super::should_skip_linux_liveness_parent("Relay(50997)"));
-        assert!(super::should_skip_linux_liveness_parent("sh"));
-        assert!(!super::should_skip_linux_liveness_parent("bash"));
-        assert!(!super::should_skip_linux_liveness_parent("grok"));
+        assert!(super::liveness::is_wsl_session_plumbing("Relay(50997)"));
+        assert!(super::liveness::is_wsl_session_plumbing("SessionLeader"));
+        assert!(super::liveness::is_wsl_session_plumbing(
+            "init-systemd(Ubuntu)"
+        ));
+        assert!(!super::liveness::is_wsl_session_plumbing("grok"));
+        assert!(!super::liveness::is_wsl_session_plumbing("zsh"));
+        assert!(!super::liveness::is_wsl_session_plumbing("init"));
+        assert!(super::liveness::should_skip_linux_liveness_parent(
+            "Relay(50997)"
+        ));
+        assert!(super::liveness::should_skip_linux_liveness_parent("sh"));
+        assert!(!super::liveness::should_skip_linux_liveness_parent("bash"));
+        assert!(!super::liveness::should_skip_linux_liveness_parent("grok"));
     }
 
     #[test]
@@ -2655,50 +1757,6 @@ mod tests {
     }
 
     #[test]
-    fn hop_blocks_empty_pipe_forward() {
-        assert!(!forward_to_wsl_predicate(
-            true,
-            true,
-            true,
-            DockBackend::Wsl,
-            false,
-            false,
-        ));
-        assert!(forward_to_wsl_predicate(
-            true,
-            true,
-            false,
-            DockBackend::Wsl,
-            false,
-            false,
-        ));
-        assert!(!forward_to_wsl_predicate(
-            true,
-            true,
-            false,
-            DockBackend::Local,
-            false,
-            false,
-        ));
-        assert!(forward_to_wsl_predicate(
-            true,
-            true,
-            false,
-            DockBackend::Local,
-            true,
-            false,
-        ));
-        assert!(!forward_to_wsl_predicate(
-            true,
-            false,
-            false,
-            DockBackend::Wsl,
-            true,
-            false,
-        ));
-    }
-
-    #[test]
     fn run_and_agents_do_not_trampoline() {
         assert!(stays_on_agent_os(&Command::Agents));
         assert!(stays_on_agent_os(&connect_command()));
@@ -2710,16 +1768,9 @@ mod tests {
             enable: false,
             disable: false
         }));
-        assert!(trampoline_to_windows_predicate(
-            true,
-            true,
-            false,
-            DockBackend::Local,
-            false,
-        ));
+        assert!(trampoline_to_windows_predicate(true, true, false, false));
         assert!(!stays_on_agent_os(&Command::Status));
         assert!(!stays_on_agent_os(&Command::Up));
-        assert!(!stays_on_agent_os(&Command::Bridge));
         assert!(!stays_on_agent_os(&Command::Emit));
         assert!(stays_on_agent_os(&Command::LivenessCheck));
     }
@@ -2744,8 +1795,6 @@ mod tests {
                 deep_link: None,
                 cwd: None,
                 workspace_root: None,
-                window_title: None,
-                requires_user_action: false,
             },
             EventKind::Started,
         )
@@ -2755,56 +1804,10 @@ mod tests {
         };
         assert!(!event.metadata.contains_key("agent_pid"));
         assert!(!event.metadata.contains_key("agent_os"));
-        assert!(trampoline_to_windows_predicate(
-            true,
-            true,
-            false,
-            DockBackend::Local,
-            false,
-        ));
-        assert!(!trampoline_to_windows_predicate(
-            true,
-            true,
-            false,
-            DockBackend::Local,
-            true,
-        ));
-        assert!(!trampoline_to_windows_predicate(
-            true,
-            true,
-            true,
-            DockBackend::Local,
-            false,
-        ));
-        assert!(!trampoline_to_windows_predicate(
-            true,
-            true,
-            false,
-            DockBackend::Wsl,
-            false,
-        ));
-        assert!(!trampoline_to_windows_predicate(
-            true,
-            false,
-            false,
-            DockBackend::Local,
-            false,
-        ));
-    }
-
-    #[test]
-    fn non_windows_builds_do_not_forward() {
-        let _guard = lock_env();
-        let previous = std::env::var_os("ORBCUE_FORWARD");
-        std::env::set_var("ORBCUE_FORWARD", "wsl");
-        let forwarded = super::should_forward_to_wsl(
-            &Command::Status,
-            std::path::Path::new("/tmp/unused.sock"),
-        );
-        restore_env("ORBCUE_FORWARD", previous);
-        if !cfg!(windows) {
-            assert!(!forwarded);
-        }
+        assert!(trampoline_to_windows_predicate(true, true, false, false));
+        assert!(!trampoline_to_windows_predicate(true, true, false, true));
+        assert!(!trampoline_to_windows_predicate(true, true, true, false));
+        assert!(!trampoline_to_windows_predicate(true, false, false, false));
     }
 
     #[test]
@@ -2903,15 +1906,6 @@ mod tests {
             Some(value) => std::env::set_var(key, value),
             None => std::env::remove_var(key),
         }
-    }
-
-    #[test]
-    fn windows_pipe_paths_are_detected() {
-        assert!(looks_like_windows_pipe(&OsString::from(r"\\.\pipe\orbcue")));
-        assert!(looks_like_windows_pipe(&OsString::from("//./pipe/orbcue")));
-        assert!(!looks_like_windows_pipe(&OsString::from(
-            "/tmp/orbcue.sock"
-        )));
     }
 
     #[test]

@@ -15,6 +15,11 @@ describe('highlightFromNotificationExtra', () => {
     expect(sessionHighlightKey('claude', 's1')).toBe('claude\0s1');
   });
 
+  it('stays at conversation identity so two resumes of one chat highlight together', () => {
+    expect(sessionHighlightKey('grok', 'resume-id')).toBe('grok\0resume-id');
+    expect(sessionHighlightKey('grok', 'resume-id')).not.toContain('term-a');
+  });
+
   it('ignores incomplete extra so a missing session only opens the panel', () => {
     expect(highlightFromNotificationExtra({ source: 'claude' })).toBeNull();
     expect(highlightFromNotificationExtra({})).toBeNull();

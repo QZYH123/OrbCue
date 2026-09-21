@@ -179,7 +179,7 @@ fn desktop_attaches_to_an_already_running_daemon() {
     let service = spawn(&path).unwrap();
     let session = attach_or_listen(&path, path.with_extension("state.json"), None).unwrap();
     assert!(!session.owns_daemon());
-    assert_eq!(session.kind(), "remote");
+    assert!(!session.owns_daemon());
     assert_eq!(session.snapshot().unwrap().count_label, "0/0");
 
     session.request_shutdown();

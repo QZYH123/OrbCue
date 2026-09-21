@@ -13,9 +13,7 @@ mod user_path;
 mod wsl_cli;
 
 pub use discover::looks_like_cursor_cli_path;
-pub use grok_compat::{
-    connection_warnings, grok_compat_cursor_hooks_enabled, GROK_COMPAT_CURSOR_HOOKS_WARNING,
-};
+pub use grok_compat::GROK_COMPAT_CURSOR_HOOKS_WARNING;
 pub use replace_tab::{
     current as replace_tab_on_run, set as set_replace_tab_on_run, view_err as replace_tab_err,
     view_ok as replace_tab_ok, ReplaceTabView,
@@ -25,16 +23,14 @@ pub use run_alias::{
     validate as validate_run_alias, view_err as run_alias_err, view_ok as run_alias_ok,
     wsl_dock_cli_is_missing, wsl_runtime_is_absent, wsl_side_is_absent, AliasView,
 };
-pub use user_path::{
-    default_windows_cli_dir, ensure_dir_on_user_path, install_windows_cli, merge_path_entries,
-};
+pub use user_path::install_windows_cli;
 pub use wsl_cli::{
     choose_packaged_linux_dock, decode_console_output, dock_version_matches,
-    is_infrastructure_wsl_distro, looks_like_linux_dock, packaged_linux_dock_candidates,
-    packaged_linux_dock_is_usable, parse_dock_version_output, parse_installable_wsl_distros,
-    parse_wsl_distro_list, wsl_dock_install_shell, PACKAGED_LINUX_DOCK_NAME,
+    is_infrastructure_wsl_distro, packaged_linux_dock_candidates, packaged_linux_dock_is_usable,
+    parse_wsl_distro_list, wsl_dock_install_shell,
 };
 
+use grok_compat::connection_warnings;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::env;
@@ -61,11 +57,11 @@ const LEGACY_PATH_START: &str = "# >>> agent-activity-dock PATH >>>";
 const LEGACY_PATH_END: &str = "# <<< agent-activity-dock PATH <<<";
 
 /// Agents the connections page can attach through native hooks.
-pub const FIRST_PARTY_AGENTS: &[&str] = &["claude", "codex", "cursor", "grok"];
+pub(crate) const FIRST_PARTY_AGENTS: &[&str] = &["claude", "codex", "cursor", "grok"];
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ConnectionMethod {
-    /// Leftover records from before hook-only connect. New connects never create these.
+    /// Leftover records from before hook-only connect. Disconnect still clears them; new connects never create these.
     Wrapper,
     ClaudeHook,
     GrokHook,
@@ -356,27 +352,11 @@ impl ConnectionManager {
                 return Ok(record);
             }
         }
-        let record = match method {
-            ConnectionMethod::Wrapper => {
-                return Err(unsupported_connect_name(name));
-            }
-            ConnectionMethod::ClaudeHook => {
-                let (hook, settings_backup) = self.install_claude_hook()?;
-                connection_record(name, original, method, None, Some(hook), settings_backup)
-            }
-            ConnectionMethod::GrokHook => {
-                let hook = self.install_grok_hook()?;
-                connection_record(name, original, method, None, Some(hook), None)
-            }
-            ConnectionMethod::CodexHook => {
-                let (hook, settings_backup) = self.install_codex_hook()?;
-                connection_record(name, original, method, None, Some(hook), settings_backup)
-            }
-            ConnectionMethod::CursorHook => {
-                let (hook, settings_backup) = self.install_cursor_hook()?;
-                connection_record(name, original, method, None, Some(hook), settings_backup)
-            }
+        let Some(agent) = hook_agent(method) else {
+            return Err(unsupported_connect_name(name));
         };
+        let (hook, settings_backup) = self.install_hook(agent)?;
+        let record = connection_record(name, original, method, None, Some(hook), settings_backup);
         if let Some(existing) = file.agents.get(name) {
             // The new artifact is installed before this cleanup. Different
             // methods use different paths, so a cleanup failure must not
@@ -447,19 +427,12 @@ impl ConnectionManager {
     }
 
     fn preview_files(&self, name: &str, method: ConnectionMethod) -> Vec<PreviewFile> {
-        match method {
-            ConnectionMethod::Wrapper => unreachable!("new connections are hook-only: {name}"),
-            ConnectionMethod::ClaudeHook => self.preview_claude_files(),
-            ConnectionMethod::GrokHook => self.preview_grok_files(),
-            ConnectionMethod::CodexHook => self.preview_codex_files(),
-            ConnectionMethod::CursorHook => self.preview_cursor_files(),
-        }
-    }
-
-    fn preview_claude_files(&self) -> Vec<PreviewFile> {
-        let hook = hook_path(&self.config_dir, "claude");
-        let settings = claude_settings_path();
-        let events = hook_spec_labels(claude_hook_specs());
+        let Some(agent) = hook_agent(method) else {
+            unreachable!("new connections are hook-only: {name}");
+        };
+        let hook = hook_path(&self.config_dir, agent.name);
+        let config = self.hooks_config_path(agent);
+        let events = hook_spec_labels(agent.specs());
         let mut files = vec![
             PreviewFile {
                 path: hook.clone(),
@@ -467,93 +440,19 @@ impl ConnectionManager {
                 entries: events.clone(),
             },
             PreviewFile {
-                path: settings.clone(),
-                action: preview_action(&settings),
+                path: config.clone(),
+                action: preview_action(&config),
                 entries: events,
             },
         ];
-        if settings.is_file() {
-            let backup = settings.with_file_name("settings.json.orbcue.bak");
-            let mut entries = Vec::new();
-            if backup.is_file() {
-                entries.push("仅在备份不存在时创建".to_owned());
+        if let Some(backup_name) = agent.backup_name() {
+            if config.is_file() {
+                files.push(PreviewFile {
+                    path: config.with_file_name(backup_name),
+                    action: PreviewAction::Create,
+                    entries: vec!["仅在备份不存在时创建".to_owned()],
+                });
             }
-            files.push(PreviewFile {
-                path: backup,
-                action: PreviewAction::Create,
-                entries,
-            });
-        }
-        files.push(self.preview_connections_file());
-        files
-    }
-
-    fn preview_grok_files(&self) -> Vec<PreviewFile> {
-        let hook = hook_path(&self.config_dir, "grok");
-        let hooks = self.grok_hooks_file();
-        let events = hook_spec_labels(grok_hook_specs());
-        vec![
-            PreviewFile {
-                path: hook.clone(),
-                action: preview_action(&hook),
-                entries: events.clone(),
-            },
-            PreviewFile {
-                path: hooks.clone(),
-                action: preview_action(&hooks),
-                entries: events,
-            },
-            self.preview_connections_file(),
-        ]
-    }
-
-    fn preview_codex_files(&self) -> Vec<PreviewFile> {
-        self.preview_shared_hooks_files(
-            "codex",
-            &self.codex_hooks_file(),
-            &hook_spec_labels(codex_hook_specs()),
-        )
-    }
-
-    fn preview_cursor_files(&self) -> Vec<PreviewFile> {
-        self.preview_shared_hooks_files(
-            "cursor",
-            &self.cursor_hooks_file(),
-            &hook_spec_labels(cursor_hook_specs()),
-        )
-    }
-
-    fn preview_shared_hooks_files(
-        &self,
-        name: &str,
-        hooks: &Path,
-        events: &[String],
-    ) -> Vec<PreviewFile> {
-        let hook = hook_path(&self.config_dir, name);
-        let mut files = vec![
-            PreviewFile {
-                path: hook.clone(),
-                action: preview_action(&hook),
-                entries: events.to_vec(),
-            },
-            PreviewFile {
-                path: hooks.to_path_buf(),
-                action: preview_action(hooks),
-                entries: events.to_vec(),
-            },
-        ];
-        if hooks.is_file() {
-            files.push(PreviewFile {
-                path: hooks.with_file_name(format!(
-                    "{}.orbcue.bak",
-                    hooks
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("hooks.json")
-                )),
-                action: PreviewAction::Create,
-                entries: vec!["仅在备份不存在时创建".to_owned()],
-            });
         }
         files.push(self.preview_connections_file());
         files
@@ -580,12 +479,9 @@ impl ConnectionManager {
     }
 
     fn reinstall_artifacts(&self, method: ConnectionMethod) -> Result<(), String> {
-        match method {
-            ConnectionMethod::Wrapper => Ok(()),
-            ConnectionMethod::ClaudeHook => self.install_claude_hook().map(|_| ()),
-            ConnectionMethod::GrokHook => self.install_grok_hook().map(|_| ()),
-            ConnectionMethod::CodexHook => self.install_codex_hook().map(|_| ()),
-            ConnectionMethod::CursorHook => self.install_cursor_hook().map(|_| ()),
+        match hook_agent(method) {
+            Some(agent) => self.install_hook(agent).map(|_| ()),
+            None => Ok(()),
         }
     }
 
@@ -593,41 +489,32 @@ impl ConnectionManager {
         if !hook.is_file() || !hook_script_forwards_args(hook) {
             return false;
         }
-        match method {
-            ConnectionMethod::CursorHook => {
-                cursor_hooks_registered(&self.cursor_hooks_file(), hook)
-            }
-            ConnectionMethod::Wrapper => true,
-            ConnectionMethod::ClaudeHook
-            | ConnectionMethod::GrokHook
-            | ConnectionMethod::CodexHook => {
-                let (path, specs) = match method {
-                    ConnectionMethod::ClaudeHook => (claude_settings_path(), claude_hook_specs()),
-                    ConnectionMethod::GrokHook => (self.grok_hooks_file(), grok_hook_specs()),
-                    ConnectionMethod::CodexHook => (self.codex_hooks_file(), codex_hook_specs()),
-                    ConnectionMethod::CursorHook | ConnectionMethod::Wrapper => unreachable!(),
-                };
-                let Ok(bytes) = fs::read(&path) else {
-                    return false;
-                };
-                let Ok(document) = serde_json::from_slice::<Value>(&bytes) else {
-                    return false;
-                };
-                let Some(hooks) = document.get("hooks").and_then(Value::as_object) else {
-                    return false;
-                };
-                specs.iter().all(|spec| {
-                    hooks
-                        .get(spec.event)
-                        .and_then(Value::as_array)
-                        .is_some_and(|entries| {
-                            entries
-                                .iter()
-                                .any(|entry| dock_handler_matches(entry, hook, spec))
-                        })
-                })
-            }
+        let Some(agent) = hook_agent(method) else {
+            return true;
+        };
+        if matches!(agent.layout, HookLayout::Cursor) {
+            return cursor_hooks_registered(&self.cursor_hooks_file(), hook);
         }
+        let path = self.hooks_config_path(agent);
+        let Ok(bytes) = fs::read(&path) else {
+            return false;
+        };
+        let Ok(document) = serde_json::from_slice::<Value>(&bytes) else {
+            return false;
+        };
+        let Some(hooks) = document.get("hooks").and_then(Value::as_object) else {
+            return false;
+        };
+        agent.specs().iter().all(|spec| {
+            hooks
+                .get(spec.event)
+                .and_then(Value::as_array)
+                .is_some_and(|entries| {
+                    entries
+                        .iter()
+                        .any(|entry| dock_handler_matches(entry, hook, spec))
+                })
+        })
     }
 
     fn drop_wrapper_path_if_unused(&self, file: &ConnectionFile) -> Result<(), String> {
@@ -639,59 +526,45 @@ impl ConnectionManager {
         Ok(())
     }
 
-    fn install_claude_hook(&self) -> Result<(PathBuf, Option<PathBuf>), String> {
-        let hook = self.write_hook_script("claude")?;
-        match install_claude_settings_at(&claude_settings_path(), &hook) {
-            Ok(path) => Ok((hook, path)),
-            Err(error) => {
-                let _ = fs::remove_file(&hook);
-                Err(format!("cannot update Claude settings: {error}"))
-            }
+    fn hooks_config_path(&self, agent: &HookAgent) -> PathBuf {
+        match agent.name {
+            "claude" => claude_settings_path(),
+            "grok" => self.grok_hooks_file(),
+            "codex" => self.codex_hooks_file(),
+            "cursor" => self.cursor_hooks_file(),
+            _ => unreachable!("unknown hook agent {}", agent.name),
         }
     }
 
-    fn install_grok_hook(&self) -> Result<PathBuf, String> {
-        let hook = self.write_hook_script("grok")?;
-        if let Err(error) = install_grok_hooks(&self.grok_hooks_file(), &hook) {
-            let _ = fs::remove_file(&hook);
-            return Err(format!("cannot update Grok hooks: {error}"));
+    fn install_hook(&self, agent: &HookAgent) -> Result<(PathBuf, Option<PathBuf>), String> {
+        let dest = hook_path(&self.config_dir, agent.name);
+        let existed = dest.is_file();
+        let hook = self.write_hook_script(agent.name)?;
+        let result = match agent.layout {
+            HookLayout::Nested { backup } => install_nested_hooks_at(
+                &self.hooks_config_path(agent),
+                &hook,
+                agent.specs(),
+                backup,
+            ),
+            HookLayout::GrokFile => {
+                install_grok_hooks(&self.grok_hooks_file(), &hook).map(|()| None)
+            }
+            HookLayout::Cursor => install_cursor_hooks_at(&self.cursor_hooks_file(), &hook),
+        };
+        match result {
+            Ok(backup) => Ok((hook, backup)),
+            Err(error) => {
+                if !existed || !matches!(agent.layout, HookLayout::Cursor) {
+                    let _ = fs::remove_file(&hook);
+                }
+                Err(format!("cannot update {} hooks: {error}", agent.label()))
+            }
         }
-        Ok(hook)
     }
 
     fn grok_hooks_file(&self) -> PathBuf {
         self.grok_home.join("hooks").join("orbcue.json")
-    }
-
-    fn install_codex_hook(&self) -> Result<(PathBuf, Option<PathBuf>), String> {
-        let hook = self.write_hook_script("codex")?;
-        match install_nested_hooks_at(
-            &self.codex_hooks_file(),
-            &hook,
-            codex_hook_specs(),
-            "hooks.json.orbcue.bak",
-        ) {
-            Ok(path) => Ok((hook, path)),
-            Err(error) => {
-                let _ = fs::remove_file(&hook);
-                Err(format!("cannot update Codex hooks: {error}"))
-            }
-        }
-    }
-
-    fn install_cursor_hook(&self) -> Result<(PathBuf, Option<PathBuf>), String> {
-        let hook = hook_path(&self.config_dir, "cursor");
-        let existed = hook.is_file();
-        let hook = self.write_hook_script("cursor")?;
-        match install_cursor_hooks_at(&self.cursor_hooks_file(), &hook) {
-            Ok(path) => Ok((hook, path)),
-            Err(error) => {
-                if !existed {
-                    let _ = fs::remove_file(&hook);
-                }
-                Err(format!("cannot update Cursor hooks: {error}"))
-            }
-        }
     }
 
     fn codex_hooks_file(&self) -> PathBuf {
@@ -709,23 +582,22 @@ impl ConnectionManager {
             }
         }
         if let Some(hook) = &record.hook_script {
-            match record.method {
-                ConnectionMethod::ClaudeHook => {
-                    uninstall_claude_settings_at(&claude_settings_path(), hook)?
-                }
-                ConnectionMethod::GrokHook => {
-                    let grok_hooks = self.grok_hooks_file();
-                    if grok_hooks.exists() {
-                        fs::remove_file(&grok_hooks).map_err(|error| error.to_string())?;
+            match hook_agent(record.method) {
+                Some(agent) => match agent.layout {
+                    HookLayout::GrokFile => {
+                        let grok_hooks = self.grok_hooks_file();
+                        if grok_hooks.exists() {
+                            fs::remove_file(&grok_hooks).map_err(|error| error.to_string())?;
+                        }
                     }
-                }
-                ConnectionMethod::CodexHook => {
-                    uninstall_nested_hooks_at(&self.codex_hooks_file(), hook)?
-                }
-                ConnectionMethod::CursorHook => {
-                    uninstall_cursor_hooks_at(&self.cursor_hooks_file(), hook)?
-                }
-                ConnectionMethod::Wrapper => {}
+                    HookLayout::Nested { .. } => {
+                        uninstall_nested_hooks_at(&self.hooks_config_path(agent), hook)?
+                    }
+                    HookLayout::Cursor => {
+                        uninstall_cursor_hooks_at(&self.cursor_hooks_file(), hook)?
+                    }
+                },
+                None => {}
             }
             if hook.exists() {
                 fs::remove_file(hook).map_err(|error| error.to_string())?;
@@ -852,6 +724,7 @@ fn push_unique_ignore_case(names: &mut Vec<String>, candidate: String) {
     }
 }
 
+#[cfg(test)]
 fn install_claude_settings_at(
     settings_path: &Path,
     hook: &Path,
@@ -864,30 +737,48 @@ fn install_claude_settings_at(
     )
 }
 
-fn install_nested_hooks_at(
-    settings_path: &Path,
-    hook: &Path,
-    specs: &[HookSpec],
-    backup_name: &str,
-) -> Result<Option<PathBuf>, String> {
-    let existing = match fs::read(settings_path) {
+#[cfg(test)]
+fn uninstall_claude_settings_at(settings_path: &Path, hook: &Path) -> Result<(), String> {
+    uninstall_nested_hooks_at(settings_path, hook)
+}
+
+fn read_json_document(path: &Path, missing: Value) -> Result<(Option<Vec<u8>>, Value), String> {
+    let existing = match fs::read(path) {
         Ok(bytes) => Some(bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.to_string()),
     };
-    let mut settings: Value = match existing.as_deref() {
+    let document = match existing.as_deref() {
         Some(bytes) => serde_json::from_slice(bytes)
-            .map_err(|error| format!("{} is not valid JSON: {error}", file_label(settings_path)))?,
-        None => json!({}),
+            .map_err(|error| format!("{} is not valid JSON: {error}", file_label(path)))?,
+        None => missing,
     };
-    let hooks = settings
-        .as_object_mut()
-        .ok_or_else(|| format!("{} must be a JSON object", file_label(settings_path)))?
-        .entry("hooks")
-        .or_insert_with(|| json!({}));
-    let hooks = hooks
-        .as_object_mut()
-        .ok_or_else(|| format!("{} hooks must be an object", file_label(settings_path)))?;
+    Ok((existing, document))
+}
+
+fn write_json_with_backup(
+    path: &Path,
+    existing: Option<Vec<u8>>,
+    backup_name: &str,
+    document: &Value,
+) -> Result<Option<PathBuf>, String> {
+    let backup = existing.map(|bytes| (path.with_file_name(backup_name), bytes));
+    if let Some((backup_path, bytes)) = &backup {
+        if !backup_path.exists() {
+            atomic_write(backup_path, bytes, existing_mode(path, 0o600))?;
+        }
+    }
+    let bytes = serde_json::to_vec_pretty(document).map_err(|error| error.to_string())?;
+    atomic_write(path, &bytes, existing_mode(path, 0o600))?;
+    Ok(backup.map(|(backup_path, _)| backup_path))
+}
+
+fn upsert_hook_events(
+    hooks: &mut serde_json::Map<String, Value>,
+    specs: &[HookSpec],
+    hook: &Path,
+    mut make_entry: impl FnMut(&HookSpec) -> Value,
+) -> Result<(), String> {
     for spec in specs {
         let event = spec.event.to_owned();
         let entries = hooks.entry(event.clone()).or_insert_with(|| json!([]));
@@ -895,21 +786,38 @@ fn install_nested_hooks_at(
             .as_array_mut()
             .ok_or_else(|| format!("hook {event} must be an array"))?;
         entries.retain(|entry| !is_dock_managed_hook(entry, hook));
-        entries.push(dock_hook_group(hook, spec));
+        entries.push(make_entry(spec));
     }
     strip_unwanted_dock_hooks(hooks, &hook_spec_names(specs), hook);
-    let backup = existing.map(|bytes| {
-        let backup = settings_path.with_file_name(backup_name);
-        (backup, bytes)
-    });
-    if let Some((backup_path, bytes)) = &backup {
-        if !backup_path.exists() {
-            atomic_write(backup_path, bytes, existing_mode(settings_path, 0o600))?;
-        }
+    Ok(())
+}
+
+fn hooks_object_mut<'a>(
+    document: &'a mut Value,
+    label: &str,
+) -> Result<&'a mut serde_json::Map<String, Value>, String> {
+    let hooks = document
+        .as_object_mut()
+        .ok_or_else(|| format!("{label} must be a JSON object"))?
+        .entry("hooks")
+        .or_insert_with(|| json!({}));
+    hooks
+        .as_object_mut()
+        .ok_or_else(|| format!("{label} hooks must be an object"))
+}
+
+fn install_nested_hooks_at(
+    settings_path: &Path,
+    hook: &Path,
+    specs: &[HookSpec],
+    backup_name: &str,
+) -> Result<Option<PathBuf>, String> {
+    let (existing, mut settings) = read_json_document(settings_path, json!({}))?;
+    {
+        let hooks = hooks_object_mut(&mut settings, &file_label(settings_path))?;
+        upsert_hook_events(hooks, specs, hook, |spec| dock_hook_group(hook, spec))?;
     }
-    let bytes = serde_json::to_vec_pretty(&settings).map_err(|error| error.to_string())?;
-    atomic_write(settings_path, &bytes, existing_mode(settings_path, 0o600))?;
-    Ok(backup.map(|(path, _)| path))
+    write_json_with_backup(settings_path, existing, backup_name, &settings)
 }
 
 fn claude_settings_path() -> PathBuf {
@@ -925,81 +833,28 @@ fn claude_settings_path() -> PathBuf {
     config_dir.join("settings.json")
 }
 
-fn uninstall_claude_settings_at(settings_path: &Path, hook: &Path) -> Result<(), String> {
-    uninstall_nested_hooks_at(settings_path, hook)
-}
-
 fn uninstall_nested_hooks_at(settings_path: &Path, hook: &Path) -> Result<(), String> {
-    let Ok(bytes) = fs::read(settings_path) else {
-        return Ok(());
-    };
-    let Ok(mut settings) = serde_json::from_slice::<Value>(&bytes) else {
-        return Ok(());
-    };
-    if let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) {
-        for entries in hooks.values_mut() {
-            if let Some(entries) = entries.as_array_mut() {
-                entries.retain(|entry| !is_dock_managed_hook(entry, hook));
-            }
-        }
-    }
-    let bytes = serde_json::to_vec_pretty(&settings).map_err(|error| error.to_string())?;
-    atomic_write(settings_path, &bytes, existing_mode(settings_path, 0o600))
+    uninstall_hooks_file(settings_path, hook, false)
 }
 
 fn install_cursor_hooks_at(hooks_path: &Path, hook: &Path) -> Result<Option<PathBuf>, String> {
-    let existing = match fs::read(hooks_path) {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.to_string()),
-    };
-    let mut document: Value = match existing.as_deref() {
-        Some(bytes) => serde_json::from_slice(bytes)
-            .map_err(|error| format!("hooks.json is not valid JSON: {error}"))?,
-        None => json!({"version": 1, "hooks": {}}),
-    };
-    let object = document
-        .as_object_mut()
-        .ok_or_else(|| "Cursor hooks.json must be a JSON object".to_owned())?;
-    if !object.contains_key("version") {
-        object.insert("version".to_owned(), json!(1));
-    }
-    let hooks = object.entry("hooks").or_insert_with(|| json!({}));
-    let hooks = hooks
-        .as_object_mut()
-        .ok_or_else(|| "Cursor hooks must be an object".to_owned())?;
-    let command = hook.to_string_lossy();
-    for spec in cursor_hook_specs() {
-        let event = spec.event.to_owned();
-        let entries = hooks.entry(event.clone()).or_insert_with(|| json!([]));
-        let entries = entries
-            .as_array_mut()
-            .ok_or_else(|| format!("Cursor hook {event} must be an array"))?;
-        entries.retain(|entry| !is_dock_managed_hook(entry, hook));
-        let mut entry = serde_json::Map::new();
-        entry.insert("command".to_owned(), json!(command.as_ref()));
-        entry.insert("timeout".to_owned(), json!(5));
-        if let Some(matcher) = spec.matcher {
-            entry.insert("matcher".to_owned(), json!(matcher));
-        }
-        if cursor_unbounded_events().iter().any(|name| name == &event) {
-            entry.insert("loop_limit".to_owned(), Value::Null);
-        }
-        entries.push(Value::Object(entry));
-    }
-    strip_unwanted_dock_hooks(hooks, &hook_spec_names(cursor_hook_specs()), hook);
-    let backup = existing.map(|bytes| {
-        let backup = hooks_path.with_file_name("hooks.json.orbcue.bak");
-        (backup, bytes)
-    });
-    if let Some((backup_path, bytes)) = &backup {
-        if !backup_path.exists() {
-            atomic_write(backup_path, bytes, existing_mode(hooks_path, 0o600))?;
+    let (existing, mut document) =
+        read_json_document(hooks_path, json!({"version": 1, "hooks": {}}))?;
+    {
+        let object = document
+            .as_object_mut()
+            .ok_or_else(|| "Cursor hooks.json must be a JSON object".to_owned())?;
+        if !object.contains_key("version") {
+            object.insert("version".to_owned(), json!(1));
         }
     }
-    let bytes = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
-    atomic_write(hooks_path, &bytes, existing_mode(hooks_path, 0o600))?;
-    Ok(backup.map(|(path, _)| path))
+    {
+        let hooks = hooks_object_mut(&mut document, "Cursor")?;
+        upsert_hook_events(hooks, cursor_hook_specs(), hook, |spec| {
+            cursor_hook_entry(hook, spec)
+        })?;
+    }
+    write_json_with_backup(hooks_path, existing, "hooks.json.orbcue.bak", &document)
 }
 
 fn cursor_hooks_registered(hooks_path: &Path, hook: &Path) -> bool {
@@ -1026,7 +881,11 @@ fn cursor_hooks_registered(hooks_path: &Path, hook: &Path) -> bool {
 }
 
 fn uninstall_cursor_hooks_at(hooks_path: &Path, hook: &Path) -> Result<(), String> {
-    let Ok(bytes) = fs::read(hooks_path) else {
+    uninstall_hooks_file(hooks_path, hook, true)
+}
+
+fn uninstall_hooks_file(path: &Path, hook: &Path, drop_empty: bool) -> Result<(), String> {
+    let Ok(bytes) = fs::read(path) else {
         return Ok(());
     };
     let Ok(mut settings) = serde_json::from_slice::<Value>(&bytes) else {
@@ -1038,13 +897,15 @@ fn uninstall_cursor_hooks_at(hooks_path: &Path, hook: &Path) -> Result<(), Strin
                 entries.retain(|entry| !is_dock_managed_hook(entry, hook));
             }
         }
-        drop_empty_cursor_hook_arrays(hooks);
+        if drop_empty {
+            retain_nonempty_hook_arrays(hooks);
+        }
     }
     let bytes = serde_json::to_vec_pretty(&settings).map_err(|error| error.to_string())?;
-    atomic_write(hooks_path, &bytes, existing_mode(hooks_path, 0o600))
+    atomic_write(path, &bytes, existing_mode(path, 0o600))
 }
 
-fn drop_empty_cursor_hook_arrays(hooks: &mut serde_json::Map<String, Value>) {
+fn retain_nonempty_hook_arrays(hooks: &mut serde_json::Map<String, Value>) {
     hooks.retain(|_, value| match value.as_array() {
         Some(entries) => !entries.is_empty(),
         None => true,
@@ -1130,10 +991,7 @@ fn strip_unwanted_dock_hooks(
             entries.retain(|entry| !is_dock_managed_hook(entry, hook));
         }
     }
-    hooks.retain(|_, value| match value.as_array() {
-        Some(entries) => !entries.is_empty(),
-        None => true,
-    });
+    retain_nonempty_hook_arrays(hooks);
 }
 
 fn is_dock_managed_hook(entry: &Value, hook: &Path) -> bool {
@@ -1330,14 +1188,103 @@ fn cursor_unbounded_events() -> &'static [&'static str] {
     &["sessionStart", "afterAgentResponse", "stop", "sessionEnd"]
 }
 
-fn connection_method_for(name: &str) -> Option<ConnectionMethod> {
-    match name {
-        "claude" => Some(ConnectionMethod::ClaudeHook),
-        "grok" => Some(ConnectionMethod::GrokHook),
-        "codex" => Some(ConnectionMethod::CodexHook),
-        "cursor" => Some(ConnectionMethod::CursorHook),
-        _ => None,
+fn cursor_hook_entry(hook: &Path, spec: &HookSpec) -> Value {
+    let mut entry = serde_json::Map::new();
+    entry.insert("command".to_owned(), json!(hook.to_string_lossy().as_ref()));
+    entry.insert("timeout".to_owned(), json!(5));
+    if let Some(matcher) = spec.matcher {
+        entry.insert("matcher".to_owned(), json!(matcher));
     }
+    if cursor_unbounded_events()
+        .iter()
+        .any(|name| name == &spec.event)
+    {
+        entry.insert("loop_limit".to_owned(), Value::Null);
+    }
+    Value::Object(entry)
+}
+
+fn connection_method_for(name: &str) -> Option<ConnectionMethod> {
+    hook_agent_named(name).map(|agent| agent.method)
+}
+
+#[derive(Clone, Copy)]
+enum HookLayout {
+    Nested { backup: &'static str },
+    GrokFile,
+    Cursor,
+}
+
+#[derive(Clone, Copy)]
+struct HookAgent {
+    name: &'static str,
+    method: ConnectionMethod,
+    layout: HookLayout,
+}
+
+impl HookAgent {
+    fn specs(self) -> &'static [HookSpec] {
+        match self.method {
+            ConnectionMethod::ClaudeHook => claude_hook_specs(),
+            ConnectionMethod::GrokHook => grok_hook_specs(),
+            ConnectionMethod::CodexHook => codex_hook_specs(),
+            ConnectionMethod::CursorHook => cursor_hook_specs(),
+            ConnectionMethod::Wrapper => &[],
+        }
+    }
+
+    fn backup_name(self) -> Option<&'static str> {
+        match self.layout {
+            HookLayout::Nested { backup } => Some(backup),
+            HookLayout::Cursor => Some("hooks.json.orbcue.bak"),
+            HookLayout::GrokFile => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self.name {
+            "claude" => "Claude",
+            "grok" => "Grok",
+            "codex" => "Codex",
+            "cursor" => "Cursor",
+            other => other,
+        }
+    }
+}
+
+const HOOK_AGENTS: &[HookAgent] = &[
+    HookAgent {
+        name: "claude",
+        method: ConnectionMethod::ClaudeHook,
+        layout: HookLayout::Nested {
+            backup: "settings.json.orbcue.bak",
+        },
+    },
+    HookAgent {
+        name: "grok",
+        method: ConnectionMethod::GrokHook,
+        layout: HookLayout::GrokFile,
+    },
+    HookAgent {
+        name: "codex",
+        method: ConnectionMethod::CodexHook,
+        layout: HookLayout::Nested {
+            backup: "hooks.json.orbcue.bak",
+        },
+    },
+    HookAgent {
+        name: "cursor",
+        method: ConnectionMethod::CursorHook,
+        layout: HookLayout::Cursor,
+    },
+];
+
+fn hook_agent(method: ConnectionMethod) -> Option<&'static HookAgent> {
+    HOOK_AGENTS.iter().find(|agent| agent.method == method)
+}
+
+fn hook_agent_named(name: &str) -> Option<&'static HookAgent> {
+    HOOK_AGENTS.iter().find(|agent| agent.name == name)
 }
 
 fn unsupported_connect_name(name: &str) -> String {
@@ -1358,13 +1305,7 @@ fn hook_path(config_dir: &Path, name: &str) -> PathBuf {
 }
 
 fn current_hook_script(config_dir: &Path, method: ConnectionMethod) -> Option<PathBuf> {
-    match method {
-        ConnectionMethod::ClaudeHook => Some(hook_path(config_dir, "claude")),
-        ConnectionMethod::GrokHook => Some(hook_path(config_dir, "grok")),
-        ConnectionMethod::CodexHook => Some(hook_path(config_dir, "codex")),
-        ConnectionMethod::CursorHook => Some(hook_path(config_dir, "cursor")),
-        ConnectionMethod::Wrapper => None,
-    }
+    hook_agent(method).map(|agent| hook_path(config_dir, agent.name))
 }
 
 fn hook_script(dock_binary: &Path, provider: &str) -> String {
@@ -1397,9 +1338,9 @@ fn install_grok_hooks(hooks_path: &Path, hook: &Path) -> Result<(), String> {
         }
     }
     let mut hooks = serde_json::Map::new();
-    for spec in grok_hook_specs() {
-        hooks.insert(spec.event.to_owned(), json!([dock_hook_group(hook, spec)]));
-    }
+    upsert_hook_events(&mut hooks, grok_hook_specs(), hook, |spec| {
+        dock_hook_group(hook, spec)
+    })?;
     let document = json!({
         "name": "orbcue",
         "hooks": hooks

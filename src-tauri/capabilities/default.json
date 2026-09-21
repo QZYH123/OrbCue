@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities required by the local Dock windows",
+  "description": "Capabilities required by the OrbCue windows",
   "windows": ["ball", "panel"],
   "permissions": [
     "core:default",

@@ -73,14 +73,7 @@ impl WindowsTerminalAdapter {
 }
 
 fn execute_plan(plan: &SpawnPlan) -> Result<(), String> {
-    if launch_via_windows_shell(&plan.program) {
-        return launch_wt_via_wscript(plan);
-    }
-    run_process(&plan.program, &plan.args)
-}
-
-fn run_process(program: &Path, args: &[String]) -> Result<(), String> {
-    match ProcessCommand::new(program).args(args).status() {
+    match ProcessCommand::new(&plan.program).args(&plan.args).status() {
         Ok(status) if status.success() => Ok(()),
         Ok(status) => Err(format!(
             "Windows Terminal 退出码 {}",
@@ -88,103 +81,6 @@ fn run_process(program: &Path, args: &[String]) -> Result<(), String> {
         )),
         Err(error) => Err(format!("无法启动 Windows Terminal（{}）", error)),
     }
-}
-
-/// Direct WSL exec of the WindowsApps `wt.exe` alias (2-byte MZ stub) flashes a
-/// console and often returns 0 without creating a tab. Launch from a Windows
-/// GUI host so the alias resolves, and pass `wsl.exe` as a Windows name.
-fn launch_via_windows_shell(wt: &Path) -> bool {
-    if cfg!(windows) {
-        return false;
-    }
-    let text = wt.to_string_lossy();
-    text.contains("WindowsApps")
-        || text.contains("/mnt/c/")
-        || text.contains("/mnt/C/")
-        || text.contains(":\\")
-}
-
-fn launch_wt_via_wscript(plan: &SpawnPlan) -> Result<(), String> {
-    let command = format!("wt.exe {}", wt_windows_command_line(&plan.args));
-    let vbs = format!(
-        "CreateObject(\"WScript.Shell\").Run {}, 0, False\n",
-        vbs_string_literal(&command)
-    );
-    let script = windows_temp_script("orbcue-wt", "vbs")?;
-    write_utf16_le_bom(&script, &vbs)?;
-    let windows_script = to_windows_path(&script);
-    let wscript = find_wscript()
-        .ok_or_else(|| "找不到 wscript.exe，无法从 WSL 启动 Windows Terminal".to_owned())?;
-    let result = run_process(&wscript, &["//nologo".to_owned(), windows_script]);
-    let _ = fs::remove_file(&script);
-    result
-}
-
-pub fn wt_windows_command_line(args: &[String]) -> String {
-    args.iter()
-        .map(|arg| windows_quote(arg))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-pub fn windows_quote(arg: &str) -> String {
-    if arg.is_empty() || arg.bytes().any(|byte| matches!(byte, b' ' | b'\t' | b'"')) {
-        format!("\"{}\"", arg.replace('"', "\\\""))
-    } else {
-        arg.to_owned()
-    }
-}
-
-fn vbs_string_literal(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
-}
-
-fn write_utf16_le_bom(path: &Path, text: &str) -> Result<(), String> {
-    let mut bytes = vec![0xFF, 0xFE];
-    for unit in text.encode_utf16() {
-        bytes.extend_from_slice(&unit.to_le_bytes());
-    }
-    fs::write(path, bytes).map_err(|error| format!("无法写入启动脚本：{error}"))
-}
-
-fn windows_temp_script(prefix: &str, ext: &str) -> Result<PathBuf, String> {
-    let name = format!("{}-{}.{}", prefix, std::process::id(), ext);
-    if let Some(temp) = windows_temp_dir() {
-        fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
-        return Ok(temp.join(name));
-    }
-    Ok(env::temp_dir().join(name))
-}
-
-fn windows_temp_dir() -> Option<PathBuf> {
-    if let Some(local) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
-        return Some(local.join("Temp"));
-    }
-    let user = env::var("USER")
-        .ok()
-        .or_else(|| env::var("USERNAME").ok())?;
-    let temp = PathBuf::from(format!("/mnt/c/Users/{user}/AppData/Local/Temp"));
-    temp.is_dir().then_some(temp)
-}
-
-fn to_windows_path(path: &Path) -> String {
-    if let Ok(output) = ProcessCommand::new("wslpath").arg("-w").arg(path).output() {
-        if output.status.success() {
-            let converted = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            if !converted.is_empty() {
-                return converted;
-            }
-        }
-    }
-    path.display().to_string()
-}
-
-fn find_wscript() -> Option<PathBuf> {
-    look_on_path("wscript.exe")
-        .or_else(|| existing_path(PathBuf::from("/mnt/c/Windows/System32/wscript.exe")))
-        .or_else(|| existing_path(PathBuf::from("/mnt/c/WINDOWS/Sysnative/wscript.exe")))
-        .or_else(|| existing_path(PathBuf::from("/mnt/c/WINDOWS/system32/wscript.exe")))
-        .or_else(|| existing_path(PathBuf::from(r"C:\Windows\System32\wscript.exe")))
 }
 
 pub struct SpawnPlan {
@@ -204,43 +100,57 @@ pub fn run_command(
     json_output: bool,
 ) -> i32 {
     match run_command_inner(agent, args, profile) {
-        Ok(started) => {
-            let closed_launcher = close_launcher_after_spawn(close);
-            if json_output {
-                println!(
-                    "{}",
-                    json!({
-                        "ok": true,
-                        "marker": started.marker,
-                        "title": started.title,
-                        "agent": started.agent,
-                        "profile": started.profile,
-                        "closed_launcher": closed_launcher,
-                    })
-                );
-            } else {
-                print!(
-                    "Started {} in Windows Terminal tab {}",
-                    started.agent, started.marker
-                );
-                if closed_launcher {
-                    print!("; closing this tab");
-                } else if close {
-                    print!("; current stdin is not a TTY, launcher tab kept");
-                }
-                println!();
-            }
-            0
-        }
-        Err(error) => {
-            if json_output {
-                println!("{}", json!({ "ok": false, "error": error }));
-            } else {
-                eprintln!("orb run: {error}");
-            }
-            1
-        }
+        Ok(started) => print_run_success(
+            &started,
+            close_launcher_after_spawn(close),
+            close,
+            json_output,
+        ),
+        Err(error) => print_run_error(&error, json_output),
     }
+}
+
+fn print_run_success(
+    started: &StartedTab,
+    closed: bool,
+    close_requested: bool,
+    json_output: bool,
+) -> i32 {
+    if json_output {
+        println!(
+            "{}",
+            json!({
+                "ok": true,
+                "marker": started.marker,
+                "title": started.title,
+                "agent": started.agent,
+                "profile": started.profile,
+                "closed_launcher": closed,
+            })
+        );
+    } else {
+        print_run_started(&started.agent, &started.marker, closed, close_requested);
+    }
+    0
+}
+
+pub(crate) fn print_run_started(agent: &str, marker: &str, closed: bool, close_requested: bool) {
+    print!("Started {agent} in Windows Terminal tab {marker}");
+    if closed {
+        print!("; closing this tab");
+    } else if close_requested {
+        print!("; current stdin is not a TTY, launcher tab kept");
+    }
+    println!();
+}
+
+pub(crate) fn print_run_error(error: &str, json_output: bool) -> i32 {
+    if json_output {
+        println!("{}", json!({ "ok": false, "error": error }));
+    } else {
+        eprintln!("orb run: {error}");
+    }
+    1
 }
 
 pub fn close_launcher_after_spawn(requested: bool) -> bool {
@@ -306,13 +216,7 @@ fn run_command_inner(
         profile: profile.clone(),
         inner,
     };
-    let plan = adapter.spawn(&request)?;
-    Ok(StartedTab {
-        agent: agent.to_owned(),
-        marker,
-        title: plan.title,
-        profile,
-    })
+    started_tab(adapter, request, agent.to_owned(), marker, profile)
 }
 
 pub fn prepare_wsl_run(
@@ -356,12 +260,28 @@ pub fn spawn_from_wsl_spec(spec: &WslRunSpec) -> Result<StartedTab, String> {
             run_script: PathBuf::from(&spec.run_script),
         }),
     };
+    started_tab(
+        adapter,
+        request,
+        spec.agent.clone(),
+        spec.marker.clone(),
+        spec.profile.clone(),
+    )
+}
+
+fn started_tab(
+    adapter: WindowsTerminalAdapter,
+    request: SpawnRequest,
+    agent: String,
+    marker: String,
+    profile: Option<String>,
+) -> Result<StartedTab, String> {
     let plan = adapter.spawn(&request)?;
     Ok(StartedTab {
-        agent: spec.agent.clone(),
-        marker: spec.marker.clone(),
+        agent,
+        marker,
         title: plan.title,
-        profile: spec.profile.clone(),
+        profile,
     })
 }
 
@@ -379,35 +299,8 @@ pub fn run_from_wsl_stdin(json_output: bool) -> i32 {
         }
     };
     match spawn_from_wsl_spec(&spec) {
-        Ok(started) => {
-            if json_output {
-                println!(
-                    "{}",
-                    json!({
-                        "ok": true,
-                        "marker": started.marker,
-                        "title": started.title,
-                        "agent": started.agent,
-                        "profile": started.profile,
-                        "closed_launcher": false,
-                    })
-                );
-            } else {
-                println!(
-                    "Started {} in Windows Terminal tab {}",
-                    started.agent, started.marker
-                );
-            }
-            0
-        }
-        Err(error) => {
-            if json_output {
-                println!("{}", json!({ "ok": false, "error": error }));
-            } else {
-                eprintln!("orb run: {error}");
-            }
-            1
-        }
+        Ok(started) => print_run_success(&started, false, false, json_output),
+        Err(error) => print_run_error(&error, json_output),
     }
 }
 
@@ -867,8 +760,7 @@ mod tests {
     use super::{
         allocate_dock_marker, choose_wt_profile, inner_script, native_inner_args,
         posix_single_quote, resolve_agent_with, run_agent_label_for, should_close_launcher,
-        spawn_plan, windows_quote, wt_windows_command_line, InnerCommand, NativeInner,
-        SpawnRequest, WslInner, CURSOR_EDITOR_ON_PATH,
+        spawn_plan, InnerCommand, NativeInner, SpawnRequest, WslInner, CURSOR_EDITOR_ON_PATH,
     };
     use orbcue_connect::ConnectionManager;
     use orbcue_core::{dock_terminal_marker, DOCK_MARKER_HEX_LEN};
@@ -983,19 +875,6 @@ mod tests {
             "script uses newlines so WT never sees ';': {script}"
         );
         assert_eq!(posix_single_quote("it's"), "'it'\\''s'");
-        assert_eq!(windows_quote("nt"), "nt");
-        assert_eq!(
-            windows_quote("grok · dock — orb:ab12cd"),
-            "\"grok · dock — orb:ab12cd\""
-        );
-        let line = wt_windows_command_line(&[
-            "-w".to_owned(),
-            "0".to_owned(),
-            "nt".to_owned(),
-            "--title".to_owned(),
-            "grok · app — orb:ab12cd".to_owned(),
-        ]);
-        assert_eq!(line, "-w 0 nt --title \"grok · app — orb:ab12cd\""); // quoting only
     }
 
     #[test]

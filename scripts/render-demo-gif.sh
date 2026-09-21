@@ -12,7 +12,7 @@ trap 'rm -rf "$tmp"; if [[ -n "${vite_pid:-}" ]]; then kill "$vite_pid" 2>/dev/n
 
 started_vite=0
 if ! curl -sf -o /dev/null --max-time 1 "$base/"; then
-  npm --prefix "$root/frontend" run dev -- --host 127.0.0.1 --port 1420 >/tmp/orbcue-demo-vite.log 2>&1 &
+  npm --prefix "$root/frontend" run dev -- --host 127.0.0.1 --port 1420 >"$tmp/vite.log" 2>&1 &
   vite_pid=$!
   started_vite=1
   for _ in $(seq 1 50); do

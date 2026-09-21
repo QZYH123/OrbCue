@@ -5,7 +5,6 @@ export interface SessionLike {
   source: string;
   session_id: string;
   project_path?: string | null;
-  window_title?: string | null;
   terminal_id?: string | null;
 }
 
@@ -101,6 +100,10 @@ export function auditProjectLabel(entry: Pick<AuditEntry, 'project_path'>): stri
 
 export function sessionDomKey(session: SessionLike): string {
   return `${session.source}\0${session.session_id}\0${session.terminal_id ?? ''}`;
+}
+
+export function unreadCount(sessions: Array<{ acknowledged: boolean }>): number {
+  return sessions.filter((session) => !session.acknowledged).length;
 }
 
 export function presentSessionSections<T extends SessionLike>(

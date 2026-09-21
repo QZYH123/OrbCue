@@ -1,11 +1,13 @@
-//! Put Dock's CLI directory on the current user's PATH.
+//! Put OrbCue's CLI directory on the current user's PATH.
 //!
-//! Shell profile snippets still exist for Unix. Windows cmd / PowerShell pick
-//! up new terminals from the user Environment key, not from a profile file.
+//! New connects do not write shell profile snippets. Disconnect still strips
+//! leftover orbcue / agent-activity-dock PATH blocks. Windows cmd / PowerShell
+//! pick up new terminals from the user Environment key.
 
 use std::path::{Path, PathBuf};
 
-pub fn merge_path_entries(
+#[cfg(any(test, windows))]
+pub(crate) fn merge_path_entries(
     existing: &str,
     dir: &str,
     separator: char,
@@ -24,6 +26,7 @@ pub fn merge_path_entries(
     Some(format!("{dir}{separator}{existing}"))
 }
 
+#[cfg(any(test, windows))]
 fn path_contains(existing: &str, dir: &str, separator: char, ignore_case: bool) -> bool {
     existing.split(separator).any(|part| {
         let part = trim_path_entry(part);
@@ -35,11 +38,12 @@ fn path_contains(existing: &str, dir: &str, separator: char, ignore_case: bool) 
     })
 }
 
+#[cfg(any(test, windows))]
 fn trim_path_entry(value: &str) -> &str {
     value.trim().trim_matches('"').trim_end_matches(['/', '\\'])
 }
 
-pub fn default_windows_cli_dir() -> Option<PathBuf> {
+pub(crate) fn default_windows_cli_dir() -> Option<PathBuf> {
     orbcue_ipc::windows_app_data_dir().map(|dir| dir.join(orbcue_ipc::WINDOWS_APP_FOLDER))
 }
 
@@ -132,7 +136,7 @@ pub fn read_user_path() -> Option<String> {
     }
 }
 
-pub fn ensure_dir_on_user_path(dir: &Path) -> Result<bool, String> {
+pub(crate) fn ensure_dir_on_user_path(dir: &Path) -> Result<bool, String> {
     #[cfg(windows)]
     {
         windows_ensure_dir_on_user_path(dir)

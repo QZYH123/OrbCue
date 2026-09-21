@@ -29,11 +29,15 @@ pub fn orb_cmd() -> Command {
 pub fn isolated_env<'a>(command: &'a mut Command, root: &Path, socket: &Path) -> &'a mut Command {
     command
         .env("ORBCUE_SOCKET", socket)
-        .env("ORBCUE_BACKEND", "wsl")
+        .env("ORBCUE_BACKEND", "local")
         .env("XDG_STATE_HOME", root.join("state"))
         .env("HOME", root.join("home"))
         .env("ORBCUE_ORBD", root.join("missing-orbd"))
         .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("WSL_DISTRO_NAME")
+        .env_remove("WSL_INTEROP")
+        .env_remove("ORBCUE_WINDOWS_ORB")
+        .env_remove("ORBCUE_HOP")
 }
 
 pub fn run_orb_hook(
@@ -52,7 +56,9 @@ pub fn run_orb_hook(
         .env("ORBCUE_ORBD", root.join("missing-orbd"))
         .env_remove("XDG_RUNTIME_DIR")
         .env_remove("ORBCUE_HOP")
-        .env_remove("ORBCUE_FORWARD")
+        .env_remove("WSL_DISTRO_NAME")
+        .env_remove("WSL_INTEROP")
+        .env_remove("ORBCUE_WINDOWS_ORB")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

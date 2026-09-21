@@ -227,7 +227,6 @@ fn attentive_event(source: &str, session_id: &str, kind: EventKind, payload: &Va
         EventKind::PermissionRequested | EventKind::WaitingInput
     ) {
         event.severity = Severity::Attention;
-        event.requires_user_action = Some(true);
     }
     event
 }

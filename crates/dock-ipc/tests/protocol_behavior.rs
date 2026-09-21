@@ -21,7 +21,8 @@ fn queries_are_explicit_and_oversized_frames_are_rejected() {
     let request = parse_request(br#"{"query":"snapshot"}"#).unwrap();
     assert!(matches!(request, IpcRequest::Snapshot));
 
-    let request = parse_request(br#"{"query":"reset","source":"claude","task_id":"s1"}"#).unwrap();
+    let request =
+        parse_request(br#"{"query":"reset","source":"claude","session_id":"s1"}"#).unwrap();
     assert!(matches!(
         request,
         IpcRequest::Reset { source, session_id, terminal_id: None }
@@ -50,7 +51,6 @@ fn snapshot_view_contains_stable_display_fields() {
         }],
     });
     assert_eq!(view.count_label, "2/3");
-    assert_eq!(view.border_state, "working");
     assert_eq!(view.audit.len(), 1);
     assert_eq!(view.audit[0].session_id, "s1");
 }

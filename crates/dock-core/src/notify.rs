@@ -91,6 +91,10 @@ pub enum AttentionClickFollowup {
 
 /// Toast click looks up the live session so jump-back can use `orb:` / deep_link.
 /// A vanished session only opens the panel.
+///
+/// Match is conversation-level (`source` + `session_id`). If two processes
+/// resumed the same chat, the first list row wins; toast extras do not carry
+/// a terminal instance.
 pub fn attention_jump(
     sessions: &[AttentionJump],
     source: &str,
@@ -285,6 +289,18 @@ mod tests {
     fn toast_click_opens_panel_when_the_session_is_gone() {
         let sessions = [jump("claude", "s1", Some("orb:ab12cd"))];
         assert_eq!(attention_jump(&sessions, "claude", "missing"), None);
+    }
+
+    #[test]
+    fn toast_click_picks_the_first_row_of_a_resumed_conversation() {
+        let sessions = [
+            jump("grok", "resume-id", Some("term-a")),
+            jump("grok", "resume-id", Some("term-b")),
+        ];
+        assert_eq!(
+            attention_jump(&sessions, "grok", "resume-id"),
+            Some(jump("grok", "resume-id", Some("term-a")))
+        );
     }
 
     #[test]

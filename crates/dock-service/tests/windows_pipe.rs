@@ -51,7 +51,7 @@ fn attach_or_listen_attaches_to_an_existing_named_pipe() {
     let service = spawn(&path).unwrap();
     let session = attach_or_listen(&path, state_path(&path), None).unwrap();
     assert!(!session.owns_daemon());
-    assert_eq!(session.kind(), "remote");
+    assert!(!session.owns_daemon());
 
     let started = send(
         &path,
@@ -73,7 +73,7 @@ fn attach_or_listen_listens_when_the_named_pipe_is_empty() {
     let state = state_path(&path);
     let session = attach_or_listen(&path, &state, None).unwrap();
     assert!(session.owns_daemon());
-    assert_eq!(session.kind(), "owned");
+    assert!(session.owns_daemon());
 
     let started = send(
         &path,

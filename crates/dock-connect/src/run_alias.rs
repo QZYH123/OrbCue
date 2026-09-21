@@ -303,10 +303,10 @@ mod tests {
             "sh: /home/u/.local/bin/orb: not found"
         ));
         assert!(super::wsl_side_is_absent(
-            "WSL orb bridge failed (exit status: 127): sh: /home/u/.local/bin/orb: not found"
+            "WSL orb failed (exit status: 127): sh: /home/u/.local/bin/orb: not found"
         ));
         assert!(super::wsl_side_is_absent(
-            "WSL orb bridge failed (exit status: 127)"
+            "WSL orb failed (exit status: 127)"
         ));
         assert!(super::wsl_side_is_absent(
             "/home/u/.local/bin/orb: command not found"
@@ -314,13 +314,13 @@ mod tests {
         assert!(super::wsl_side_is_absent(
             "bash: /home/u/.local/bin/orb: No such file or directory"
         ));
-        assert!(!super::wsl_side_is_absent("invalid orb bridge response"));
+        assert!(!super::wsl_side_is_absent("invalid WSL orb response"));
     }
 
     #[test]
     fn real_wsl_dock_failures_are_not_treated_as_absent() {
         assert!(!super::wsl_side_is_absent(
-            "WSL orb bridge failed (exit status: 1). Is `$HOME/.local/bin/orb` installed inside WSL?"
+            "WSL orb failed (exit status: 1). Is `$HOME/.local/bin/orb` installed inside WSL?"
         ));
         assert!(!super::wsl_side_is_absent("session not found"));
         assert!(!super::wsl_side_is_absent("profile not found"));

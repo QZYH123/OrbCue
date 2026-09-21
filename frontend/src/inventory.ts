@@ -21,7 +21,7 @@ export function wslDockErrorBanner(inventory: AgentInventory): string | null {
   if (!raw) {
     return null;
   }
-  return `WSL 侧 dock 未就绪：${raw}`;
+  return `WSL 侧 orb 未就绪：${raw}`;
 }
 
 /** Agents whose CLI command differs from the agent name shown in the UI. */

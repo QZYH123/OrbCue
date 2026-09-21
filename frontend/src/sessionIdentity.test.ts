@@ -9,6 +9,7 @@ import {
   presentAuditRows,
   presentSessionSections,
   sessionDomKey,
+  unreadCount,
 } from './sessionIdentity';
 
 describe('folderName', () => {
@@ -35,10 +36,23 @@ describe('displayAgent', () => {
 });
 
 describe('sessionDomKey', () => {
-  it('keeps two resumes of the same session distinct', () => {
+  it('keeps two resumes of the same session distinct for per-row jump feedback', () => {
     const first = { source: 'grok', session_id: 'resume-id', terminal_id: 'term-a' };
     const second = { source: 'grok', session_id: 'resume-id', terminal_id: 'term-b' };
     expect(sessionDomKey(first)).not.toBe(sessionDomKey(second));
+  });
+});
+
+describe('unreadCount', () => {
+  it('counts unacknowledged rows, not non-working sessions', () => {
+    expect(
+      unreadCount([
+        { acknowledged: true },
+        { acknowledged: false },
+        { acknowledged: true },
+      ]),
+    ).toBe(1);
+    expect(unreadCount([{ acknowledged: true }, { acknowledged: true }])).toBe(0);
   });
 });
 
@@ -174,7 +188,6 @@ describe('presentSessionSections', () => {
         source: 'cursor',
         session_id: 'x1',
         project_path: null,
-        window_title: 'Windows Terminal - notes',
       },
     ]);
     expect(sections[0]?.label).toBe('其他');

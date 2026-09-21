@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 fn isolate<'a>(command: &'a mut Command, root: &Path, socket: &Path) -> &'a mut Command {
     command
         .env("ORBCUE_SOCKET", socket)
-        .env("ORBCUE_BACKEND", "wsl")
+        .env("ORBCUE_BACKEND", "local")
+        .env_remove("WSL_DISTRO_NAME")
+        .env_remove("WSL_INTEROP")
+        .env_remove("ORBCUE_WINDOWS_ORB")
         .env("XDG_STATE_HOME", root.join("state"))
         .env("HOME", root.join("home"))
         .env("ORBCUE_ORBD", root.join("missing-orbd"))

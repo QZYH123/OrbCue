@@ -4,14 +4,9 @@
 
 ## Transport
 
-当前实现使用当前用户的本地 IPC，newline-delimited JSON，每个普通请求一行、一个连接。Unix 使用 domain socket；Windows 使用 named pipe。Win+WSL presenter 默认对本机 named pipe `attach_or_listen`；WSL `orb` 把事件/`status`/`up` trampoline 到 `orb.exe`。`ORBCUE_BACKEND=wsl` 回滚到 `wsl.exe orb bridge`（**已冻结**，后续版本删除，不要新依赖）。先装带 hop 的 WSL shim 再装 listen named pipe 的 presenter；旧 shim 加新 presenter listen 会裂脑。项目路径仍按发送侧原样写入 `state.json`（WSL 路径迁到 Windows 文件后不做盘符翻译）。路径/名称按以下规则决定：
+当前用户本机 IPC：一行一个 JSON 请求。Windows 命名管道，Unix domain socket。桌面进程对本机管道 `attach_or_listen`；WSL `orb` 把事件/`status`/`up` trampoline 到 `orb.exe`。`ORBCUE_BACKEND=wsl` 已删除。不监听 TCP/UDP。
 
-1. `ORBCUE_SOCKET`
-2. Windows：`\\.\\pipe\\orbcue`
-3. Unix：`$XDG_RUNTIME_DIR/orbcue/orbcue.sock`
-4. Unix fallback：`~/.local/state/orbcue/orbcue.sock`
-
-请求行最大 16 KiB。服务端先限制大小，再解析 JSON；错误、超大或未知请求不会改变状态。Windows named pipe 不监听 TCP/UDP 网络端口，仍只供当前用户本机服务使用。
+端点：`ORBCUE_SOCKET` → Windows `\\.\pipe\orbcue` → Unix `$XDG_RUNTIME_DIR/orbcue/orbcue.sock` → `~/.local/state/orbcue/orbcue.sock`。请求最大 16 KiB；先限大小再解析。非法、超大或未知请求不改状态。路径按发送侧原样写入 `state.json`，不做盘符翻译。
 
 ## Event
 
@@ -30,7 +25,6 @@
   "workspace_root": "/home/user/project",
   "parent_session_id": "optional-parent-session",
   "terminal_id": "optional-terminal-identity",
-  "requires_user_action": false,
   "metadata": {"workspace": "optional-bounded-value"}
 }
 ```
@@ -39,22 +33,22 @@
 
 可选 `cwd` / `workspace_root`，以及 metadata 同义键 `workspaceRoot`、`workspace_root`、`cwd`；空字符串视为缺失。路径只使用这些明确字段，不会读取磁盘或进程工作目录。路径按发送侧原样保存，不做 WSL ↔ Windows 翻译。
 
-可选 `parent_session_id` 标记子代理事件，长度上限与 `session_id` 相同（256 字节）；空字符串视为缺失。带 parent 的事件永不创建独立会话，也不进入 `sessions` 计数。`waiting_input` / `permission_requested` / `failed` 在父会话（`source` + `parent_session_id`）存在时折叠为父会话的 attention / failed 标记，并复用已有 attention 去重。父会话不存在，或其他事件类型，一律 accepted 且无副作用。
+可选 `parent_session_id`（上限同 `session_id`，空串视为缺失）。带 parent 的事件永不创建独立会话、不进计数。仅 `waiting_input` / `permission_requested` / `failed` 在父会话（`source` + `parent_session_id`）存在时折叠到父会话；其它情况 accepted、无副作用。
 
-可选 `terminal_id` 标识同一用户终端，长度上限 128 字节；空字符串视为缺失。`orb` CLI 在 hook 与 `start`/`complete` 等事件命令上自动附加，所有平台同一顺序：`ORBCUE_TERMINAL_ID` 显式覆盖（设成空串则省略、不再探测）→ 自身 tty（Unix `ttyname(stderr/stdin)` 再 `/dev/tty`）→ **祖先进程 tty**（Linux 沿 `/proc/<pid>/stat` 的 ppid 最多向上 10 级，读 fd 0/1/2 的 readlink 或 stat 第 7 字段 `tty_nr`，再经 `ttyname` 规范成与自身 tty 相同的 `/dev/pts/N` 形式）→ `WT_SESSION`（仅 Windows；Unix/WSL 忽略，避免同一窗口里多个标签被合成一条）。同一终端里 wrapper 与 setsid hook 必须落到同一个设备路径才能互相顶替。`started` / `working` / `idle` 且无 `parent_session_id` 的事件若带 `terminal_id` T，**仅当该 `source`+`session_id` 尚不在列表里**时，才移除同一 T 下的其他会话（跨 source，用于 `/clear` 一类旧关新开；移除记入 audit）。例外：若 T 上已有带 `project_path` 且状态为 working / needs_attention 的会话，而新事件没有项目路径，则不顶替也不建新行，避免 Grok 还在跑时终端里嵌套的 `codex --version` 一类短命令抢行；后续对该新 session 的 `completed` 也没有会话可更新。已有会话后续的 idle/working 不再赶走其他会话，避免同项目里关一个被当成全关。既无显式 `terminal_id`、也无完整 liveness 的事件和会话不受顶替影响。事件没有 `terminal_id` 但带完整 hook liveness 时，状态机写入 `live:{pid}:{starttime}`：手开会话按进程区分，面板「清除」只去掉点的那条，同进程新会话仍可顶替。显式 tty / WT / `orb:` 优先，不被 liveness 覆盖。带 parent 的事件永不触发顶替。`state.json` 会保存 `terminal_id` 和 `project_path`，缺省字段的旧文件仍可读取。摘要和窗口标题不写入状态文件。
+可选 `terminal_id`（上限 128 字节，空串视为缺失）。CLI 在 hook 与 `start`/`complete` 等命令上按此顺序附加：`ORBCUE_TERMINAL_ID`（空串则省略）→ 自身 tty → Linux 祖先进程 tty（最多 10 级）→ `WT_SESSION`（仅 Windows）。无 parent 的 `started` / `working` / `idle` 若带 T，且该 `source`+`session_id` 尚不在列表里，则移除同一 T 上其它会话。例外：T 上已有带 `project_path` 且为 working / needs_attention 的会话，而新事件没有项目路径 → 不顶替、不建行。后续 idle/working 不再赶走其它会话。无显式 `terminal_id` 但有完整 hook liveness 时，写入 `live:{pid}:{starttime}`。显式 tty / WT / `orb:` 优先。带 parent 的事件不顶替。`state.json` 保存 `terminal_id` 和 `project_path`；摘要不落盘。
 
-同一条 CLI 事件路径上，无 parent 的 `started` / `working` / `idle` / `completed` / `failed` / `waiting_input` / `permission_requested` 还会把标题写成 `{项目路径末段} · {source}`（无路径时只写 `{source}`）。若 `terminal_id` 是 `orb:` 标记，则写成 `{项目路径末段} · {source} · {marker}`（无路径时 `{source} · {marker}`），避免后续 OSC 把编号盖掉。末段算法与 `project_path_hint` 同源。标题写入是尽力而为：部分 WSL→Windows Terminal 组合不转发 OSC 标题（实测存在标签标题恒为配置名、任何写入都不生效的环境），自己重写标题的 TUI 也会覆盖它；标题写入不是跳回前提。Unix 先向 `/dev/tty` 写 OSC `\x1b]0;…\x07`；没有控制终端但祖先 tty 存在时，以 `O_WRONLY|O_NOCTTY` 打开该 pts 写同一序列。Windows `orb.exe` 调用 `SetConsoleTitleW`。`ORBCUE_NO_TITLE=1` 完全跳过；写失败静默忽略，不影响事件投递和退出码。
+无 parent 的生命周期事件会尽力写终端标题 `{项目末段} · {source}`，`orb:` 标记再追加。Unix 写 OSC，Windows 调 `SetConsoleTitleW`。`ORBCUE_NO_TITLE=1` 跳过。写失败不影响事件。标题不是跳回前提。
 
-面板「回去」按以下阶梯，只在用户点击时执行，不做状态推断：
+面板「回去」只在用户点击时执行：
 
-1. **精确（deep_link）**：会话带 `deep_link` 时打开该链接。
-2. **精确（orb 标签）**：`terminal_id` 形如 `orb:` + 6 位十六进制时，按窗口标题含该标记聚焦；活动标签未命中则用 UI Automation 按 TabItem 名切换。找不到则报找不到窗口。`orb run` 用 `wt.exe nt --profile {当前 WT_PROFILE_ID} --title "{项目} · {agent} · {marker}"` 创建标签，并加 `--suppressApplicationTitle`。内部命令与 WT 命令行分开：WSL inner 仍是 `wsl.exe -d … --cd … -- shell -l script`；纯 Windows inner 是 `--startingDirectory` + `--env ORBCUE_TERMINAL_ID=` + Windows 可执行文件。`BACKEND=local` 时 WSL `orb run` 把准备好的 spec 交给 `orb.exe run --from-wsl`，Windows 侧不再 `resolve_agent`。默认不关启动页；设置「启动时替换当前标签页」或 `orb run --close` 时，仅在新标签启动成功且 stdin 是交互式 TTY 时向父 shell 发 SIGHUP。WSL 内经 OSC 改标题在常见 Win+WSL 环境会被中继吞掉，不能当作跳回通道；手开标签的标题通常仍是配置文件名。`--profile` 只影响新标签的外观/配置文件，不改变命令行（仍跑 orb 的启动脚本）。
-3. **窗口级兜底**：使用 presenter 在新会话或转入 working 时捕获的前台终端 HWND。使用前校验窗口仍存在且仍是终端类；否则删除记录并继续降级。成功时前端标明「已回到最近交互的窗口」，不冒充标签级精确。
-4. **诚实失败**：以上都不可用时报「找不到该会话的窗口」，并提示用 `orb run` 获得精确跳回。不再按项目名末段或 `source` 子串做模糊标题级联（在标题恒为发行版名的环境里只会误报）。
+1. `deep_link`
+2. `terminal_id` 为 `orb:` + 6 位十六进制 → 按标题/标签名聚焦（由 `orb run` 建立；造标细节见 [how-it-works.md](how-it-works.md)）
+3. 新主会话或转入 working 时捕获的前台终端 HWND（仍在且仍是终端才用；不冒充标签级精确）
+4. 否则报找不到窗口，并提示 `orb run`。不按项目名或 `source` 子串模糊匹配
 
-浏览器窗口不参与。捕获决策本身不变：只在新主会话或转入 working 时记录当时的前台终端窗口。
+浏览器窗口不参与。
 
-可选 liveness metadata（仅 hook 路径写入，`orb start`/`complete` 不写）：`agent_os`（`linux` 或 `windows`）、`agent_pid`、`agent_starttime`（Linux `/proc/<pid>/stat` 字段 22，或 Windows `GetProcessTimes` FILETIME）、可选 `agent_wsl_distro`（仅 `WSL_DISTRO_NAME` 非空时）。三项 os+pid+starttime 齐全才合并进会话；缺一则忽略整组。`completed` / `closed` / `failed` / `cancelled` 不写 liveness。已有 os+pid+starttime 不被后来不同的 PID 覆盖，避免 Stop 钩子把短命 hook 壳当成 agent。`orb hook --detach` 在父进程仍挂在 agent 树上时快照 tty 与活性，写入子进程的 `ORBCUE_TERMINAL_ID` / `ORBCUE_AGENT_PID` / `ORBCUE_AGENT_STARTTIME`；否则 WSL 上父进程退出后子进程会被过继到发行版 `/init` Relay，状态机会把长寿命中继当成另一个还活着的进程，把同一会话开成第二行且永远收不掉。Linux 向上走父进程时跳过 `sh` / `dash` / `orb` 以及 WSL `Relay(` / `SessionLeader` / `init-systemd`，不把它们记成 agent。不进入面板 snapshot。GUI-OS daemon 每 15s 查询「是否仍是原进程」，死亡则发 `session.closed`（`event_id` 为 `orb-liveness-` + SHA-256 前 8 字节 hex；带该 PID 的 liveness metadata，只关闭对应那条）。不扫进程表，不因 HWND 消失删会话。
+Liveness 仅 hook 路径写入（`orb start`/`complete` 不写）：`agent_os`、`agent_pid`、`agent_starttime` 三项齐全才合并；可选 `agent_wsl_distro`。结束类事件不写。已有三元组不被后来不同的 PID 覆盖。`--detach` 必须在父进程仍挂在 agent 树上时快照 tty/活性。Linux 向上走父进程时跳过 `sh` / `dash` / `orb` 和 WSL `Relay(` / `SessionLeader` / `init-systemd`。不进 snapshot。daemon 每 15s 问「是否仍是原进程」，死亡则发 `session.closed`。不扫进程表，不因 HWND 消失删会话。
 
 大小限制：`event_id` / `terminal_id` 各 128 字节、`source` 64 字节、`session_id` / `parent_session_id` 各 256 字节、`summary` 512 字节、`deep_link` 2048 字节、`cwd` / `workspace_root` 各 256 字节、metadata 最多 32 项且 key/value 各 256 字节。
 
@@ -99,7 +93,6 @@
     "pending_count": 1,
     "pending_mark": "?",
     "count_label": "0/1",
-    "border_state": "idle",
     "sessions": [],
     "audit": []
   }
@@ -138,7 +131,7 @@ orb reset --source claude --session-id session-123
 | Claude | 结构化 hook payload | idle、working、permission、waiting、completed、failed、closed；`UserPromptSubmit` 标工作中；`PermissionRequest` 标授权；`PermissionDenied` 仅 auto mode 分类器拒绝时回到 working，**用户在授权框点 No 不发 hook**，会停在授权直到后续 `PostToolUse` 或 `Stop`；允许命令后 `PostToolUse`/`PostToolUseFailure` 回到 working；`Stop` 在仍有 background subagent 时保持 working，否则已完成；`SessionEnd` 为关闭（不是已完成）；带 parent 线索的子代理 permission/failed 可折叠，否则丢弃。不订阅通用 PreToolUse；仅 matcher `AskUserQuestion`：选择题 → waiting。`PostToolUse`/`PostToolUseFailure` 登记 `async: true`，不挡主循环。hook 是观察者，投递失败必须 exit 0 |
 | Codex | 结构化 hook payload，notification 仅作回退 | 与 Claude 同一套回合生命周期；`SessionStart`→idle，`UserPromptSubmit`→working，`PermissionRequest` 标授权；允许后 `PostToolUse` 回到 working。Codex **没有** `PermissionDenied` / `PostToolUseFailure`；用户点 deny 没有 follow-up hook，会停在授权直到后续 `PostToolUse` 或 `Stop`。`Stop` 在仍有 background subagent 时保持 working，否则已完成，`SessionEnd`→closed。无 `hook_event_name` 时仍接受旧 notification。不订阅通用 PreToolUse；仅 matcher `AskUserQuestion\|ask_user_question`。当前 Codex 运行时 PreToolUse 往往只打 Bash，选择题可能仍报不进来。打断有 `Interrupt` 事件但当前不订阅，Esc / 报错时会话可能停在 working，直到进程退出或用户 reset。`PostToolUse` 登记 `async: true`，不挡主循环。hook 是观察者，投递失败必须 exit 0 |
 | Cursor | 结构化 hook payload（`conversation_id` 可当 session） | 与 Claude 同一套回合生命周期；`sessionStart`→idle，`beforeSubmitPrompt`→working，`afterAgentResponse`/`stop`→已完成（`status=error`→failed，`aborted`→cancelled），`sessionEnd`→closed。不订阅 Pre/Post tool。`beforeShellExecution` 是每条命令的拦截闸门，不是「用户正在看授权框」；订阅它会把所有 shell 标成等待授权。Cursor 的 AskQuestion 走内部 InteractionQuery，不发 hook，选择题无法标 waiting。授权框本身也没有观察事件，允许/拒绝都看不到。偶尔不发结束事件，会话停在 working 直到进程退出。Cursor CLI（`agent` / `cursor-agent`）会加载 Claude Code 的 `~/.claude/settings.json` hook；Claude 钩子若由 Cursor CLI 进程唤起，source 标为 `cursor`，避免 `or agent` 被当成 Claude。hook 是观察者，投递失败必须 exit 0 |
-| Grok | 结构化 hook payload | idle、working、permission、waiting、completed、failed、closed；`UserPromptSubmit` 标工作中；`Notification permission_prompt` 标授权；`PermissionDenied`（用户点 deny / 规则拒绝）回到 working；`PostToolUse`/`PostToolUseFailure` 在允许命令后回到 working；`Stop end_turn` 仅在仍有 **status 为 running 的** background subagent 时保持 working，shell/monitor 挂起、已结束的 subagent 与空任务视为已完成；`Notification idle_prompt`/`task_complete` 同样已完成；带 `subagentType` 的 payload 仍丢弃。不订阅通用 PreToolUse（会挡住工具、且发生在授权提示之前）；仅 matcher `ask_user_question`：弹出选择题 → waiting。Grok 没有 `async` 字段，`PostToolUse`/`PostToolUseFailure` 用 `orb hook grok --detach` 后台投递（父进程快照 tty 与活性给子进程），Stop 仍同步。hook 是观察者：投递失败必须 exit 0，不得把 Grok `Stop` 变成闸门。生成的 hook 脚本必须 `exec orb`，否则 liveness 会把短命 hook 壳当成 agent，约 15s 后误发 `session.closed` |
+| Grok | 结构化 hook payload | idle、working、permission、waiting、completed、failed、closed；`UserPromptSubmit` 标工作中；`Notification permission_prompt` 标授权；`PermissionDenied`（用户点 deny / 规则拒绝）回到 working；`PostToolUse`/`PostToolUseFailure` 在允许命令后回到 working；`Stop end_turn` 仅在仍有 **status 为 running 的** background subagent 时保持 working，shell/monitor 挂起、已结束的 subagent 与空任务视为已完成；`Notification idle_prompt` 同样已完成（`task_complete` 不映射）；带 `subagentType` 的 payload 仍丢弃。不订阅通用 PreToolUse（会挡住工具、且发生在授权提示之前）；仅 matcher `ask_user_question`：弹出选择题 → waiting。Grok 没有 `async` 字段，`PostToolUse`/`PostToolUseFailure` 用 `orb hook grok --detach` 后台投递（父进程快照 tty 与活性给子进程），Stop 仍同步。hook 是观察者：投递失败必须 exit 0，不得把 Grok `Stop` 变成闸门。生成的 hook 脚本必须 `exec orb`，否则 liveness 会把短命 hook 壳当成 agent，约 15s 后误发 `session.closed` |
 
 连接页只接上表四个工具。其他工具不要走 wrapper：用 `orb start` / `orb waiting` / `orb complete` 发事件。
 

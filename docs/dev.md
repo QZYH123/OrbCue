@@ -13,7 +13,6 @@
 | 目标 | 额外依赖 |
 | --- | --- |
 | Windows 本机跑桌面 / 打 NSIS | WebView2（Windows 10/11 通常已有） |
-| Linux 上 `cargo check -p orbcue` | `libwebkit2gtk-4.1-dev`、`libgtk-3-dev`、`libayatana-appindicator3-dev`、`librsvg2-dev`、`pkg-config` |
 | 在 WSL / Linux 上交叉编译 Windows exe | `cargo-xwin`，以及 `rustup target add x86_64-pc-windows-msvc` |
 
 ## 仓库结构
@@ -24,7 +23,7 @@
 | `crates/dock-ipc` | 本机协议（Unix socket / Windows 命名管道） |
 | `crates/dock-service` | 本地状态服务，给桌面进程和无头模式用 |
 | `crates/dock-adapters` | 各工具的结构化 payload → Dock 事件 |
-| `crates/dock-connect` | 发现已装工具、写 hook / wrapper、PATH |
+| `crates/dock-connect` | 发现已装工具、写 hook；断开时清遗留 wrapper / PATH |
 | `crates/dock-cli` | `orb` 命令 |
 | `src-tauri` | Windows 桌面壳；默认就是状态服务 |
 | `frontend` | 小球和面板（Svelte 5） |
@@ -63,7 +62,7 @@ npm --prefix frontend run dev
 bash scripts/install-cli.sh
 ```
 
-编译并安装 `orb`、`orbd` 到 `~/.local/bin`（可用 `ORBCUE_BIN` 改目录）。这是开发路径，也是已冻结的 `ORBCUE_BACKEND=wsl` 回滚仍会用到的二进制。普通用户的 `orb` 由 Windows 桌面程序在首次启动时安装。
+编译并安装 `orb`、`orbd` 到 `~/.local/bin`（可用 `ORBCUE_BIN` 改目录）。这是开发路径。普通用户的 `orb` 由 Windows 桌面程序在首次启动时安装。
 
 ## 检查与测试
 
@@ -76,19 +75,13 @@ cargo fmt --all -- --check
 cargo test --workspace --exclude orbcue
 ```
 
-Tauri 包 `orbcue` 在 Linux 上需要 GTK/WebKit 才能编过。有系统库时再跑：
-
-```bash
-cargo check -p orbcue
-```
-
-在 Windows 上还可以：
+桌面壳只在 Windows 上编。CI 的 Linux job 不再 `cargo check -p orbcue`，也不打 deb/AppImage。在 Windows 上：
 
 ```bash
 npm run tauri -- build --debug --no-bundle
 ```
 
-CI 配置见 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)。frontend job 目前跑 `check` 和 `build`；本地改 UI 请额外跑 `npm --prefix frontend run test`。
+CI 配置见 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)。frontend job 跑 `check`、`test` 和 `build`。
 
 ## 构建 Windows 桌面程序
 
@@ -122,7 +115,7 @@ npm run tauri -- build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-
 
 Windows 桌面程序是唯一的状态服务：对本机 named pipe 做 `attach_or_listen`。WSL 里的 `orb` 把查询和事件转发给它。`connect`、`agents`、`run`、`alias` 在工具所在的系统上执行。
 
-同一用户不要同时跑两份 daemon。`ORBCUE_BACKEND=wsl` 曾把 daemon 放到 WSL，这是**已冻结的回滚**，后续版本会删；不要新依赖它，也不要和默认的 Windows presenter 同时开（裂脑）。不要在两条路径之间做静默探测切换。
+同一用户不要同时跑两份 daemon。`ORBCUE_BACKEND=wsl` 已删除。
 
 排「状态不更新」时先确认：当前 `orb` 连的是 Windows 命名管道，还是 WSL 的 socket；以及有没有残留的 `orbd`。
 
@@ -142,8 +135,8 @@ orb complete <session-id> --source <tool>
 
 ## 相关文档
 
+- [`docs/how-it-works.md`](how-it-works.md) — 事件怎么走到球上
 - [`docs/agents/domain.md`](agents/domain.md) — 术语与不可违反的边界
 - [`docs/event-contract.md`](event-contract.md) — 稳定集成契约
 - [`docs/adr/`](adr/) — 架构决策
 - [`docs/design-language.md`](design-language.md) — 界面约束
-- [`docs/agents/issue-tracker.md`](agents/issue-tracker.md) — 本地 ticket 入口

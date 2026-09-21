@@ -125,14 +125,10 @@ pub struct DockEvent {
     pub cwd: Option<String>,
     #[serde(default)]
     pub workspace_root: Option<String>,
-    #[serde(default)]
-    pub window_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_id: Option<String>,
-    #[serde(default)]
-    pub requires_user_action: Option<bool>,
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
 }
@@ -153,10 +149,8 @@ impl DockEvent {
             deep_link: None,
             cwd: None,
             workspace_root: None,
-            window_title: None,
             parent_session_id: None,
             terminal_id: None,
-            requires_user_action: None,
             metadata: BTreeMap::new(),
         }
     }
@@ -173,11 +167,6 @@ impl DockEvent {
 
     pub fn with_severity(mut self, severity: Severity) -> Self {
         self.severity = severity;
-        self
-    }
-
-    pub fn requiring_user_action(mut self, required: bool) -> Self {
-        self.requires_user_action = Some(required);
         self
     }
 
@@ -206,10 +195,7 @@ pub struct SessionSnapshot {
     #[serde(default)]
     pub project_path: Option<String>,
     #[serde(default)]
-    pub window_title: Option<String>,
-    #[serde(default)]
     pub terminal_id: Option<String>,
-    pub requires_user_action: bool,
     pub acknowledged: bool,
     pub occurred_at: String,
 }
@@ -238,10 +224,6 @@ pub struct AuditEntry {
 impl DockSnapshot {
     pub fn count_label(&self) -> String {
         format!("{}/{}", self.working_count, self.tracked_count)
-    }
-
-    pub fn is_working(&self) -> bool {
-        self.working_count > 0
     }
 }
 
@@ -273,7 +255,6 @@ pub struct PersistedSession {
     pub session_id: String,
     pub state: SessionState,
     pub attention_reason: Option<String>,
-    pub requires_user_action: bool,
     pub acknowledged: bool,
     pub occurred_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -307,8 +288,6 @@ struct SessionRecord {
     summary: Option<String>,
     deep_link: Option<String>,
     project_path: Option<String>,
-    window_title: Option<String>,
-    requires_user_action: bool,
     acknowledged: bool,
     occurred_at: String,
     terminal_id: Option<String>,
@@ -374,8 +353,6 @@ impl DockState {
                     summary: None,
                     deep_link: None,
                     project_path,
-                    window_title: None,
-                    requires_user_action: item.requires_user_action,
                     acknowledged: item.acknowledged,
                     occurred_at: item.occurred_at,
                     terminal_id,
@@ -396,7 +373,6 @@ impl DockState {
                 session_id: record.session_id.clone(),
                 state: record.state,
                 attention_reason: record.attention_reason.clone(),
-                requires_user_action: record.requires_user_action,
                 acknowledged: record.acknowledged,
                 occurred_at: record.occurred_at.clone(),
                 terminal_id: record.terminal_id.clone(),
@@ -600,11 +576,11 @@ impl DockState {
     }
 
     fn apply_idle(&mut self, key: &str, event: DockEvent) -> Option<Attention> {
-        self.apply_open(key, event, SessionState::Idle, true)
+        self.apply_open(key, event, SessionState::Idle)
     }
 
     fn apply_working(&mut self, key: &str, event: DockEvent) -> Option<Attention> {
-        self.apply_open(key, event, SessionState::Working, false)
+        self.apply_open(key, event, SessionState::Working)
     }
 
     fn apply_open(
@@ -612,16 +588,12 @@ impl DockState {
         key: &str,
         event: DockEvent,
         state: SessionState,
-        clear_user_action: bool,
     ) -> Option<Attention> {
         if let Some(record) = self.sessions.get_mut(key) {
             update_record(record, &event);
             record.state = state;
             record.attention_reason = None;
             record.acknowledged = true;
-            if clear_user_action {
-                record.requires_user_action = false;
-            }
             return None;
         }
         self.sessions
@@ -900,8 +872,6 @@ impl SessionRecord {
             summary: event.summary.clone(),
             deep_link: event.deep_link.clone(),
             project_path: resolve_project_path(event),
-            window_title: nonempty_path(event.window_title.as_deref()),
-            requires_user_action: event.requires_user_action.unwrap_or(false),
             acknowledged: reason.is_none(),
             occurred_at: event.occurred_at.clone(),
             terminal_id: terminal_id_from_event(event),
@@ -919,9 +889,7 @@ impl SessionRecord {
             summary: self.summary.clone(),
             deep_link: self.deep_link.clone(),
             project_path: self.project_path.clone(),
-            window_title: self.window_title.clone(),
             terminal_id: self.terminal_id.clone(),
-            requires_user_action: self.requires_user_action,
             acknowledged: self.acknowledged,
             occurred_at: self.occurred_at.clone(),
         }
@@ -933,12 +901,6 @@ fn update_record(record: &mut SessionRecord, event: &DockEvent) {
     record.deep_link = event.deep_link.clone().or_else(|| record.deep_link.clone());
     if let Some(path) = resolve_project_path(event) {
         record.project_path = Some(path);
-    }
-    if let Some(title) = nonempty_path(event.window_title.as_deref()) {
-        record.window_title = Some(title);
-    }
-    if let Some(required) = event.requires_user_action {
-        record.requires_user_action = required;
     }
     if let Some(terminal_id) = normalize_optional(&event.terminal_id) {
         record.terminal_id = Some(terminal_id.to_owned());
@@ -1106,10 +1068,6 @@ fn validate_event(event: &DockEvent) -> Option<String> {
             .is_some_and(|value| value.len() > MAX_METADATA_VALUE_LEN)
         || event
             .workspace_root
-            .as_ref()
-            .is_some_and(|value| value.len() > MAX_METADATA_VALUE_LEN)
-        || event
-            .window_title
             .as_ref()
             .is_some_and(|value| value.len() > MAX_METADATA_VALUE_LEN)
         || event.metadata.len() > MAX_METADATA_ITEMS

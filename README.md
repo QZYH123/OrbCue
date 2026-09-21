@@ -239,7 +239,7 @@ npm run tauri -- dev
 
 `npm --prefix frontend run dev` 只是浏览器里的界面预览（假数据），不是 OrbCue。
 
-完整说明见 [`docs/dev.md`](docs/dev.md)。术语与边界见 [`docs/agents/domain.md`](docs/agents/domain.md)，设计决策见 [`docs/adr/`](docs/adr/)。
+完整说明见 [`docs/dev.md`](docs/dev.md)。机制见 [`docs/how-it-works.md`](docs/how-it-works.md)。术语与边界见 [`docs/agents/domain.md`](docs/agents/domain.md)。
 
 ---
 

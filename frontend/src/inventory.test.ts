@@ -43,7 +43,7 @@ describe('inventory display', () => {
       wsl_error: 'wslpath failed (exit status: 1)',
     };
     expect(wslDockErrorBanner(withError)).toBe(
-      'WSL 侧 dock 未就绪：wslpath failed (exit status: 1)',
+      'WSL 侧 orb 未就绪：wslpath failed (exit status: 1)',
     );
     expect(wslDockErrorBanner(empty)).toBeNull();
     expect(wslDockErrorBanner({ discovered: [], connected: [], wsl_error: '  ' })).toBeNull();

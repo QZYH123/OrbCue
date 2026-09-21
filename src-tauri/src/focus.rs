@@ -39,6 +39,9 @@ impl FocusResult {
     }
 }
 
+/// HWND fallback is keyed by conversation (`source`, `session_id`), last
+/// writer wins. Two live resumes of the same chat are distinct list rows
+/// (reset/close/liveness), but jump-back does not treat that as a feature.
 static CAPTURED_HWNDS: Mutex<Option<HashMap<(String, String), isize>>> = Mutex::new(None);
 
 fn snapshot_views(sessions: &[SessionSnapshot]) -> Vec<CaptureSession> {
@@ -48,22 +51,12 @@ fn snapshot_views(sessions: &[SessionSnapshot]) -> Vec<CaptureSession> {
             source: session.source.clone(),
             session_id: session.session_id.clone(),
             state: session.state,
-            parent_session_id: None,
         })
         .collect()
 }
 
 fn log_capture(line: &str) {
     eprintln!("{line}");
-    let path = std::env::temp_dir().join("orbcue-jump-capture.log");
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        use std::io::Write;
-        let _ = writeln!(file, "{line}");
-    }
 }
 
 pub fn apply_snapshot_captures(previous: &[SessionSnapshot], current: &[SessionSnapshot]) {

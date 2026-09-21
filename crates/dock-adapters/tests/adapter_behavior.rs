@@ -47,7 +47,6 @@ fn claude_adapter_follows_turn_lifecycle() {
     }))
     .unwrap();
     assert_eq!(asking.kind, EventKind::WaitingInput);
-    assert_eq!(asking.requires_user_action, Some(true));
 
     let answered = claude_hook(&serde_json::json!({
         "hook_event_name": "PostToolUse",
@@ -303,7 +302,6 @@ fn grok_adapter_keeps_one_record_per_session() {
     .unwrap();
     assert_eq!(asking.kind, EventKind::WaitingInput);
     assert_eq!(asking.severity, orbcue_core::Severity::Attention);
-    assert_eq!(asking.requires_user_action, Some(true));
 
     let answered = grok_hook(&serde_json::json!({
         "hookEventName": "post_tool_use",

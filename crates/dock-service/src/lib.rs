@@ -11,8 +11,7 @@ use orbcue_ipc::{
     encode_line, local_accept, local_connect, local_listener, parse_request, IpcRequest,
     LocalStream, SnapshotView, WireResponse, MAX_FRAME_BYTES,
 };
-#[cfg(windows)]
-use orbcue_ipc::{resolve_backend, DockBackend};
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -27,11 +26,7 @@ use thiserror::Error;
 
 #[cfg(windows)]
 fn hide_windows_console(command: &mut std::process::Command) {
-    use std::os::windows::process::CommandExt;
-    // Do not combine with DETACHED_PROCESS: MSDN says CREATE_NO_WINDOW is then
-    // ignored, so wsl.exe opens a visible console every liveness tick.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.creation_flags(CREATE_NO_WINDOW);
+    orbcue_ipc::hide_windows_console(command);
 }
 
 #[derive(Debug, Error)]
@@ -215,7 +210,6 @@ fn spawn_internal(
         })
         .expect("spawn Dock IPC accept thread");
 
-    schedule_wsl_state_migration(Arc::clone(&state), Arc::clone(&updates), state_path.clone());
     schedule_liveness_reaper(
         Arc::clone(&state),
         Arc::clone(&updates),
@@ -443,187 +437,6 @@ fn set_private_permissions(_path: &Path, _mode: u32) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(any(test, windows))]
-#[cfg_attr(not(windows), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MigrationReason {
-    Copied,
-    DestNonEmpty,
-    #[allow(dead_code)]
-    AlreadyMarked,
-    Timeout,
-    WslMissing,
-    InvalidJson,
-    EmptySource,
-}
-
-#[cfg(any(test, windows))]
-#[cfg_attr(not(windows), allow(dead_code))]
-impl MigrationReason {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Copied => "copied",
-            Self::DestNonEmpty => "dest_non_empty",
-            Self::AlreadyMarked => "already_marked",
-            Self::Timeout => "timeout",
-            Self::WslMissing => "wsl_missing",
-            Self::InvalidJson => "invalid_json",
-            Self::EmptySource => "empty_source",
-        }
-    }
-}
-
-#[cfg(windows)]
-fn migration_marker_path(state_path: &Path) -> PathBuf {
-    state_path.with_file_name("state.migrated-from-wsl")
-}
-
-fn schedule_wsl_state_migration(
-    state: Arc<Mutex<DockState>>,
-    updates: Arc<Mutex<Vec<mpsc::Sender<SnapshotMessage>>>>,
-    state_path: Option<PathBuf>,
-) {
-    #[cfg(not(windows))]
-    {
-        let _ = (state, updates, state_path);
-    }
-    #[cfg(windows)]
-    {
-        if resolve_backend() != DockBackend::Local {
-            return;
-        }
-        let Some(state_path) = state_path else {
-            return;
-        };
-        let _ = thread::Builder::new()
-            .name("orb-wsl-migrate".to_owned())
-            .spawn(move || migrate_wsl_state(state, updates, state_path));
-    }
-}
-
-#[cfg(any(test, windows))]
-fn apply_copied_sessions(
-    state: &Arc<Mutex<DockState>>,
-    updates: &Arc<Mutex<Vec<mpsc::Sender<SnapshotMessage>>>>,
-    state_path: &Path,
-    copied: PersistedState,
-) -> MigrationReason {
-    let copied_len = copied.sessions.len();
-    let mut guard = state.lock().expect("state lock");
-    if !guard.snapshot().sessions.is_empty() {
-        return MigrationReason::DestNonEmpty;
-    }
-    if copied_len == 0 {
-        return MigrationReason::EmptySource;
-    }
-    *guard = DockState::from_persisted(copied);
-    let snapshot = SnapshotView::from(&guard.snapshot());
-    if let Err(error) = persist_state(state_path, &guard) {
-        eprintln!("OrbCue could not persist migrated state: {error}");
-    }
-    drop(guard);
-    broadcast(updates, SnapshotMessage::snapshot(snapshot, None));
-    MigrationReason::Copied
-}
-
-#[cfg(windows)]
-fn write_migration_marker(
-    state_path: &Path,
-    reason: MigrationReason,
-    copied_sessions: usize,
-    source: &str,
-) {
-    let at = time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_else(|_| "unknown".to_owned());
-    let payload = serde_json::json!({
-        "version": 1,
-        "at": at,
-        "source": source,
-        "copied_sessions": copied_sessions,
-        "reason": reason.as_str(),
-    });
-    if let Some(parent) = state_path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let _ = fs::write(
-        migration_marker_path(state_path),
-        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
-    );
-}
-
-#[cfg(windows)]
-fn migrate_wsl_state(
-    state: Arc<Mutex<DockState>>,
-    updates: Arc<Mutex<Vec<mpsc::Sender<SnapshotMessage>>>>,
-    state_path: PathBuf,
-) {
-    if migration_marker_path(&state_path).is_file() {
-        return;
-    }
-    let (bytes, source) = match cat_wsl_state(Duration::from_secs(2)) {
-        Ok(value) => value,
-        Err(reason) => {
-            write_migration_marker(&state_path, reason, 0, "unknown");
-            return;
-        }
-    };
-    if bytes.trim().is_empty() {
-        write_migration_marker(&state_path, MigrationReason::EmptySource, 0, &source);
-        return;
-    }
-    let copied: PersistedState = match serde_json::from_str(bytes.trim()) {
-        Ok(value) => value,
-        Err(_) => {
-            write_migration_marker(&state_path, MigrationReason::InvalidJson, 0, &source);
-            return;
-        }
-    };
-    let copied_sessions = copied.sessions.len();
-    let reason = apply_copied_sessions(&state, &updates, &state_path, copied);
-    write_migration_marker(&state_path, reason, copied_sessions, &source);
-}
-
-#[cfg(windows)]
-fn cat_wsl_state(timeout: Duration) -> Result<(String, String), MigrationReason> {
-    let mut command = std::process::Command::new("wsl.exe");
-    hide_windows_console(&mut command);
-    if let Ok(distro) = std::env::var("ORBCUE_WSL_DISTRO") {
-        if !distro.is_empty() {
-            command.args(["-d", &distro]);
-        }
-    }
-    command.args([
-        "-e",
-        "sh",
-        "-c",
-        r#"cat "${XDG_STATE_HOME:-$HOME/.local/state}/orbcue/state.json""#,
-    ]);
-    command.stdout(std::process::Stdio::piped());
-    command.stderr(std::process::Stdio::piped());
-    let child = command.spawn().map_err(|_| MigrationReason::WslMissing)?;
-    let pid = child.id();
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = sender.send(child.wait_with_output());
-    });
-    match receiver.recv_timeout(timeout) {
-        Ok(Ok(output)) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-            Ok((stdout, "wsl-state.json".to_owned()))
-        }
-        Ok(Ok(output)) if output.stdout.is_empty() => Err(MigrationReason::EmptySource),
-        Ok(Ok(_)) => Err(MigrationReason::InvalidJson),
-        Ok(Err(_)) => Err(MigrationReason::WslMissing),
-        Err(_) => {
-            let mut kill = std::process::Command::new("taskkill");
-            hide_windows_console(&mut kill);
-            let _ = kill.args(["/PID", &pid.to_string(), "/F"]).status();
-            Err(MigrationReason::Timeout)
-        }
-    }
-}
-
 fn schedule_liveness_reaper(
     state: Arc<Mutex<DockState>>,
     updates: Arc<Mutex<Vec<mpsc::Sender<SnapshotMessage>>>>,
@@ -846,19 +659,8 @@ fn wsl_dead_sessions(
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(&serde_json::to_vec(&queries).unwrap_or_default());
     }
-    let pid = child.id();
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = sender.send(child.wait_with_output());
-    });
-    let output = match receiver.recv_timeout(Duration::from_secs(2)) {
-        Ok(Ok(output)) if output.status.success() => output,
-        Err(_) => {
-            let mut kill = std::process::Command::new("taskkill");
-            hide_windows_console(&mut kill);
-            let _ = kill.args(["/PID", &pid.to_string(), "/F"]).status();
-            return Vec::new();
-        }
+    let output = match orbcue_ipc::wait_child_timeout(child, Duration::from_secs(2)) {
+        Ok(output) if output.status.success() => output,
         _ => return Vec::new(),
     };
     let parsed: serde_json::Value = match serde_json::from_slice(&output.stdout) {
@@ -891,65 +693,6 @@ fn wsl_dead_sessions(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_copied_sessions, SnapshotMessage};
-    use orbcue_core::{DockEvent, DockState, EventKind};
-    use std::sync::{mpsc, Arc, Mutex};
-
-    #[test]
-    fn copied_wsl_state_fills_an_empty_daemon() {
-        let state = Arc::new(Mutex::new(DockState::new()));
-        let updates = Arc::new(Mutex::new(Vec::new()));
-        let (sender, receiver) = mpsc::channel();
-        updates.lock().unwrap().push(sender);
-        let dir = std::env::temp_dir().join(format!(
-            "dock-migrate-empty-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("state.json");
-        let mut seeded = DockState::new();
-        seeded.apply(DockEvent::new("e1", EventKind::Started, "grok", "s1"));
-        assert_eq!(
-            apply_copied_sessions(&state, &updates, &path, seeded.persisted()),
-            super::MigrationReason::Copied
-        );
-        assert_eq!(state.lock().unwrap().snapshot().sessions.len(), 1);
-        let message: SnapshotMessage = receiver.recv().unwrap();
-        assert_eq!(message.snapshot.sessions.len(), 1);
-        std::fs::remove_dir_all(dir).ok();
-    }
-
-    #[test]
-    fn nonempty_dest_does_not_replace_live_sessions() {
-        let mut live = DockState::new();
-        live.apply(DockEvent::new("e1", EventKind::Started, "claude", "live"));
-        let state = Arc::new(Mutex::new(live));
-        let updates = Arc::new(Mutex::new(Vec::new()));
-        let mut incoming = DockState::new();
-        incoming.apply(DockEvent::new("e2", EventKind::Started, "grok", "copied"));
-        let dir = std::env::temp_dir().join(format!(
-            "dock-migrate-full-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("state.json");
-        assert_eq!(
-            apply_copied_sessions(&state, &updates, &path, incoming.persisted()),
-            super::MigrationReason::DestNonEmpty
-        );
-        assert_eq!(
-            state.lock().unwrap().snapshot().sessions[0].session_id,
-            "live"
-        );
-        std::fs::remove_dir_all(dir).ok();
-    }
-
     #[cfg(unix)]
     #[test]
     fn linux_host_reaps_without_wsl_distro() {
