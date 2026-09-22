@@ -15,7 +15,7 @@ use hop::{newest_windows_dock_under_mnt, stays_on_agent_os, trampoline_to_window
 use liveness::is_short_lived_hook_parent;
 #[cfg(test)]
 use liveness::liveness_from_env;
-use liveness::{attach_liveness, parse_proc_stat, platform_parent_liveness, run_liveness_check};
+use liveness::{attach_liveness, platform_parent_liveness, run_liveness_check};
 #[cfg(any(windows, test))]
 use liveness::{is_short_lived_windows_hook_parent, resolve_windows_liveness_pid};
 #[cfg(windows)]
@@ -26,10 +26,11 @@ use orbcue_core::{
     dock_tab_title, dock_terminal_marker, session_terminal_title, DockEvent, EventKind, Severity,
     EVENT_VERSION,
 };
+#[cfg(unix)]
+use orbcue_ipc::parse_proc_stat;
 use orbcue_ipc::{
     default_endpoint, default_state_path, encode_request, local_connect, local_set_recv_timeout,
-    local_set_send_timeout, persist_default_backend_file, IpcRequest, SnapshotView, WireResponse,
-    WINDOWS_APP_FOLDER,
+    local_set_send_timeout, IpcRequest, SnapshotView, WireResponse, WINDOWS_APP_FOLDER,
 };
 use orbcue_service::connect_or_spawn_detached;
 use serde_json::Value;
@@ -156,8 +157,6 @@ struct EventArgs {
     #[arg(long, default_value = "manual")]
     source: String,
     #[arg(long)]
-    summary: Option<String>,
-    #[arg(long)]
     deep_link: Option<String>,
     #[arg(long)]
     cwd: Option<String>,
@@ -176,7 +175,6 @@ struct AcknowledgeArgs {
 fn main() {
     #[cfg(windows)]
     attach_parent_console();
-    persist_default_backend_file();
     let cli = Cli::parse();
     let endpoint = cli
         .socket
@@ -272,6 +270,30 @@ fn run_early_command(command: &Command, endpoint: &Path, json_output: bool) -> O
     })
 }
 
+fn print_setting(
+    json_output: bool,
+    view: &impl serde::Serialize,
+    human: &str,
+    ok: bool,
+    label: &str,
+) -> i32 {
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(view).expect("setting view serializes")
+        );
+    } else if ok {
+        println!("{human}");
+    } else {
+        eprintln!("{label}: {human}");
+    }
+    if ok {
+        0
+    } else {
+        1
+    }
+}
+
 fn run_alias_command(name: Option<&str>, clear: bool, json_output: bool) -> i32 {
     let result = if clear || name.is_some_and(|value| value.trim().is_empty()) {
         orbcue_connect::set_run_alias(None)
@@ -282,31 +304,25 @@ fn run_alias_command(name: Option<&str>, clear: bool, json_output: bool) -> i32 
     };
     match result {
         Ok(alias) => {
-            if json_output {
-                println!(
-                    "{}",
-                    serde_json::to_string(&orbcue_connect::run_alias_ok(alias.clone()))
-                        .expect("alias view serializes")
-                );
-            } else if let Some(alias) = alias {
-                println!("{alias} grok 等同 orb run grok");
-            } else {
-                println!("没有启动别名");
-            }
-            0
+            let human = match &alias {
+                Some(alias) => format!("{alias} grok 等同 orb run grok"),
+                None => "没有启动别名".to_owned(),
+            };
+            print_setting(
+                json_output,
+                &orbcue_connect::run_alias_ok(alias),
+                &human,
+                true,
+                "orb alias",
+            )
         }
-        Err(error) => {
-            if json_output {
-                println!(
-                    "{}",
-                    serde_json::to_string(&orbcue_connect::run_alias_err(error.clone()))
-                        .expect("alias error serializes")
-                );
-            } else {
-                eprintln!("orb alias: {error}");
-            }
-            1
-        }
+        Err(error) => print_setting(
+            json_output,
+            &orbcue_connect::run_alias_err(error.clone()),
+            &error,
+            false,
+            "orb alias",
+        ),
     }
 }
 
@@ -320,31 +336,26 @@ fn run_replace_tab_command(enable: bool, disable: bool, json_output: bool) -> i3
     };
     match result {
         Ok(enabled) => {
-            if json_output {
-                println!(
-                    "{}",
-                    serde_json::to_string(&orbcue_connect::replace_tab_ok(enabled))
-                        .expect("replace-tab view serializes")
-                );
-            } else if enabled {
-                println!("orb run 会替换当前标签页");
+            let human = if enabled {
+                "orb run 会替换当前标签页"
             } else {
-                println!("orb run 会留下当前标签页");
-            }
-            0
+                "orb run 会留下当前标签页"
+            };
+            print_setting(
+                json_output,
+                &orbcue_connect::replace_tab_ok(enabled),
+                human,
+                true,
+                "orb replace-tab",
+            )
         }
-        Err(error) => {
-            if json_output {
-                println!(
-                    "{}",
-                    serde_json::to_string(&orbcue_connect::replace_tab_err(error.clone()))
-                        .expect("replace-tab error serializes")
-                );
-            } else {
-                eprintln!("orb replace-tab: {error}");
-            }
-            1
-        }
+        Err(error) => print_setting(
+            json_output,
+            &orbcue_connect::replace_tab_err(error.clone()),
+            &error,
+            false,
+            "orb replace-tab",
+        ),
     }
 }
 
@@ -670,9 +681,6 @@ fn event_request(args: &EventArgs, kind: EventKind) -> Result<IpcRequest, String
     event.occurred_at = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .map_err(|error| format!("cannot format event timestamp: {error}"))?;
-    if let Some(summary) = &args.summary {
-        event = event.with_summary(summary.clone());
-    }
     if let Some(deep_link) = &args.deep_link {
         event.deep_link = Some(deep_link.clone());
     }
@@ -1791,7 +1799,6 @@ mod tests {
             &super::EventArgs {
                 session_id: "s1".to_owned(),
                 source: "grok".to_owned(),
-                summary: None,
                 deep_link: None,
                 cwd: None,
                 workspace_root: None,

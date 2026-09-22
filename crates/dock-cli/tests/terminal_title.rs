@@ -14,7 +14,6 @@ const OSC_NEEDLE: &str = "]0;agent-activity-dock · grok";
 fn isolate<'a>(command: &'a mut Command, root: &Path, socket: &Path) -> &'a mut Command {
     command
         .env("ORBCUE_SOCKET", socket)
-        .env("ORBCUE_BACKEND", "local")
         .env_remove("WSL_DISTRO_NAME")
         .env_remove("WSL_INTEROP")
         .env_remove("ORBCUE_WINDOWS_ORB")

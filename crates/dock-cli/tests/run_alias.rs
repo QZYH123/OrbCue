@@ -15,7 +15,6 @@ fn alias_json(root: &Path, args: &[&str]) -> Value {
         .env("XDG_STATE_HOME", root.join("state"))
         .env("ORBCUE_BIN", root.join("bin"))
         .env("ORBCUE_SOCKET", root.join("orb.sock"))
-        .env("ORBCUE_BACKEND", "local")
         .env_remove("WSL_DISTRO_NAME")
         .env_remove("WSL_INTEROP")
         .env_remove("ORBCUE_WINDOWS_ORB")

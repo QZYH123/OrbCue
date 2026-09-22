@@ -195,40 +195,14 @@ pub(crate) struct WindowsProcess {
 #[cfg(windows)]
 fn windows_parent_liveness() -> Option<(u32, u64)> {
     let (current, by_pid) = windows_process_tree()?;
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
-        fn GetProcessTimes(
-            process: isize,
-            creation: *mut u64,
-            exit: *mut u64,
-            kernel: *mut u64,
-            user: *mut u64,
-        ) -> i32;
-        fn GetLastError() -> u32;
-    }
-    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-    unsafe {
-        let named: Vec<(u32, u32, &str)> = by_pid
-            .iter()
-            .map(|(pid, process)| (*pid, process.parent, process.name.as_str()))
-            .collect();
-        let pid = resolve_windows_liveness_pid(current, &named)?;
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle == 0 {
-            let _ = GetLastError();
-            return None;
-        }
-        let mut creation = 0u64;
-        let mut exit = 0u64;
-        let mut kernel = 0u64;
-        let mut user = 0u64;
-        let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
-        CloseHandle(handle);
-        if ok == 0 {
-            return None;
-        }
-        Some((pid, creation))
+    let named: Vec<(u32, u32, &str)> = by_pid
+        .iter()
+        .map(|(pid, process)| (*pid, process.parent, process.name.as_str()))
+        .collect();
+    let pid = resolve_windows_liveness_pid(current, &named)?;
+    match orbcue_ipc::process_creation(pid) {
+        orbcue_ipc::ProcessCreation::Time(creation) => Some((pid, creation)),
+        _ => None,
     }
 }
 
@@ -236,21 +210,6 @@ fn windows_parent_liveness() -> Option<(u32, u64)> {
 fn utf16_z(buf: &[u16]) -> String {
     let end = buf.iter().position(|&unit| unit == 0).unwrap_or(buf.len());
     String::from_utf16_lossy(&buf[..end])
-}
-
-fn linux_pid_is_dead(pid: u32, starttime: u64) -> Option<bool> {
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(stat) => {
-            let parsed = parse_proc_stat(&stat);
-            Some(match parsed {
-                Some((_, _, recorded)) => recorded != starttime,
-                None => true,
-            })
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(true),
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => None,
-        Err(_) => None,
-    }
 }
 
 pub(crate) fn run_liveness_check() -> i32 {
@@ -278,7 +237,7 @@ pub(crate) fn run_liveness_check() -> i32 {
         let Some(starttime) = query.get("starttime").and_then(Value::as_u64) else {
             continue;
         };
-        if linux_pid_is_dead(pid, starttime) != Some(true) {
+        if orbcue_ipc::linux_pid_is_dead(pid, starttime) != Some(true) {
             continue;
         }
         dead.push(serde_json::json!({
@@ -300,7 +259,7 @@ fn linux_agent_liveness() -> Option<(u32, u64)> {
     }
     for _ in 0..8 {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let (ppid, _, starttime) = parse_proc_stat(&stat)?;
+        let (ppid, _, starttime) = orbcue_ipc::parse_proc_stat(&stat)?;
         let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
         if should_skip_linux_liveness_parent(comm.trim()) {
             if ppid <= 1 || ppid == pid {
@@ -334,19 +293,4 @@ pub(crate) fn is_short_lived_hook_parent(comm: &str) -> bool {
 #[cfg(unix)]
 pub(crate) fn is_wsl_session_plumbing(comm: &str) -> bool {
     comm == "SessionLeader" || comm.starts_with("Relay(") || comm.starts_with("init-systemd")
-}
-
-pub(crate) fn parse_proc_stat(contents: &str) -> Option<(i32, u32, u64)> {
-    let end = contents.rfind(')')?;
-    let mut fields = contents.get(end + 1..)?.split_whitespace();
-    let _state = fields.next()?;
-    let ppid = fields.next()?.parse().ok()?;
-    let _pgrp = fields.next()?;
-    let _session = fields.next()?;
-    let tty_nr = fields.next()?.parse().ok()?;
-    for _ in 0..14 {
-        fields.next()?;
-    }
-    let starttime = fields.next()?.parse().ok()?;
-    Some((ppid, tty_nr, starttime))
 }

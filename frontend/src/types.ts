@@ -13,7 +13,6 @@ export interface SessionSnapshot {
   state: SessionState;
   mark: string;
   attention_reason: string | null;
-  summary: string | null;
   deep_link: string | null;
   project_path: string | null;
   terminal_id: string | null;
@@ -75,10 +74,7 @@ export interface ConnectionRecord {
   method: ConnectionMethod;
   wrapper: string | null;
   hook_script: string | null;
-  settings_backup: string | null;
-  capabilities: string[];
   limitation: string;
-  installed_at: string;
   side: AgentSide;
 }
 
@@ -92,7 +88,6 @@ export interface ConnectionPreview {
   name: string;
   original: string;
   method: ConnectionMethod;
-  dry_run: boolean;
   files: PreviewFile[];
   will_not: string[];
   notes: string[];

@@ -31,7 +31,6 @@ pub const MAX_EVENT_ID_LEN: usize = 128;
 pub const MAX_TERMINAL_ID_LEN: usize = 128;
 pub const MAX_SOURCE_LEN: usize = 64;
 pub const MAX_SESSION_ID_LEN: usize = 256;
-pub const MAX_SUMMARY_LEN: usize = 512;
 pub const MAX_DEEP_LINK_LEN: usize = 2_048;
 pub const MAX_METADATA_ITEMS: usize = 32;
 pub const MAX_METADATA_VALUE_LEN: usize = 256;
@@ -118,8 +117,6 @@ pub struct DockEvent {
     #[serde(default)]
     pub severity: Severity,
     #[serde(default)]
-    pub summary: Option<String>,
-    #[serde(default)]
     pub deep_link: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
@@ -145,7 +142,6 @@ impl DockEvent {
                 .format(&time::format_description::well_known::Rfc3339)
                 .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned()),
             severity: Severity::Info,
-            summary: None,
             deep_link: None,
             cwd: None,
             workspace_root: None,
@@ -153,11 +149,6 @@ impl DockEvent {
             terminal_id: None,
             metadata: BTreeMap::new(),
         }
-    }
-
-    pub fn with_summary(mut self, summary: impl Into<String>) -> Self {
-        self.summary = Some(summary.into());
-        self
     }
 
     pub fn with_occurred_at(mut self, occurred_at: impl Into<String>) -> Self {
@@ -190,7 +181,6 @@ pub struct SessionSnapshot {
     pub state: SessionState,
     pub mark: String,
     pub attention_reason: Option<String>,
-    pub summary: Option<String>,
     pub deep_link: Option<String>,
     #[serde(default)]
     pub project_path: Option<String>,
@@ -285,7 +275,6 @@ struct SessionRecord {
     session_id: String,
     state: SessionState,
     attention_reason: Option<String>,
-    summary: Option<String>,
     deep_link: Option<String>,
     project_path: Option<String>,
     acknowledged: bool,
@@ -350,7 +339,6 @@ impl DockState {
                     session_id: item.session_id,
                     state: item.state,
                     attention_reason: item.attention_reason,
-                    summary: None,
                     deep_link: None,
                     project_path,
                     acknowledged: item.acknowledged,
@@ -869,7 +857,6 @@ impl SessionRecord {
             session_id: event.session_id.clone(),
             state,
             attention_reason: reason.map(str::to_owned),
-            summary: event.summary.clone(),
             deep_link: event.deep_link.clone(),
             project_path: resolve_project_path(event),
             acknowledged: reason.is_none(),
@@ -886,7 +873,6 @@ impl SessionRecord {
             state: self.state,
             mark: self.state.mark().to_owned(),
             attention_reason: self.attention_reason.clone(),
-            summary: self.summary.clone(),
             deep_link: self.deep_link.clone(),
             project_path: self.project_path.clone(),
             terminal_id: self.terminal_id.clone(),
@@ -897,7 +883,6 @@ impl SessionRecord {
 }
 
 fn update_record(record: &mut SessionRecord, event: &DockEvent) {
-    record.summary = event.summary.clone().or_else(|| record.summary.clone());
     record.deep_link = event.deep_link.clone().or_else(|| record.deep_link.clone());
     if let Some(path) = resolve_project_path(event) {
         record.project_path = Some(path);
@@ -1055,13 +1040,9 @@ fn validate_event(event: &DockEvent) -> Option<String> {
         }
     }
     if event
-        .summary
+        .deep_link
         .as_ref()
-        .is_some_and(|value| value.len() > MAX_SUMMARY_LEN)
-        || event
-            .deep_link
-            .as_ref()
-            .is_some_and(|value| value.len() > MAX_DEEP_LINK_LEN)
+        .is_some_and(|value| value.len() > MAX_DEEP_LINK_LEN)
         || event
             .cwd
             .as_ref()

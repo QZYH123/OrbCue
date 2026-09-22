@@ -290,20 +290,12 @@ fn select_agent(name: &str, candidates: Vec<PathBuf>) -> Option<DiscoveredAgent>
     Some(discovered_agent(name, path))
 }
 
-pub fn agent_is_connectable(origin: AgentOrigin) -> bool {
-    match origin {
-        AgentOrigin::Windows => cfg!(windows),
-        AgentOrigin::Wsl => cfg!(not(windows)),
-    }
-}
-
 fn discovered_agent(name: &str, path: PathBuf) -> DiscoveredAgent {
     let origin = agent_origin(&path);
     DiscoveredAgent {
         name: name.to_owned(),
         path,
         origin,
-        connectable: agent_is_connectable(origin),
     }
 }
 
@@ -535,28 +527,14 @@ mod tests {
             super::choose_discovered("claude", vec![windows.clone(), wsl.clone()]).unwrap();
         assert_eq!(preferred.path, wsl);
         assert_eq!(preferred.origin, AgentOrigin::Wsl);
-        assert_eq!(preferred.connectable, cfg!(not(windows)));
 
         let only = super::choose_discovered("claude", vec![windows.clone()]).unwrap();
         assert_eq!(only.path, windows);
         assert_eq!(only.origin, AgentOrigin::Windows);
-        assert_eq!(only.connectable, cfg!(windows));
     }
 
     #[test]
-    fn connectable_follows_the_os_that_owns_the_binary() {
-        assert_eq!(
-            super::agent_is_connectable(AgentOrigin::Windows),
-            cfg!(windows)
-        );
-        assert_eq!(
-            super::agent_is_connectable(AgentOrigin::Wsl),
-            cfg!(not(windows))
-        );
-    }
-
-    #[test]
-    fn windows_interop_paths_are_not_connectable() {
+    fn windows_paths_are_marked_windows_origin() {
         assert_eq!(
             agent_origin(Path::new("/mnt/c/Users/u/AppData/Roaming/npm/claude")),
             AgentOrigin::Windows
@@ -595,11 +573,10 @@ mod tests {
     }
 
     #[test]
-    fn missing_origin_fields_default_to_wsl_and_connectable() {
+    fn missing_origin_fields_default_to_wsl() {
         let agent: DiscoveredAgent =
             serde_json::from_str(r#"{"name":"claude","path":"/usr/bin/claude"}"#).unwrap();
         assert_eq!(agent.origin, AgentOrigin::Wsl);
-        assert!(agent.connectable);
     }
 
     #[test]

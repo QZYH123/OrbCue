@@ -775,7 +775,6 @@ fn start_session() -> (
     mpsc::Receiver<SnapshotMessage>,
     SnapshotMessage,
 ) {
-    orbcue_ipc::persist_default_backend_file();
     let session = attach_or_listen(
         orbcue_ipc::default_endpoint(),
         orbcue_ipc::default_state_path(),

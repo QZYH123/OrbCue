@@ -87,7 +87,6 @@ pub(crate) fn needs_local_event_prep(command: &Command) -> bool {
 
 pub(crate) fn apply_windows_hop_env(command: &mut ProcessCommand) {
     command.env("ORBCUE_HOP", "windows");
-    command.env("ORBCUE_BACKEND", "local");
     command.env_remove("ORBCUE_SOCKET");
     command.env_remove("XDG_RUNTIME_DIR");
 }

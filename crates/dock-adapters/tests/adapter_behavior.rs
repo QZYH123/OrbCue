@@ -12,7 +12,6 @@ fn claude_adapter_uses_only_hook_metadata() {
     let event = claude_hook(&payload).unwrap();
     assert_eq!(event.kind, EventKind::PermissionRequested);
     assert_eq!(event.session_id, "claude-1");
-    assert_eq!(event.summary, None);
     assert_eq!(event.metadata.len(), 0);
 }
 
@@ -434,7 +433,6 @@ fn grok_adapter_copies_explicit_workspace_fields() {
     .unwrap();
     assert_eq!(event.cwd.as_deref(), Some("/tmp/cwd"));
     assert_eq!(event.workspace_root.as_deref(), Some("/tmp/workspace"));
-    assert_eq!(event.summary, None);
 
     let snake = grok_hook(&serde_json::json!({
         "hookEventName": "session_start",
@@ -755,7 +753,6 @@ fn cursor_hook_accepts_official_cli_payload_fields() {
         opened.workspace_root.as_deref(),
         Some("/tmp/official-project")
     );
-    assert_eq!(opened.summary, None);
     assert!(opened.metadata.is_empty());
 
     let working = cursor_hook(&serde_json::json!({

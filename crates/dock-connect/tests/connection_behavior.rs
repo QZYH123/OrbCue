@@ -52,9 +52,7 @@ fn plant_legacy_wrapper(config: &Path, original: &Path, wrapper: &Path, bashrc: 
                 "original": original,
                 "method": "Wrapper",
                 "wrapper": wrapper,
-                "capabilities": ["started", "completed", "failed"],
                 "limitation": "",
-                "installed_at": "0"
             }
         }
     });
@@ -388,7 +386,6 @@ fn preview_is_side_effect_free() {
     let before_files = file_contents(&root);
     with_shell("/bin/bash", || {
         let preview = manager.preview("grok", &original).unwrap();
-        assert!(preview.dry_run);
         assert_eq!(preview.method, ConnectionMethod::GrokHook);
         assert!(preview
             .will_not
@@ -556,7 +553,6 @@ fn discovery_skips_the_managed_data_dir_and_finds_the_real_agent() {
     assert_eq!(discovered[0].name, "claude");
     assert_eq!(discovered[0].path, original);
     assert_eq!(discovered[0].origin, AgentOrigin::Wsl);
-    assert!(discovered[0].connectable);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -590,7 +586,6 @@ fn discover_from_path_finds_local_bin_and_prefers_wsl_over_windows() {
     assert_eq!(discovered.len(), 1);
     assert_eq!(discovered[0].path, wsl_claude);
     assert_eq!(discovered[0].origin, AgentOrigin::Wsl);
-    assert!(discovered[0].connectable);
 
     fs::remove_file(&wsl_claude).unwrap();
     let windows_only = manager.discover_from_path(&windows_first);
@@ -843,10 +838,7 @@ fn torn_cursor_connection_is_repaired_from_records() {
                     "method": "CursorHook",
                     "wrapper": null,
                     "hook_script": hook,
-                    "settings_backup": null,
-                    "capabilities": ["started"],
                     "limitation": "",
-                    "installed_at": "1"
                 }
             }
         })
@@ -932,10 +924,7 @@ fn listing_does_not_revive_cursor_after_disconnect() {
                     "method": "CursorHook",
                     "wrapper": null,
                     "hook_script": hook,
-                    "settings_backup": null,
-                    "capabilities": ["started"],
                     "limitation": "",
-                    "installed_at": "1"
                 }
             }
         })
@@ -1119,10 +1108,7 @@ fn reconnecting_codex_replaces_an_old_wrapper() {
                     "method": "Wrapper",
                     "wrapper": wrapper,
                     "hook_script": null,
-                    "settings_backup": null,
-                    "capabilities": ["started"],
                     "limitation": "wrapper",
-                    "installed_at": "1"
                 }
             }
         })
@@ -1199,7 +1185,6 @@ fn codex_preview_and_listing_admit_interrupt_and_error_gaps() {
     let record = manager.connect("codex", &original).unwrap();
     assert!(record.limitation.contains("Esc"));
     assert!(record.limitation.contains("报错"));
-    assert!(!record.capabilities.iter().any(|item| item == "failed"));
     assert_eq!(
         manager.records()[0].limitation,
         ConnectionMethod::CodexHook.limitation()

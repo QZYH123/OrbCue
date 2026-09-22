@@ -109,9 +109,7 @@ fn waiting_for_permission_is_distinct_and_acknowledgeable() {
     let mut state = DockState::new();
     state.apply(event("e1", EventKind::Started, "s1"));
 
-    let waiting = state.apply(
-        event("e2", EventKind::PermissionRequested, "s1").with_summary("Permission required"),
-    );
+    let waiting = state.apply(event("e2", EventKind::PermissionRequested, "s1"));
     assert_eq!(waiting.snapshot.working_count, 0);
     assert_eq!(waiting.snapshot.tracked_count, 1);
     assert_eq!(waiting.snapshot.pending_count, 1);
@@ -143,11 +141,9 @@ fn restart_state_excludes_ephemeral_content_and_does_not_replay_attention() {
     started.workspace_root = Some("/home/qingz/projects/agent-activity-dock".to_owned());
     started.cwd = Some("/home/qingz/projects/agent-activity-dock".to_owned());
     state.apply(started);
-    state.apply(event("e2", EventKind::Failed, "s1").with_summary("private failure details"));
+    state.apply(event("e2", EventKind::Failed, "s1"));
 
     let json = serde_json::to_string(&state.persisted()).unwrap();
-    assert!(!json.contains("private failure details"));
-    assert!(!json.contains("summary"));
     assert!(!json.contains("transcript"));
     assert!(json.contains("/home/qingz/projects/agent-activity-dock"));
 
@@ -156,7 +152,6 @@ fn restart_state_excludes_ephemeral_content_and_does_not_replay_attention() {
     assert_eq!(restored.snapshot().pending_mark, "!");
     assert_eq!(restored.snapshot().sessions[0].state, SessionState::Failed);
     assert_eq!(restored.snapshot().sessions[0].mark, "!");
-    assert!(restored.snapshot().sessions[0].summary.is_none());
     assert_eq!(
         restored.snapshot().sessions[0].project_path.as_deref(),
         Some("/home/qingz/projects/agent-activity-dock")
@@ -1018,10 +1013,12 @@ fn audit_stream_is_bounded_and_contains_no_event_content() {
     for index in 0..140 {
         let session_id = format!("s-{index}");
         let event_id = format!("e-{index}");
-        state.apply(
-            DockEvent::new(&event_id, EventKind::Started, "claude", &session_id)
-                .with_summary("private content must stay out of audit"),
-        );
+        state.apply(DockEvent::new(
+            &event_id,
+            EventKind::Started,
+            "claude",
+            &session_id,
+        ));
         state.apply(DockEvent::new(
             &format!("{event_id}-done"),
             EventKind::Completed,

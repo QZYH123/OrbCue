@@ -94,20 +94,16 @@ fn restart_recovers_minimal_state_without_replaying_attention() {
     );
     send(
         &first_path,
-        DockEvent::new("e1", EventKind::Failed, "claude", "s1")
-            .with_summary("must remain ephemeral"),
+        DockEvent::new("e1", EventKind::Failed, "claude", "s1"),
     );
     service.shutdown();
 
-    let persisted = std::fs::read_to_string(&state_path).unwrap();
-    assert!(!persisted.contains("must remain ephemeral"));
     let second_path = endpoint();
     let restored = spawn_persistent(&second_path, &state_path).unwrap();
     let response = send(&second_path, serde_json::json!({"query": "snapshot"}));
     assert_eq!(response.snapshot.pending_count, 1);
     assert_eq!(response.snapshot.pending_mark, "!");
     assert_eq!(response.snapshot.sessions[0].session_id, "s1");
-    assert!(response.snapshot.sessions[0].summary.is_none());
     assert!(response.attention.is_none());
     restored.shutdown();
     std::fs::remove_file(state_path).unwrap();

@@ -38,7 +38,6 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -83,17 +82,6 @@ impl ConnectionMethod {
             Self::CursorHook => "偶尔不会通知已经结束，任务会停在「工作中」，直到进程退出",
         }
     }
-
-    fn capabilities(self) -> &'static [&'static str] {
-        match self {
-            Self::Wrapper => &["started", "completed", "failed"],
-            Self::ClaudeHook => &["started", "waiting", "completed", "failed"],
-            Self::GrokHook | Self::CursorHook => {
-                &["started", "waiting", "completed", "failed", "cancelled"]
-            }
-            Self::CodexHook => &["started", "waiting", "completed"],
-        }
-    }
 }
 
 fn connection_record(
@@ -102,7 +90,6 @@ fn connection_record(
     method: ConnectionMethod,
     wrapper: Option<PathBuf>,
     hook_script: Option<PathBuf>,
-    settings_backup: Option<PathBuf>,
 ) -> ConnectionRecord {
     ConnectionRecord {
         name: name.to_owned(),
@@ -110,14 +97,7 @@ fn connection_record(
         method,
         wrapper,
         hook_script,
-        settings_backup,
-        capabilities: method
-            .capabilities()
-            .iter()
-            .map(|item| (*item).to_owned())
-            .collect(),
         limitation: method.limitation().to_owned(),
-        installed_at: now_string(),
     }
 }
 
@@ -130,11 +110,7 @@ pub struct ConnectionRecord {
     pub method: ConnectionMethod,
     pub wrapper: Option<PathBuf>,
     pub hook_script: Option<PathBuf>,
-    #[serde(default)]
-    pub settings_backup: Option<PathBuf>,
-    pub capabilities: Vec<String>,
     pub limitation: String,
-    pub installed_at: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -151,12 +127,6 @@ pub struct DiscoveredAgent {
     pub path: PathBuf,
     #[serde(default)]
     pub origin: AgentOrigin,
-    #[serde(default = "default_connectable")]
-    pub connectable: bool,
-}
-
-fn default_connectable() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -178,7 +148,6 @@ pub struct ConnectionPreview {
     pub name: String,
     pub original: PathBuf,
     pub method: ConnectionMethod,
-    pub dry_run: bool,
     pub files: Vec<PreviewFile>,
     pub will_not: Vec<String>,
     pub notes: Vec<String>,
@@ -317,7 +286,6 @@ impl ConnectionManager {
             name: name.to_owned(),
             original: original.to_owned(),
             method,
-            dry_run: true,
             files: self.preview_files(name, method),
             will_not: vec![
                 format!("不替换 Agent 本体（{}）", original.display()),
@@ -355,8 +323,8 @@ impl ConnectionManager {
         let Some(agent) = hook_agent(method) else {
             return Err(unsupported_connect_name(name));
         };
-        let (hook, settings_backup) = self.install_hook(agent)?;
-        let record = connection_record(name, original, method, None, Some(hook), settings_backup);
+        let hook = self.install_hook(agent)?;
+        let record = connection_record(name, original, method, None, Some(hook));
         if let Some(existing) = file.agents.get(name) {
             // The new artifact is installed before this cleanup. Different
             // methods use different paths, so a cleanup failure must not
@@ -536,7 +504,7 @@ impl ConnectionManager {
         }
     }
 
-    fn install_hook(&self, agent: &HookAgent) -> Result<(PathBuf, Option<PathBuf>), String> {
+    fn install_hook(&self, agent: &HookAgent) -> Result<PathBuf, String> {
         let dest = hook_path(&self.config_dir, agent.name);
         let existed = dest.is_file();
         let hook = self.write_hook_script(agent.name)?;
@@ -547,13 +515,11 @@ impl ConnectionManager {
                 agent.specs(),
                 backup,
             ),
-            HookLayout::GrokFile => {
-                install_grok_hooks(&self.grok_hooks_file(), &hook).map(|()| None)
-            }
+            HookLayout::GrokFile => install_grok_hooks(&self.grok_hooks_file(), &hook),
             HookLayout::Cursor => install_cursor_hooks_at(&self.cursor_hooks_file(), &hook),
         };
         match result {
-            Ok(backup) => Ok((hook, backup)),
+            Ok(()) => Ok(hook),
             Err(error) => {
                 if !existed || !matches!(agent.layout, HookLayout::Cursor) {
                     let _ = fs::remove_file(&hook);
@@ -725,16 +691,14 @@ fn push_unique_ignore_case(names: &mut Vec<String>, candidate: String) {
 }
 
 #[cfg(test)]
-fn install_claude_settings_at(
-    settings_path: &Path,
-    hook: &Path,
-) -> Result<Option<PathBuf>, String> {
+fn install_claude_settings_at(settings_path: &Path, hook: &Path) -> Result<PathBuf, String> {
     install_nested_hooks_at(
         settings_path,
         hook,
         claude_hook_specs(),
         "settings.json.orbcue.bak",
-    )
+    )?;
+    Ok(settings_path.with_file_name("settings.json.orbcue.bak"))
 }
 
 #[cfg(test)]
@@ -761,16 +725,15 @@ fn write_json_with_backup(
     existing: Option<Vec<u8>>,
     backup_name: &str,
     document: &Value,
-) -> Result<Option<PathBuf>, String> {
-    let backup = existing.map(|bytes| (path.with_file_name(backup_name), bytes));
-    if let Some((backup_path, bytes)) = &backup {
+) -> Result<(), String> {
+    if let Some(bytes) = existing {
+        let backup_path = path.with_file_name(backup_name);
         if !backup_path.exists() {
-            atomic_write(backup_path, bytes, existing_mode(path, 0o600))?;
+            atomic_write(&backup_path, &bytes, existing_mode(path, 0o600))?;
         }
     }
     let bytes = serde_json::to_vec_pretty(document).map_err(|error| error.to_string())?;
-    atomic_write(path, &bytes, existing_mode(path, 0o600))?;
-    Ok(backup.map(|(backup_path, _)| backup_path))
+    atomic_write(path, &bytes, existing_mode(path, 0o600))
 }
 
 fn upsert_hook_events(
@@ -811,7 +774,7 @@ fn install_nested_hooks_at(
     hook: &Path,
     specs: &[HookSpec],
     backup_name: &str,
-) -> Result<Option<PathBuf>, String> {
+) -> Result<(), String> {
     let (existing, mut settings) = read_json_document(settings_path, json!({}))?;
     {
         let hooks = hooks_object_mut(&mut settings, &file_label(settings_path))?;
@@ -837,7 +800,7 @@ fn uninstall_nested_hooks_at(settings_path: &Path, hook: &Path) -> Result<(), St
     uninstall_hooks_file(settings_path, hook, false)
 }
 
-fn install_cursor_hooks_at(hooks_path: &Path, hook: &Path) -> Result<Option<PathBuf>, String> {
+fn install_cursor_hooks_at(hooks_path: &Path, hook: &Path) -> Result<(), String> {
     let (existing, mut document) =
         read_json_document(hooks_path, json!({"version": 1, "hooks": {}}))?;
     {
@@ -1401,16 +1364,10 @@ fn validate_connection_request(name: &str, original: &Path) -> Result<Connection
     connection_method_for(name).ok_or_else(|| unsupported_connect_name(name))
 }
 
-fn now_string() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs().to_string())
-        .unwrap_or_else(|_| "0".to_owned())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_root() -> PathBuf {
         let nonce = SystemTime::now()
@@ -1445,17 +1402,13 @@ mod tests {
             br#"{"hooks":{"UserEvent":[{"hooks":[{"type":"command","command":"user-hook"}]}]}}"#;
         fs::write(&settings, original).unwrap();
 
-        let backup = install_claude_settings_at(&settings, &hook)
-            .unwrap()
-            .unwrap();
+        let backup = install_claude_settings_at(&settings, &hook).unwrap();
         assert_eq!(fs::read(&backup).unwrap(), original);
         let changed = fs::read(&settings).unwrap();
         assert!(String::from_utf8_lossy(&changed).contains("claude-hook.sh"));
 
         fs::write(&settings, br#"{"custom":true}"#).unwrap();
-        let second_backup = install_claude_settings_at(&settings, &hook)
-            .unwrap()
-            .unwrap();
+        let second_backup = install_claude_settings_at(&settings, &hook).unwrap();
         assert_eq!(second_backup, backup);
         assert_eq!(fs::read(&backup).unwrap(), original);
 
@@ -1499,7 +1452,6 @@ mod tests {
                 "name":"cursor",
                 "original":"/bin/cursor-agent",
                 "method":"CursorHook",
-                "dry_run":true,
                 "files":[],
                 "will_not":[],
                 "notes":[]

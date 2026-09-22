@@ -541,7 +541,7 @@ fn find_dead_sessions(
             if liveness.os != "linux" {
                 continue;
             }
-            if linux_pid_is_dead(liveness.pid, liveness.starttime) == Some(true) {
+            if orbcue_ipc::linux_pid_is_dead(liveness.pid, liveness.starttime) == Some(true) {
                 dead.push((source.clone(), session_id.clone(), liveness.clone()));
             }
         }
@@ -549,73 +549,13 @@ fn find_dead_sessions(
     dead
 }
 
-#[cfg(not(windows))]
-fn linux_pid_is_dead(pid: u32, starttime: u64) -> Option<bool> {
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(stat) => {
-            let recorded = parse_proc_starttime(&stat);
-            Some(match recorded {
-                Some(value) => value != starttime,
-                None => true,
-            })
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(true),
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => None,
-        Err(_) => None,
-    }
-}
-
-#[cfg(not(windows))]
-fn parse_proc_starttime(contents: &str) -> Option<u64> {
-    let end = contents.rfind(')')?;
-    let mut fields = contents.get(end + 1..)?.split_whitespace();
-    let _state = fields.next()?;
-    let _ppid = fields.next()?;
-    let _pgrp = fields.next()?;
-    let _session = fields.next()?;
-    let _tty_nr = fields.next()?;
-    for _ in 0..14 {
-        fields.next()?;
-    }
-    fields.next()?.parse().ok()
-}
-
 #[cfg(windows)]
 fn windows_pid_is_dead(pid: u32, starttime: u64) -> Option<bool> {
-    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-    const ERROR_ACCESS_DENIED: u32 = 5;
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
-        fn GetProcessTimes(
-            process: isize,
-            creation: *mut u64,
-            exit: *mut u64,
-            kernel: *mut u64,
-            user: *mut u64,
-        ) -> i32;
-        fn CloseHandle(handle: isize) -> i32;
-        fn GetLastError() -> u32;
-    }
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle == 0 {
-            return if GetLastError() == ERROR_ACCESS_DENIED {
-                Some(false)
-            } else {
-                Some(true)
-            };
-        }
-        let mut creation = 0u64;
-        let mut exit = 0u64;
-        let mut kernel = 0u64;
-        let mut user = 0u64;
-        let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
-        CloseHandle(handle);
-        if ok == 0 {
-            return None;
-        }
-        Some(creation != starttime)
+    match orbcue_ipc::process_creation(pid) {
+        orbcue_ipc::ProcessCreation::Time(creation) => Some(creation != starttime),
+        orbcue_ipc::ProcessCreation::AccessDenied => Some(false),
+        orbcue_ipc::ProcessCreation::Missing => Some(true),
+        orbcue_ipc::ProcessCreation::Unavailable => None,
     }
 }
 
@@ -648,7 +588,6 @@ fn wsl_dead_sessions(
         "liveness-check",
     ]);
     command.env("ORBCUE_HOP", "wsl");
-    command.env("ORBCUE_BACKEND", "local");
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -696,7 +635,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn linux_host_reaps_without_wsl_distro() {
-        let dead = super::linux_pid_is_dead(u32::MAX, 1);
+        let dead = orbcue_ipc::linux_pid_is_dead(u32::MAX, 1);
         assert_eq!(dead, Some(true));
         let liveness = orbcue_core::AgentLiveness {
             os: "linux".to_owned(),

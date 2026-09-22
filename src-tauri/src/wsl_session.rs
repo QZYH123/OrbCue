@@ -167,20 +167,6 @@ fn wsl_dock_command(args: &[&str]) -> Result<Command, String> {
         "sh",
     ]);
     command.args(args);
-    command.env("ORBCUE_BACKEND", "local");
-    let extra = "ORBCUE_BACKEND/u";
-    match env::var("WSLENV") {
-        Ok(existing)
-            if existing
-                .split(':')
-                .any(|part| part.starts_with("ORBCUE_BACKEND")) => {}
-        Ok(existing) if !existing.is_empty() => {
-            command.env("WSLENV", format!("{existing}:{extra}"));
-        }
-        _ => {
-            command.env("WSLENV", extra);
-        }
-    }
     Ok(command)
 }
 

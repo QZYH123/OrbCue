@@ -19,7 +19,6 @@
   "session_id": "session-123",
   "occurred_at": "2026-08-16T08:00:00Z",
   "severity": "info",
-  "summary": "optional short in-memory label",
   "deep_link": "https://example.invalid/session/123",
   "cwd": "/home/user/project",
   "workspace_root": "/home/user/project",
@@ -35,7 +34,7 @@
 
 可选 `parent_session_id`（上限同 `session_id`，空串视为缺失）。带 parent 的事件永不创建独立会话、不进计数。仅 `waiting_input` / `permission_requested` / `failed` 在父会话（`source` + `parent_session_id`）存在时折叠到父会话；其它情况 accepted、无副作用。
 
-可选 `terminal_id`（上限 128 字节，空串视为缺失）。CLI 在 hook 与 `start`/`complete` 等命令上按此顺序附加：`ORBCUE_TERMINAL_ID`（空串则省略）→ 自身 tty → Linux 祖先进程 tty（最多 10 级）→ `WT_SESSION`（仅 Windows）。无 parent 的 `started` / `working` / `idle` 若带 T，且该 `source`+`session_id` 尚不在列表里，则移除同一 T 上其它会话。例外：T 上已有带 `project_path` 且为 working / needs_attention 的会话，而新事件没有项目路径 → 不顶替、不建行。后续 idle/working 不再赶走其它会话。无显式 `terminal_id` 但有完整 hook liveness 时，写入 `live:{pid}:{starttime}`。显式 tty / WT / `orb:` 优先。带 parent 的事件不顶替。`state.json` 保存 `terminal_id` 和 `project_path`；摘要不落盘。
+可选 `terminal_id`（上限 128 字节，空串视为缺失）。CLI 在 hook 与 `start`/`complete` 等命令上按此顺序附加：`ORBCUE_TERMINAL_ID`（空串则省略）→ 自身 tty → Linux 祖先进程 tty（最多 10 级）→ `WT_SESSION`（仅 Windows）。无 parent 的 `started` / `working` / `idle` 若带 T，且该 `source`+`session_id` 尚不在列表里，则移除同一 T 上其它会话。例外：T 上已有带 `project_path` 且为 working / needs_attention 的会话，而新事件没有项目路径 → 不顶替、不建行。后续 idle/working 不再赶走其它会话。无显式 `terminal_id` 但有完整 hook liveness 时，写入 `live:{pid}:{starttime}`。显式 tty / WT / `orb:` 优先。带 parent 的事件不顶替。`state.json` 保存 `terminal_id` 和 `project_path`。
 
 无 parent 的生命周期事件会尽力写终端标题 `{项目末段} · {source}`，`orb:` 标记再追加。Unix 写 OSC，Windows 调 `SetConsoleTitleW`。`ORBCUE_NO_TITLE=1` 跳过。写失败不影响事件。标题不是跳回前提。
 
@@ -50,7 +49,7 @@
 
 Liveness 仅 hook 路径写入（`orb start`/`complete` 不写）：`agent_os`、`agent_pid`、`agent_starttime` 三项齐全才合并；可选 `agent_wsl_distro`。结束类事件不写。已有三元组不被后来不同的 PID 覆盖。`--detach` 必须在父进程仍挂在 agent 树上时快照 tty/活性。Linux 向上走父进程时跳过 `sh` / `dash` / `orb` 和 WSL `Relay(` / `SessionLeader` / `init-systemd`。不进 snapshot。daemon 每 15s 问「是否仍是原进程」，死亡则发 `session.closed`。不扫进程表，不因 HWND 消失删会话。
 
-大小限制：`event_id` / `terminal_id` 各 128 字节、`source` 64 字节、`session_id` / `parent_session_id` 各 256 字节、`summary` 512 字节、`deep_link` 2048 字节、`cwd` / `workspace_root` 各 256 字节、metadata 最多 32 项且 key/value 各 256 字节。
+大小限制：`event_id` / `terminal_id` 各 128 字节、`source` 64 字节、`session_id` / `parent_session_id` 各 256 字节、`deep_link` 2048 字节、`cwd` / `workspace_root` 各 256 字节、metadata 最多 32 项且 key/value 各 256 字节。
 
 事件时间超过当前时间 24 小时，或超前超过 5 分钟，会返回 `stale_event`。这避免服务离线恢复后突然播放很久以前的提醒。`DockEvent::new` 也会生成当前 RFC3339 时间；外部集成不应发送伪造的 epoch 时间。
 

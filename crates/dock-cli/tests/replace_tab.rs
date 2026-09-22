@@ -13,7 +13,6 @@ fn replace_tab_json(root: &Path, args: &[&str]) -> Value {
         .env("HOME", root.join("home"))
         .env("XDG_STATE_HOME", root.join("state"))
         .env("ORBCUE_SOCKET", root.join("orb.sock"))
-        .env("ORBCUE_BACKEND", "local")
         .env_remove("WSL_DISTRO_NAME")
         .env_remove("WSL_INTEROP")
         .env_remove("ORBCUE_WINDOWS_ORB")
