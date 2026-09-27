@@ -402,13 +402,23 @@ fn connect_agent(
         }
         AgentSide::Windows => {
             #[cfg(windows)]
-            return connection_manager(&app).connect(&name, &original);
+            {
+                let record = connection_manager(&app).connect(&name, &original)?;
+                note_direct_run();
+                Ok(record)
+            }
             #[cfg(not(windows))]
             {
                 let _ = (app, name, original);
                 Err("windows connections are only available on the Windows presenter".to_owned())
             }
         }
+    }
+}
+
+fn note_direct_run() {
+    if let Err(error) = orbcue_connect::refresh_direct_run() {
+        eprintln!("OrbCue: 原命令启动未更新: {error}");
     }
 }
 
@@ -460,6 +470,19 @@ fn set_replace_tab_on_run(enabled: bool) -> Result<bool, String> {
     Ok(local)
 }
 
+#[tauri::command]
+fn direct_run() -> Result<bool, String> {
+    Ok(orbcue_connect::direct_run_enabled())
+}
+
+#[tauri::command]
+fn set_direct_run(enabled: bool) -> Result<bool, String> {
+    let enabled = orbcue_connect::set_direct_run(enabled)?.enabled;
+    #[cfg(windows)]
+    warn_wsl(wsl_session::set_direct_run(enabled), "WSL 原命令启动未更新");
+    Ok(enabled)
+}
+
 #[cfg(windows)]
 fn warn_wsl<T>(result: Result<T, String>, label: &str) {
     if let Err(error) = result {
@@ -483,7 +506,11 @@ fn disconnect_agent(app: AppHandle, name: String, side: String) -> Result<bool, 
         }
         AgentSide::Windows => {
             #[cfg(windows)]
-            return connection_manager(&app).disconnect(&name);
+            {
+                let removed = connection_manager(&app).disconnect(&name)?;
+                note_direct_run();
+                Ok(removed)
+            }
             #[cfg(not(windows))]
             {
                 let _ = (app, name);
@@ -893,7 +920,9 @@ pub fn run() {
             run_alias,
             set_run_alias,
             replace_tab_on_run,
-            set_replace_tab_on_run
+            set_replace_tab_on_run,
+            direct_run,
+            set_direct_run
         ])
         .build(tauri::generate_context!())
         .expect("error while building OrbCue")

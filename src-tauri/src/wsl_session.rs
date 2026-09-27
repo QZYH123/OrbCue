@@ -1,4 +1,6 @@
-use orbcue_connect::{ConnectionPreview, ConnectionRecord, DiscoveredAgent};
+use orbcue_connect::{
+    AliasView, ConnectionPreview, ConnectionRecord, DirectRunView, DiscoveredAgent, ReplaceTabView,
+};
 use serde::Deserialize;
 use std::env;
 use std::process::{Command, Stdio};
@@ -44,16 +46,7 @@ pub fn disconnect_agent(name: &str) -> Result<bool, String> {
     Ok(wsl_dock_json::<DisconnectJson>(&["disconnect", name, "--json"])?.disconnected)
 }
 
-#[derive(Debug, Deserialize)]
-struct AliasJson {
-    ok: bool,
-    #[serde(default)]
-    alias: Option<String>,
-    #[serde(default)]
-    error: Option<String>,
-}
-
-fn alias_from_json(parsed: AliasJson) -> Result<Option<String>, String> {
+fn alias_from_json(parsed: AliasView) -> Result<Option<String>, String> {
     json_ok(parsed.ok, parsed.alias, parsed.error, "无法更新启动别名")
 }
 
@@ -66,27 +59,18 @@ fn json_ok<T>(ok: bool, value: T, error: Option<String>, fallback: &str) -> Resu
 }
 
 pub fn run_alias() -> Result<Option<String>, String> {
-    alias_from_json(wsl_dock_json::<AliasJson>(&["alias", "--json"])?)
+    alias_from_json(wsl_dock_json(&["alias", "--json"])?)
 }
 
 pub fn set_run_alias(name: Option<&str>) -> Result<Option<String>, String> {
     let parsed = match name {
-        None => wsl_dock_json::<AliasJson>(&["alias", "--clear", "--json"])?,
-        Some(name) => wsl_dock_json::<AliasJson>(&["alias", name, "--json"])?,
+        None => wsl_dock_json(&["alias", "--clear", "--json"])?,
+        Some(name) => wsl_dock_json(&["alias", name, "--json"])?,
     };
     alias_from_json(parsed)
 }
 
-#[derive(Debug, Deserialize)]
-struct ReplaceTabJson {
-    ok: bool,
-    #[serde(default)]
-    replace_tab: bool,
-    #[serde(default)]
-    error: Option<String>,
-}
-
-fn replace_tab_from_json(parsed: ReplaceTabJson) -> Result<bool, String> {
+fn replace_tab_from_json(parsed: ReplaceTabView) -> Result<bool, String> {
     json_ok(
         parsed.ok,
         parsed.replace_tab,
@@ -96,12 +80,29 @@ fn replace_tab_from_json(parsed: ReplaceTabJson) -> Result<bool, String> {
 }
 
 pub fn set_replace_tab_on_run(enabled: bool) -> Result<bool, String> {
-    let parsed = if enabled {
-        wsl_dock_json::<ReplaceTabJson>(&["replace-tab", "--enable", "--json"])?
-    } else {
-        wsl_dock_json::<ReplaceTabJson>(&["replace-tab", "--disable", "--json"])?
-    };
-    replace_tab_from_json(parsed)
+    wsl_switch("replace-tab", enabled, replace_tab_from_json)
+}
+
+fn direct_run_from_json(parsed: DirectRunView) -> Result<bool, String> {
+    json_ok(
+        parsed.ok,
+        parsed.enabled,
+        parsed.error,
+        "无法更新原命令启动",
+    )
+}
+
+pub fn set_direct_run(enabled: bool) -> Result<bool, String> {
+    wsl_switch("direct-run", enabled, direct_run_from_json)
+}
+
+fn wsl_switch<T, F>(command: &str, enabled: bool, finish: F) -> Result<bool, String>
+where
+    T: for<'de> Deserialize<'de>,
+    F: FnOnce(T) -> Result<bool, String>,
+{
+    let flag = if enabled { "--enable" } else { "--disable" };
+    finish(wsl_dock_json(&[command, flag, "--json"])?)
 }
 
 fn wsl_dock_json<T: for<'de> Deserialize<'de>>(args: &[&str]) -> Result<T, String> {
@@ -130,44 +131,33 @@ fn parse_wsl_json<T: for<'de> Deserialize<'de>>(stdout: &str) -> Result<T, Strin
         .map_err(|error| format!("cannot parse WSL dock JSON ({error}): {trimmed}"))
 }
 
+fn pinned_distro() -> Option<String> {
+    env::var("ORBCUE_WSL_DISTRO")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
 pub(crate) fn wsl_base_command() -> Command {
-    if let Ok(distro) = env::var("ORBCUE_WSL_DISTRO") {
-        if !distro.is_empty() {
-            return wsl_command_for_distro(&distro);
-        }
-    }
-    let mut command = Command::new("wsl.exe");
-    orbcue_ipc::hide_windows_console(&mut command);
-    command
+    orbcue_ipc::wsl_command(pinned_distro().as_deref())
 }
 
 pub(crate) fn wsl_command_for_distro(distro: &str) -> Command {
-    let mut command = Command::new("wsl.exe");
-    if !distro.is_empty() {
-        command.args(["-d", distro]);
-    }
-    orbcue_ipc::hide_windows_console(&mut command);
-    command
+    let distro = distro.trim();
+    orbcue_ipc::wsl_command((!distro.is_empty()).then_some(distro))
 }
 
 pub(crate) fn wsl_list_command() -> Command {
-    let mut command = Command::new("wsl.exe");
+    let mut command = orbcue_ipc::wsl_command(None);
     command.args(["-l", "-q"]);
-    orbcue_ipc::hide_windows_console(&mut command);
     command
 }
 
 fn wsl_dock_command(args: &[&str]) -> Result<Command, String> {
-    let mut command = wsl_base_command();
-    command.args([
-        "-e",
-        "sh",
-        "-c",
-        r#"exec "$HOME/.local/bin/orb" "$@""#,
-        "sh",
-    ]);
-    command.args(args);
-    Ok(command)
+    Ok(orbcue_ipc::wsl_orb_command(
+        pinned_distro().as_deref(),
+        args,
+    ))
 }
 
 pub(crate) fn run_with_timeout(

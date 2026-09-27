@@ -56,6 +56,8 @@
   export let saveRunAlias: (event: SubmitEvent) => void;
   export let runAliasError: string;
   export let runAliasHint: string;
+  export let directRun: boolean;
+  export let toggleDirectRun: () => void;
   export let replaceTabOnRun: boolean;
   export let toggleReplaceTab: () => void;
   export let hideBallBadge: boolean;
@@ -173,7 +175,7 @@
             <p>在新的 Windows Terminal 标签里运行，点返回箭头才能精确回到那个标签。</p>
           </div>
           <code class="onboarding-code">orb run grok</code>
-          <p class="onboarding-note">claude、codex 同理。也可以在设置里起短命令{runAlias ? `，比如 ${runAlias} grok` : '，例如 or grok'}。</p>
+          <p class="onboarding-note">claude、codex 同理。设置里打开「原命令启动」后可以直接敲 grok，也可以起短命令{runAlias ? `，比如 ${runAlias} grok` : '，例如 or grok'}。</p>
         {/if}
         <div class="onboarding-actions">
           <button class="text-button" onclick={skipOnboardingStep}>跳过</button>
@@ -340,6 +342,7 @@
             <span><strong>{title}</strong><small>{hint}</small></span><span class:enabled={pressed} class="switch"><i></i></span>
           </button>
         {/snippet}
+        {@render switchRow(directRun, '原命令启动', '新开终端后敲 grok 等于 orb run grok。command grok 仍直接跑', () => void toggleDirectRun())}
         {@render switchRow(replaceTabOnRun, '启动时替换当前标签页', 'orb run 开出新标签后关掉当前这个', () => void toggleReplaceTab())}
         {@render switchRow(hideBallBadge, '隐藏圆标', '小球右上角的 ? / ! 不再显示', toggleHideBallBadge)}
         {@render switchRow(sideDockEnabled, '收到侧边', '拖到屏幕边缘贴成半圆，悬停展开', toggleSideDock)}

@@ -5,6 +5,7 @@
 //! Other tools emit events with `orb start` / `orb complete`; leftover wrapper
 //! records can still be disconnected.
 
+mod direct_run;
 mod discover;
 mod grok_compat;
 mod replace_tab;
@@ -12,6 +13,10 @@ mod run_alias;
 mod user_path;
 mod wsl_cli;
 
+pub use direct_run::{
+    current as direct_run_enabled, refresh as refresh_direct_run, set as set_direct_run,
+    status as direct_run_status, view_err as direct_run_err, DirectRunView,
+};
 pub use discover::looks_like_cursor_cli_path;
 pub use grok_compat::GROK_COMPAT_CURSOR_HOOKS_WARNING;
 pub use replace_tab::{
@@ -161,6 +166,14 @@ struct ConnectionFile {
     agents: std::collections::BTreeMap<String, ConnectionRecord>,
     #[serde(default)]
     extra_dirs: Vec<PathBuf>,
+    /// Shell profiles were already scanned for leftover PATH blocks.
+    /// New connects no longer write those blocks, so the scan runs once.
+    #[serde(default, skip_serializing_if = "is_false")]
+    legacy_path_cleaned: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 pub struct ConnectionManager {
@@ -316,7 +329,7 @@ impl ConnectionManager {
                     file.agents.insert(name.to_owned(), record.clone());
                     self.save(&file)?;
                 }
-                self.drop_wrapper_path_if_unused(&file)?;
+                self.drop_wrapper_path_if_unused(&mut file)?;
                 return Ok(record);
             }
         }
@@ -337,7 +350,7 @@ impl ConnectionManager {
         }
         file.agents.insert(name.to_owned(), record.clone());
         self.save(&file)?;
-        self.drop_wrapper_path_if_unused(&file)?;
+        self.drop_wrapper_path_if_unused(&mut file)?;
         Ok(record)
     }
 
@@ -349,7 +362,7 @@ impl ConnectionManager {
         };
         self.remove_artifacts(&record)?;
         self.save(&file)?;
-        self.drop_wrapper_path_if_unused(&file)?;
+        self.drop_wrapper_path_if_unused(&mut file)?;
         Ok(true)
     }
 
@@ -485,13 +498,21 @@ impl ConnectionManager {
         })
     }
 
-    fn drop_wrapper_path_if_unused(&self, file: &ConnectionFile) -> Result<(), String> {
+    fn drop_wrapper_path_if_unused(&self, file: &mut ConnectionFile) -> Result<(), String> {
         if file.agents.values().any(|item| item.wrapper.is_some()) {
+            if file.legacy_path_cleaned {
+                file.legacy_path_cleaned = false;
+                self.save(file)?;
+            }
+            return Ok(());
+        }
+        if file.legacy_path_cleaned {
             return Ok(());
         }
         self.remove_path_snippet()?;
         self.remove_empty_data_dir();
-        Ok(())
+        file.legacy_path_cleaned = true;
+        self.save(file)
     }
 
     fn hooks_config_path(&self, agent: &HookAgent) -> PathBuf {
@@ -640,6 +661,7 @@ impl ConnectionManager {
                 version: 1,
                 agents: Default::default(),
                 extra_dirs: Vec::new(),
+                legacy_path_cleaned: false,
             })
     }
 
@@ -769,18 +791,42 @@ fn hooks_object_mut<'a>(
         .ok_or_else(|| format!("{label} hooks must be an object"))
 }
 
+fn install_hooks_json(
+    path: &Path,
+    missing: Value,
+    backup_name: &str,
+    label: &str,
+    prepare: impl FnOnce(&mut Value) -> Result<(), String>,
+    specs: &[HookSpec],
+    hook: &Path,
+    make_entry: impl FnMut(&HookSpec) -> Value,
+) -> Result<(), String> {
+    let (existing, mut document) = read_json_document(path, missing)?;
+    prepare(&mut document)?;
+    {
+        let hooks = hooks_object_mut(&mut document, label)?;
+        upsert_hook_events(hooks, specs, hook, make_entry)?;
+    }
+    write_json_with_backup(path, existing, backup_name, &document)
+}
+
 fn install_nested_hooks_at(
     settings_path: &Path,
     hook: &Path,
     specs: &[HookSpec],
     backup_name: &str,
 ) -> Result<(), String> {
-    let (existing, mut settings) = read_json_document(settings_path, json!({}))?;
-    {
-        let hooks = hooks_object_mut(&mut settings, &file_label(settings_path))?;
-        upsert_hook_events(hooks, specs, hook, |spec| dock_hook_group(hook, spec))?;
-    }
-    write_json_with_backup(settings_path, existing, backup_name, &settings)
+    let label = file_label(settings_path);
+    install_hooks_json(
+        settings_path,
+        json!({}),
+        backup_name,
+        &label,
+        |_| Ok(()),
+        specs,
+        hook,
+        |spec| dock_hook_group(hook, spec),
+    )
 }
 
 fn claude_settings_path() -> PathBuf {
@@ -801,23 +847,24 @@ fn uninstall_nested_hooks_at(settings_path: &Path, hook: &Path) -> Result<(), St
 }
 
 fn install_cursor_hooks_at(hooks_path: &Path, hook: &Path) -> Result<(), String> {
-    let (existing, mut document) =
-        read_json_document(hooks_path, json!({"version": 1, "hooks": {}}))?;
-    {
-        let object = document
-            .as_object_mut()
-            .ok_or_else(|| "Cursor hooks.json must be a JSON object".to_owned())?;
-        if !object.contains_key("version") {
-            object.insert("version".to_owned(), json!(1));
-        }
-    }
-    {
-        let hooks = hooks_object_mut(&mut document, "Cursor")?;
-        upsert_hook_events(hooks, cursor_hook_specs(), hook, |spec| {
-            cursor_hook_entry(hook, spec)
-        })?;
-    }
-    write_json_with_backup(hooks_path, existing, "hooks.json.orbcue.bak", &document)
+    install_hooks_json(
+        hooks_path,
+        json!({"version": 1, "hooks": {}}),
+        "hooks.json.orbcue.bak",
+        "Cursor",
+        |document| {
+            let object = document
+                .as_object_mut()
+                .ok_or_else(|| "Cursor hooks.json must be a JSON object".to_owned())?;
+            if !object.contains_key("version") {
+                object.insert("version".to_owned(), json!(1));
+            }
+            Ok(())
+        },
+        cursor_hook_specs(),
+        hook,
+        |spec| cursor_hook_entry(hook, spec),
+    )
 }
 
 fn cursor_hooks_registered(hooks_path: &Path, hook: &Path) -> bool {
@@ -875,7 +922,7 @@ fn retain_nonempty_hook_arrays(hooks: &mut serde_json::Map<String, Value>) {
     });
 }
 
-fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -885,7 +932,7 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
     fs::rename(temp, path).map_err(|error| error.to_string())
 }
 
-fn existing_mode(path: &Path, fallback: u32) -> u32 {
+pub(crate) fn existing_mode(path: &Path, fallback: u32) -> u32 {
     #[cfg(unix)]
     {
         return fs::metadata(path)
@@ -1312,7 +1359,7 @@ fn install_grok_hooks(hooks_path: &Path, hook: &Path) -> Result<(), String> {
     atomic_write(hooks_path, &bytes, 0o600)
 }
 
-fn strip_path_block(old: &str, start: &str, end: &str) -> Option<String> {
+pub(crate) fn strip_path_block(old: &str, start: &str, end: &str) -> Option<String> {
     let marker_start = old.find(start)?;
     let line_start = old[..marker_start]
         .rfind('\n')

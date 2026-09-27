@@ -1,15 +1,16 @@
 //! Persist whether `orb run` should close the launcher tab.
 
 use orbcue_ipc::default_state_path;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceTabView {
     pub ok: bool,
+    #[serde(default)]
     pub replace_tab: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 

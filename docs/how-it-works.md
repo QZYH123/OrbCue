@@ -60,7 +60,7 @@ crate 目录仍叫 `dock-*`，包名是 `orbcue-*`。改领域行为先读 domai
 点「回去」才执行，不做状态推断。阶梯在 `dock-core` 的 `focus_attempts`，Win32 在 presenter：
 
 1. `deep_link`
-2. `terminal_id` 为 `orb:` + 6 位十六进制 → 按标题/标签名聚焦（`orb run` 造的通道）
+2. `terminal_id` 为 `orb:` + 6 位十六进制 → 按标题/标签名聚焦（`orb run` 或「原命令启动」造的通道）
 3. 新主会话或转入 working 时记下的前台终端 HWND（窗口还在且仍是终端类才用；不冒充标签级精确）
 4. 找不到就老实说，并提示用 `orb run`
 

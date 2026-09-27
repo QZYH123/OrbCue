@@ -1007,6 +1007,21 @@ mod tests {
     }
 
     #[test]
+    fn resolve_agent_skips_direct_run_shim() {
+        let root = temp_resolve_root();
+        let shim = root.join("bin");
+        let real = root.join("real");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(shim.join("grok.cmd"), "rem orbcue direct-run\r\n").unwrap();
+        fs::write(real.join("grok.cmd"), b"real").unwrap();
+        let path = std::env::join_paths([&shim, &real]).unwrap();
+        let manager = isolated_manager(&root);
+        let resolved = resolve_agent_with("grok", Some(path.as_os_str()), &manager).unwrap();
+        assert_eq!(Path::new(&resolved), real.join("grok.cmd"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn resolve_agent_prefers_cursor_agent_on_path() {
         let root = temp_resolve_root();
         let bin = root.join("bin");

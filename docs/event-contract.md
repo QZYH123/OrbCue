@@ -41,7 +41,7 @@
 面板「回去」只在用户点击时执行：
 
 1. `deep_link`
-2. `terminal_id` 为 `orb:` + 6 位十六进制 → 按标题/标签名聚焦（由 `orb run` 建立；造标细节见 [how-it-works.md](how-it-works.md)）
+2. `terminal_id` 为 `orb:` + 6 位十六进制 → 按标题/标签名聚焦（由 `orb run` 或「原命令启动」建立；造标细节见 [how-it-works.md](how-it-works.md)）
 3. 新主会话或转入 working 时捕获的前台终端 HWND（仍在且仍是终端才用；不冒充标签级精确）
 4. 否则报找不到窗口，并提示 `orb run`。不按项目名或 `source` 子串模糊匹配
 

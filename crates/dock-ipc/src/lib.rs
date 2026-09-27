@@ -326,6 +326,33 @@ fn discover_windows_app_data_dir() -> Option<PathBuf> {
     }
 }
 
+/// `wsl.exe`, with the console hidden. Empty distro names are ignored.
+#[cfg(windows)]
+pub fn wsl_command(distro: Option<&str>) -> std::process::Command {
+    let mut command = std::process::Command::new("wsl.exe");
+    if let Some(distro) = distro.map(str::trim).filter(|value| !value.is_empty()) {
+        command.args(["-d", distro]);
+    }
+    hide_windows_console(&mut command);
+    command
+}
+
+/// Run the WSL user's `orb` with `args`. The caller chooses the timeout and
+/// any extra environment; this only builds the process.
+#[cfg(windows)]
+pub fn wsl_orb_command(distro: Option<&str>, args: &[&str]) -> std::process::Command {
+    let mut command = wsl_command(distro);
+    command.args([
+        "-e",
+        "sh",
+        "-c",
+        r#"exec "$HOME/.local/bin/orb" "$@""#,
+        "sh",
+    ]);
+    command.args(args);
+    command
+}
+
 #[cfg(windows)]
 pub fn hide_windows_console(command: &mut std::process::Command) {
     use std::os::windows::process::CommandExt;

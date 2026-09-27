@@ -1,7 +1,7 @@
 //! User-chosen short command that execs `orb run`.
 
 use orbcue_ipc::default_state_path;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,11 +21,12 @@ const RESERVED: &[&str] = &[
     "ssh",
 ];
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AliasView {
     pub ok: bool,
+    #[serde(default)]
     pub alias: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 

@@ -67,7 +67,7 @@ OrbCue 在 Windows 桌面上放一个小球：orb 是形态，cue 是该你出�
 
 - Windows 10 / 11（x64）。小球和面板只在 Windows 上运行
 - WSL 可选。装了之后，WSL 里的工具和 Windows 上的会出现在同一个小球里；没装不影响使用
-- 精确跳到某一个标签只适用于 [Windows Terminal](https://aka.ms/terminal)，需用 `orb run` 或启动别名开出专属标签。窗口级跳回适用于 Windows Terminal、cmd / PowerShell 独立窗口、Alacritty、WezTerm、Git Bash（mintty）和 Tabby；VS Code、Cursor 等编辑器内置终端不行
+- 精确跳到某一个标签只适用于 [Windows Terminal](https://aka.ms/terminal)，需用 `orb run`、原命令启动或启动别名开出专属标签。窗口级跳回适用于 Windows Terminal、cmd / PowerShell 独立窗口、Alacritty、WezTerm、Git Bash（mintty）和 Tabby；VS Code、Cursor 等编辑器内置终端不行
 - macOS 与 Linux 桌面暂未正式支持
 
 ## 安装
@@ -98,7 +98,7 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/OrbCue/release
 | 动态 | 当前会话列表，按项目分组，可筛选全部 / 工作中 / 未工作 |
 | 审计 | 本次运行里最近的完成、失败、等待和关闭，最多 128 条，只在内存中，重启即清空 |
 | 连接 | 列出本机检测到的工具，确认后连接或断开 |
-| 设置 | 外观、提示音、系统通知、开机自启、快捷键、圆标、侧边收起、启动别名，以及启动时是否替换当前标签 |
+| 设置 | 外观、提示音、系统通知、开机自启、快捷键、圆标、侧边收起、原命令启动、启动别名，以及启动时是否替换当前标签 |
 
 外观主题有五套：原型、Fluent、Glyph、Braun、Glass，在「设置」里切换。
 
@@ -116,12 +116,12 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/OrbCue/release
 
 - **已读**：去掉等待提醒
 - **清除**：把卡住的条目从列表拿掉。只影响 OrbCue 的显示，不会向工具发命令；清掉之后这条不会再回来
-- **返回箭头**：跳回终端。用 `orb run` 开出的专属标签能精确回去（标签被拖出或合并过也有效）；自己手动开的终端只回到该窗口最近交互过的位置，窗口已经关掉时会提示失败，不会跳错地方
+- **返回箭头**：跳回终端。用 `orb run` 或原命令启动开出的专属标签能精确回去（标签被拖出或合并过也有效）；自己手动开的终端只回到该窗口最近交互过的位置，窗口已经关掉时会提示失败，不会跳错地方
 - 底栏「全部已读」「清除全部」对当前列表一次性操作
 - 工具进程退出后，对应条目会自动消失
 - 子任务计入所属的主任务，不单独占小球上的数字
 
-要精确跳到某一个 Windows Terminal 标签：在「设置」里给启动方式起一个短命令（启动别名），然后用这个短命令在新标签里打开工具。没设别名时，在新开的 Windows Terminal 里运行 `orb run grok`（或 `claude` / `codex` 等）效果相同。第一次用之前需要先启动过一次 OrbCue，并**新开**终端。
+要精确跳到某一个 Windows Terminal 标签：在「设置」里打开「原命令启动」。新开终端后，直接敲已连接的命令（例如 `grok`、`claude`、`codex`）就等于 `orb run grok`。也可以给 `orb run` 起一个短命令（启动别名）。这两项都没开时，在新开的 Windows Terminal 里运行 `orb run grok`。第一次用之前需要先启动过一次 OrbCue，并**新开**终端。要在当前终端里直接跑原来的程序，用 `command grok`。
 
 ### 连接
 
@@ -142,8 +142,9 @@ Windows 安装包在 [GitHub Releases](https://github.com/QZYH123/OrbCue/release
 
 ### 设置
 
+- **原命令启动**：默认关。打开后，新开的终端里直接敲已连接的命令（例如 `grok`）就等于 `orb run grok`。不改原来的程序；当前终端里要直接跑，用 `command grok`
 - **启动别名**：给 `orb run` 起短命令，方便精确跳回
-- **启动时替换当前标签页**：默认关。打开后，`orb run` 或启动别名开出新标签成功后会关掉当前这个（和 `orb run --close` 一样，仅交互式终端有效）
+- **启动时替换当前标签页**：默认关。打开后，`orb run`、原命令启动或启动别名开出新标签成功后会关掉当前这个（和 `orb run --close` 一样，仅交互式终端有效）
 - **隐藏圆标**：小球右上角不再显示 `?` / `!`
 - **收到侧边**：默认打开。拖到屏幕边缘约一个球宽内，小球会贴成半圆，略透明、不显示数字；鼠标悬停会沿同一边滑出来，移开后再贴回去。出现 `?` 或 `!` 时会保持展开，直到你再把它拖到边上。关掉则只是普通拖动
 - **完成 / 等待 / 失败提示音**、**系统通知**

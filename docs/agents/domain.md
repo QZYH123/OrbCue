@@ -20,7 +20,7 @@
 ## 不要违反的边界
 
 - 不读取 transcript、prompt、命令、代码、终端输出；不扫描进程表来猜 working/waiting；允许对 hook 记录的单一 PID 做活性查询，且只用于 `session.closed`；
-- 不替换 Agent 可执行文件，不要求用户重新安装 Agent；
+- 不替换 Agent 可执行文件，不要求用户重新安装 Agent。设置里的「原命令启动」只在交互式 shell 里加别名（Windows 另加 OrbCue 目录下的 `.cmd`），不改、不移动这个文件；`command grok` 仍跑原来的程序；
 - 不把声音、窗口和 Agent adapter 的失败传播回事件发送方；
 - 不把摘要或原始 payload 写入默认持久化；
 - 修改 Claude `settings.json`、Codex `~/.codex/hooks.json`、Cursor `~/.cursor/hooks.json` 前保留一次用户可恢复的备份，断开时只清理 Dock 自己的 Hook；

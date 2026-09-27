@@ -122,6 +122,14 @@ pub(crate) enum Command {
         #[arg(long)]
         disable: bool,
     },
+    /// Make a connected Agent command itself run `orb run`. Used by the panel.
+    #[command(hide = true, name = "direct-run")]
+    DirectRun {
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        #[arg(long)]
+        disable: bool,
+    },
     /// Start an Agent in a dedicated Windows Terminal tab.
     Run {
         /// Windows Terminal profile name or GUID. Defaults to the current tab.
@@ -229,6 +237,9 @@ fn run_early_command(command: &Command, endpoint: &Path, json_output: bool) -> O
         Command::Alias { name, clear } => run_alias_command(name.as_deref(), *clear, json_output),
         Command::ReplaceTab { enable, disable } => {
             run_replace_tab_command(*enable, *disable, json_output)
+        }
+        Command::DirectRun { enable, disable } => {
+            run_direct_run_command(*enable, *disable, json_output)
         }
         Command::Agents | Command::Connect { .. } | Command::Disconnect { .. } => {
             run_connection_command(command, json_output)
@@ -359,6 +370,44 @@ fn run_replace_tab_command(enable: bool, disable: bool, json_output: bool) -> i3
     }
 }
 
+fn run_direct_run_command(enable: bool, disable: bool, json_output: bool) -> i32 {
+    let result = if enable {
+        orbcue_connect::set_direct_run(true)
+    } else if disable {
+        orbcue_connect::set_direct_run(false)
+    } else {
+        Ok(orbcue_connect::direct_run_status())
+    };
+    match result {
+        Ok(view) => {
+            let human = if !view.enabled {
+                "原命令启动已关闭".to_owned()
+            } else if view.commands.is_empty() {
+                "原命令启动已打开。先连接工具，然后新开终端".to_owned()
+            } else {
+                format!(
+                    "原命令启动已打开：{}。新开终端后生效",
+                    view.commands.join("、")
+                )
+            };
+            print_setting(json_output, &view, &human, true, "orb direct-run")
+        }
+        Err(error) => print_setting(
+            json_output,
+            &orbcue_connect::direct_run_err(error.clone()),
+            &error,
+            false,
+            "orb direct-run",
+        ),
+    }
+}
+
+fn refresh_direct_run() {
+    if let Err(error) = orbcue_connect::refresh_direct_run() {
+        eprintln!("orb: 原命令启动未更新: {error}");
+    }
+}
+
 fn run_connection_command(command: &Command, json_output: bool) -> i32 {
     let dock_binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("orb"));
     let manager = ConnectionManager::from_environment(dock_binary);
@@ -449,6 +498,7 @@ fn run_connection_command(command: &Command, json_output: bool) -> i32 {
                     return 1;
                 }
             }
+            refresh_direct_run();
             0
         }
         Command::Disconnect { name } => {
@@ -464,6 +514,7 @@ fn run_connection_command(command: &Command, json_output: bool) -> i32 {
                     return 1;
                 }
             }
+            refresh_direct_run();
             0
         }
         _ => unreachable!("connection command dispatched separately"),
@@ -658,6 +709,7 @@ fn request_for(command: &Command) -> Result<IpcRequest, String> {
         | Command::Down
         | Command::Alias { .. }
         | Command::ReplaceTab { .. }
+        | Command::DirectRun { .. }
         | Command::Run { .. } => return Err("command is handled before event parsing".to_owned()),
     };
     Ok(request)
@@ -1776,6 +1828,10 @@ mod tests {
             enable: false,
             disable: false
         }));
+        assert!(stays_on_agent_os(&Command::DirectRun {
+            enable: false,
+            disable: false
+        }));
         assert!(trampoline_to_windows_predicate(true, true, false, false));
         assert!(!stays_on_agent_os(&Command::Status));
         assert!(!stays_on_agent_os(&Command::Up));
@@ -1979,16 +2035,12 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn proc_stat_tty_nr_decodes_like_unix98_pts() {
-        let line = "35022 (grok) S 1000 35022 35022 34821 35022 0 0 0 0 0 0 0 0 0 0 0 0 0 12345";
-        assert_eq!(super::parse_proc_stat(line), Some((1000, 34821, 12345)));
+    fn tty_nr_decodes_like_unix98_pts() {
         assert_eq!(super::new_decode_dev(34821), (136, 5));
         assert_eq!(
             super::tty_path_for_dev(136, 5).as_deref(),
             Some("/dev/pts/5")
         );
-        let spaced = "12 (my (weird) name) R 99 12 12 0 12 0 0 0 0 0 0 0 0 0 0 0 0 0 4242";
-        assert_eq!(super::parse_proc_stat(spaced), Some((99, 0, 4242)));
     }
 
     fn write_orb_exe(path: &Path, modified: SystemTime) {

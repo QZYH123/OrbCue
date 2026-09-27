@@ -113,10 +113,12 @@
   let runAliasHint = '';
   let runAliasError = '';
   let replaceTabOnRun = false;
+  let directRun = false;
   const shortcut = 'CommandOrControl+Shift+Space';
   const BADGE_KEY = 'orbcue-hide-ball-badge';
   const SIDE_DOCK_KEY = 'orbcue-side-dock';
   const REPLACE_TAB_KEY = 'orbcue-replace-tab';
+  const DIRECT_RUN_KEY = 'orbcue-direct-run';
   let badgeChannel: BroadcastChannel | null = null;
   let sideDockChannel: BroadcastChannel | null = null;
   let unsubscribe: (() => void) | undefined;
@@ -213,6 +215,7 @@
     sideDockChannel = sideDockPreference.channel;
     void loadRunAlias();
     void loadReplaceTab();
+    void loadDirectRun();
     if (previewMode) {
       const pageQ = new URLSearchParams(window.location.search).get('page');
       if (pageQ === 'audit' || pageQ === 'connections' || pageQ === 'settings' || pageQ === 'activity') {
@@ -871,29 +874,58 @@
     }
   }
 
-  async function loadReplaceTab() {
+  function loadReplaceTab() {
+    return loadSwitch(REPLACE_TAB_KEY, 'replace_tab_on_run', (value) => {
+      replaceTabOnRun = value;
+    });
+  }
+
+  function loadDirectRun() {
+    return loadSwitch(DIRECT_RUN_KEY, 'direct_run', (value) => {
+      directRun = value;
+    });
+  }
+
+  function toggleDirectRun() {
+    return toggleSwitch(directRun, DIRECT_RUN_KEY, 'set_direct_run', (value) => {
+      directRun = value;
+    });
+  }
+
+  function toggleReplaceTab() {
+    return toggleSwitch(replaceTabOnRun, REPLACE_TAB_KEY, 'set_replace_tab_on_run', (value) => {
+      replaceTabOnRun = value;
+    });
+  }
+
+  async function loadSwitch(storageKey: string, command: string, apply: (value: boolean) => void) {
     if (previewMode) {
-      replaceTabOnRun = storedFlag(REPLACE_TAB_KEY, false);
+      apply(storedFlag(storageKey, false));
       return;
     }
     try {
-      replaceTabOnRun = await invoke<boolean>('replace_tab_on_run');
+      apply(await invoke<boolean>(command));
     } catch (error) {
-      console.warn('Could not load replace-tab preference', error);
+      console.warn(`Could not load ${command}`, error);
     }
   }
 
-  async function toggleReplaceTab() {
-    const next = !replaceTabOnRun;
+  async function toggleSwitch(
+    current: boolean,
+    storageKey: string,
+    command: string,
+    apply: (value: boolean) => void,
+  ) {
+    const next = !current;
     if (previewMode) {
-      replaceTabOnRun = next;
-      persistFlag(REPLACE_TAB_KEY, next);
+      apply(next);
+      persistFlag(storageKey, next);
       return;
     }
     try {
-      replaceTabOnRun = await invoke<boolean>('set_replace_tab_on_run', { enabled: next });
+      apply(await invoke<boolean>(command, { enabled: next }));
     } catch (error) {
-      console.warn('Could not update replace-tab preference', error);
+      console.warn(`Could not update ${command}`, error);
     }
   }
 
@@ -1103,6 +1135,8 @@
     {saveRunAlias}
     {runAliasError}
     {runAliasHint}
+    {directRun}
+    {toggleDirectRun}
     {replaceTabOnRun}
     {toggleReplaceTab}
     {hideBallBadge}

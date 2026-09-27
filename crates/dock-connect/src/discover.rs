@@ -278,7 +278,7 @@ fn usable_file(candidate: &Path, excluded_dir: Option<&Path>) -> bool {
     if is_windows_interop_path(&text) {
         return false;
     }
-    candidate.is_file()
+    candidate.is_file() && !crate::direct_run::is_direct_run_shim(candidate)
 }
 
 fn select_agent(name: &str, candidates: Vec<PathBuf>) -> Option<DiscoveredAgent> {
@@ -516,6 +516,35 @@ mod tests {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.eq_ignore_ascii_case("cursor-agent.exe"))));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discover_skips_direct_run_shim() {
+        let root = std::env::temp_dir().join(format!(
+            "orbcue-shim-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock is after epoch")
+                .as_nanos()
+        ));
+        let shim_dir = root.join("shim");
+        let real_dir = root.join("real");
+        std::fs::create_dir_all(&shim_dir).unwrap();
+        std::fs::create_dir_all(&real_dir).unwrap();
+        std::fs::write(
+            shim_dir.join("grok.cmd"),
+            "@echo off\r\nrem orbcue direct-run\r\norb.exe run grok %*\r\n",
+        )
+        .unwrap();
+        std::fs::write(real_dir.join("grok"), b"real").unwrap();
+        let path = std::env::join_paths([&shim_dir, &real_dir]).unwrap();
+        let discovered = super::discover_agents_with_extras(&path, &[], None);
+        let grok = discovered
+            .iter()
+            .find(|agent| agent.name == "grok")
+            .unwrap();
+        assert_eq!(grok.path, real_dir.join("grok"));
         std::fs::remove_dir_all(root).unwrap();
     }
 

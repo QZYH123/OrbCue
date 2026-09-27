@@ -24,11 +24,6 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use thiserror::Error;
 
-#[cfg(windows)]
-fn hide_windows_console(command: &mut std::process::Command) {
-    orbcue_ipc::hide_windows_console(command);
-}
-
 #[derive(Debug, Error)]
 pub enum ServiceError {
     #[error("cannot prepare endpoint: {0}")]
@@ -575,18 +570,7 @@ fn wsl_dead_sessions(
             })
         })
         .collect();
-    let mut command = std::process::Command::new("wsl.exe");
-    hide_windows_console(&mut command);
-    command.args([
-        "-d",
-        distro,
-        "-e",
-        "sh",
-        "-c",
-        r#"exec "$HOME/.local/bin/orb" "$@""#,
-        "sh",
-        "liveness-check",
-    ]);
+    let mut command = orbcue_ipc::wsl_orb_command(Some(distro), &["liveness-check"]);
     command.env("ORBCUE_HOP", "wsl");
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
