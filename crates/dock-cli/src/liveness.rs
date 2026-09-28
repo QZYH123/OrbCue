@@ -75,6 +75,9 @@ fn current_agent_os() -> &'static str {
 pub(crate) fn is_short_lived_windows_hook_parent(exe: &str) -> bool {
     let name = exe.rsplit(['/', '\\']).next().unwrap_or(exe).trim();
     let stem = strip_ascii_suffix_ignore_case(name, ".exe");
+    // Cursor-agent.exe / node.exe under cursor-agent\versions are the
+    // agent and must not be skipped. Windows has no bash -O extglob
+    // sandbox; cmd.exe wrappers are already skipped here.
     matches!(
         stem.to_ascii_lowercase().as_str(),
         "cmd" | "conhost" | "cmd.com" | "orb"
@@ -253,15 +256,59 @@ pub(crate) fn run_liveness_check() -> i32 {
 
 #[cfg(unix)]
 fn linux_agent_liveness() -> Option<(u32, u64)> {
-    let mut pid = unsafe { libc::getppid() };
+    let pid = unsafe { libc::getppid() };
+    if pid <= 1 {
+        return None;
+    }
+    let mut nodes = Vec::new();
+    let mut current = pid;
+    for _ in 0..8 {
+        if current <= 1 {
+            break;
+        }
+        let stat = match std::fs::read_to_string(format!("/proc/{current}/stat")) {
+            Ok(stat) => stat,
+            Err(_) => break,
+        };
+        let Some((ppid, _, starttime)) = orbcue_ipc::parse_proc_stat(&stat) else {
+            break;
+        };
+        let comm = std::fs::read_to_string(format!("/proc/{current}/comm")).unwrap_or_default();
+        let cmdline = linux_process_cmdline(current);
+        nodes.push((current, ppid, comm, cmdline, starttime));
+        if ppid <= 1 || ppid == current {
+            break;
+        }
+        current = ppid;
+    }
+    let indexed: Vec<(i32, i32, &str, &str, u64)> = nodes
+        .iter()
+        .map(|(pid, ppid, comm, cmdline, starttime)| {
+            (*pid, *ppid, comm.as_str(), cmdline.as_str(), *starttime)
+        })
+        .collect();
+    resolve_linux_liveness_pid(pid, &indexed)
+}
+
+/// Walk from the hook's parent toward the agent. Cursor CLI wraps hooks in a
+/// short-lived `bash -O extglob` sandbox; recording that bash makes the 15s
+/// reaper emit `session.closed` while `cursor-agent` is still running.
+#[cfg(unix)]
+pub(crate) fn resolve_linux_liveness_pid(
+    start_pid: i32,
+    processes: &[(i32, i32, &str, &str, u64)],
+) -> Option<(u32, u64)> {
+    let mut by_pid = HashMap::with_capacity(processes.len());
+    for (pid, ppid, comm, cmdline, starttime) in processes {
+        by_pid.insert(*pid, (*ppid, *comm, *cmdline, *starttime));
+    }
+    let mut pid = start_pid;
     if pid <= 1 {
         return None;
     }
     for _ in 0..8 {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let (ppid, _, starttime) = orbcue_ipc::parse_proc_stat(&stat)?;
-        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
-        if should_skip_linux_liveness_parent(comm.trim()) {
+        let (ppid, comm, cmdline, starttime) = *by_pid.get(&pid)?;
+        if should_skip_linux_liveness_parent_with_cmd(comm.trim(), cmdline) {
             if ppid <= 1 || ppid == pid {
                 return None;
             }
@@ -274,8 +321,40 @@ fn linux_agent_liveness() -> Option<(u32, u64)> {
 }
 
 #[cfg(unix)]
+pub(crate) fn linux_process_cmdline(pid: i32) -> String {
+    let Ok(bytes) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+        return String::new();
+    };
+    String::from_utf8_lossy(&bytes)
+        .chars()
+        .take(4096)
+        .map(|character| if character == '\0' { ' ' } else { character })
+        .collect()
+}
+
+#[cfg(all(unix, test))]
 pub(crate) fn should_skip_linux_liveness_parent(comm: &str) -> bool {
-    is_short_lived_hook_parent(comm) || is_wsl_session_plumbing(comm)
+    should_skip_linux_liveness_parent_with_cmd(comm, "")
+}
+
+#[cfg(unix)]
+pub(crate) fn should_skip_linux_liveness_parent_with_cmd(comm: &str, cmdline: &str) -> bool {
+    is_short_lived_hook_parent(comm)
+        || is_wsl_session_plumbing(comm)
+        || is_cursor_sandbox_shell(comm, cmdline)
+}
+
+#[cfg(unix)]
+pub(crate) fn is_cursor_sandbox_shell(comm: &str, cmdline: &str) -> bool {
+    // Interactive bash/zsh must stay visible: walking past a login shell
+    // records SessionLeader/Relay and the session is never reaped. Only skip
+    // the one-shot wrapper Cursor uses to spawn hook scripts.
+    let comm = comm.rsplit('/').next().unwrap_or(comm);
+    if !matches!(comm, "bash" | "zsh" | "dash" | "sh" | "fish") {
+        return false;
+    }
+    cmdline.contains("__CURSOR_SANDBOX_ENV_RESTORE")
+        || (cmdline.contains("-O extglob") && cmdline.contains(" -c "))
 }
 
 #[cfg(unix)]

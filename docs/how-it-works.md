@@ -44,7 +44,7 @@ crate 目录仍叫 `dock-*`，包名是 `orbcue-*`。改领域行为先读 domai
 
 ## 连接
 
-不替换 Agent 可执行文件。只在工具自己的 hook 配置里登记 `orb hook <工具>`。WSL / Linux 脚本必须 `exec orb`，否则活性检查会把短命 hook 壳当成 Agent。
+不替换 Agent 可执行文件。只在工具自己的 hook 配置里登记 `orb hook <工具>`。WSL / Linux 脚本必须 `exec orb`，否则活性检查会把短命 hook 壳当成 Agent。Cursor 还会再包一层 `bash -O extglob` 沙箱，活性检查会跨过它，记下长寿的 `cursor-agent`。`~/.cursor/hooks.json` 对编辑器和 CLI 是同一份；只有 CLI 进程的事件会进小球。
 
 | 工具 | 改谁 |
 | --- | --- |

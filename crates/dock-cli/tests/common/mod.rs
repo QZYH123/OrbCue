@@ -37,6 +37,8 @@ pub fn isolated_env<'a>(command: &'a mut Command, root: &Path, socket: &Path) ->
         .env_remove("WSL_INTEROP")
         .env_remove("ORBCUE_WINDOWS_ORB")
         .env_remove("ORBCUE_HOP")
+        .env_remove("CURSOR_AGENT")
+        .env_remove("CURSOR_INVOKED_AS")
 }
 
 pub fn run_orb_hook(
@@ -57,6 +59,12 @@ pub fn run_orb_hook(
         .env_remove("WSL_DISTRO_NAME")
         .env_remove("WSL_INTEROP")
         .env_remove("ORBCUE_WINDOWS_ORB")
+        .env_remove("CURSOR_AGENT")
+        .env_remove("CURSOR_INVOKED_AS");
+    if provider == "cursor" {
+        command.env("CURSOR_AGENT", "1");
+    }
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

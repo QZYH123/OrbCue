@@ -71,3 +71,29 @@ fn cursor_hook_hides_windows_trampoline_summary() {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn cursor_hook_from_editor_still_acks_without_reaching_dock() {
+    let root = isolated_root("orbcue-cursor-hook-stdout");
+    let output = run_cursor_hook(&root, &|command| {
+        command
+            .env_remove("CURSOR_AGENT")
+            .env_remove("CURSOR_INVOKED_AS")
+            .env("ORBCUE_HOP", "wsl")
+            .env_remove("ORBCUE_WINDOWS_ORB");
+    });
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "ignored editor hook must stay fail-open: {:?}\nstdout: {stdout}\nstderr: {stderr}",
+        output.status.code()
+    );
+    assert_eq!(
+        stdout.trim(),
+        "{}",
+        "ignored editor hook must still ack: {stdout:?}\nstderr: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}

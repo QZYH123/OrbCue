@@ -52,7 +52,7 @@ OrbCue 把「盯着」这件事交给一颗小球。orb 是它的样子，cue �
 | Codex | `codex` | 开始、等待、完成、关闭（打断和报错看不到） |
 | Cursor Agent | `agent` / `cursor-agent` | 开始、完成、失败、关闭（选择题不会标成「等待」） |
 
-以上均指命令行（CLI）版本，不包含 Cursor 编辑器本身。无论是安装在 Windows 还是 WSL 里的工具都能接入，并在同一个小球上显示。其他工具也可以通过命令[自行接入](#给其他工具接入)。
+以上均指命令行（CLI）版本，不包含 Cursor 编辑器本身。编辑器（含 WSL Remote）与 CLI 共用用户级 `~/.cursor/hooks.json`，但 OrbCue 只认 `cursor-agent` 进程，编辑器里的 Agent / 子代理不会出现在小球上。无论是安装在 Windows 还是 WSL 里的工具都能接入，并在同一个小球上显示。其他工具也可以通过命令[自行接入](#给其他工具接入)。
 
 ## 快速开始
 

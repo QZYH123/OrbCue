@@ -774,3 +774,38 @@ fn cursor_hook_accepts_official_cli_payload_fields() {
     .unwrap();
     assert_eq!(failed.kind, EventKind::Failed);
 }
+
+#[test]
+fn cursor_session_end_with_official_close_fields_is_closed() {
+    // Captured from `agent -p` (2026.09.26-dd393fe). reason=completed means
+    // the CLI conversation exited, not a mid-turn pause. Adapter maps
+    // sessionEnd → Closed; IDE vs CLI filtering is the CLI process check.
+    let ended = cursor_hook(&serde_json::json!({
+        "hook_event_name": "sessionEnd",
+        "conversation_id": "5b9f37e5-d3ee-47e2-9c2f-651a17c9b118",
+        "session_id": "5b9f37e5-d3ee-47e2-9c2f-651a17c9b118",
+        "generation_id": "5b9f37e5-d3ee-47e2-9c2f-651a17c9b118",
+        "reason": "completed",
+        "duration_ms": 10316,
+        "is_background_agent": false,
+        "final_status": "completed",
+        "cursor_version": "2026.09.26-dd393fe",
+        "workspace_roots": ["/tmp/orbcue-cursor-probe"]
+    }))
+    .unwrap();
+    assert_eq!(ended.kind, EventKind::Closed);
+    assert_eq!(ended.source, "cursor");
+    assert_eq!(ended.session_id, "5b9f37e5-d3ee-47e2-9c2f-651a17c9b118");
+    assert!(ended.metadata.is_empty());
+
+    let started = cursor_hook(&serde_json::json!({
+        "hook_event_name": "sessionStart",
+        "conversation_id": "5b9f37e5-d3ee-47e2-9c2f-651a17c9b118",
+        "session_id": "5b9f37e5-d3ee-47e2-9c2f-651a17c9b118",
+        "is_background_agent": false,
+        "cursor_version": "2026.09.26-dd393fe",
+        "workspace_roots": ["/tmp/orbcue-cursor-probe"]
+    }))
+    .unwrap();
+    assert_eq!(started.kind, EventKind::Idle);
+}

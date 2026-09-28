@@ -11,13 +11,15 @@ use hop::{
 };
 #[cfg(test)]
 use hop::{newest_windows_dock_under_mnt, stays_on_agent_os, trampoline_to_windows_predicate};
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 use liveness::is_short_lived_hook_parent;
 #[cfg(test)]
 use liveness::liveness_from_env;
 use liveness::{attach_liveness, platform_parent_liveness, run_liveness_check};
 #[cfg(any(windows, test))]
 use liveness::{is_short_lived_windows_hook_parent, resolve_windows_liveness_pid};
+#[cfg(unix)]
+use liveness::{linux_process_cmdline, should_skip_linux_liveness_parent_with_cmd};
 #[cfg(windows)]
 use liveness::{windows_process_tree, WindowsProcess};
 use orbcue_adapters::{claude_hook, codex_hook, cursor_hook, grok_hook};
@@ -551,7 +553,21 @@ fn run_hook(provider: HookProvider, endpoint: &Path, json_output: bool) {
         }
         return;
     };
-    event.source = hook_source_from_identities(&event.source, &hook_invoker_identities());
+    let identities = hook_invoker_identities();
+    event.source = hook_source_from_identities(&event.source, &identities);
+    // Cursor IDE and CLI share ~/.cursor/hooks.json. Product scope is CLI
+    // (`agent` / `cursor-agent`); editor Agent / Task subagents must not
+    // create rows or session.closed. Distinguish by process identity
+    // (`cursor-agent` in the parent chain) or CLI hook env
+    // (`CURSOR_AGENT=1`, `CURSOR_INVOKED_AS=agent|cursor-agent`).
+    if should_ignore_non_cli_cursor_hook(&event.source, &identities) {
+        if json_output {
+            println!("{{\"accepted\":false,\"rejection_reason\":\"not_cursor_cli\"}}");
+        } else {
+            acknowledge_cursor_hook(cursor_ack);
+        }
+        return;
+    }
     attach_terminal_id(&mut event);
     attach_liveness(&mut event);
     maybe_set_terminal_title(&event);
@@ -1003,6 +1019,60 @@ fn looks_like_cursor_cli_identity(identity: &str) -> bool {
         .any(|segment| path_segment_stem(segment).eq_ignore_ascii_case("cursor-agent"))
 }
 
+fn looks_like_cursor_editor_identity(identity: &str) -> bool {
+    if looks_like_cursor_cli_identity(identity) {
+        return false;
+    }
+    let lower = identity.replace('\\', "/").to_ascii_lowercase();
+    if lower.contains("/cursor/resources/app/")
+        || lower.contains("/.cursor-server/")
+        || lower.contains("/programs/cursor/")
+    {
+        return true;
+    }
+    lower
+        .split(|character: char| character == '/' || character.is_ascii_whitespace())
+        .any(|segment| {
+            let stem = path_segment_stem(segment);
+            stem.eq_ignore_ascii_case("cursor") || stem.eq_ignore_ascii_case("cursor helper")
+        })
+}
+
+fn cursor_cli_hook_env() -> bool {
+    if std::env::var("CURSOR_AGENT").ok().as_deref() == Some("1") {
+        return true;
+    }
+    std::env::var("CURSOR_INVOKED_AS")
+        .ok()
+        .is_some_and(|value| {
+            let stem = path_segment_stem(value.trim());
+            stem.eq_ignore_ascii_case("agent") || stem.eq_ignore_ascii_case("cursor-agent")
+        })
+}
+
+fn cursor_hook_is_from_cli(identities: &[String]) -> bool {
+    identities
+        .iter()
+        .any(|identity| looks_like_cursor_cli_identity(identity))
+        || cursor_cli_hook_env()
+}
+
+fn should_ignore_non_cli_cursor_hook(source: &str, identities: &[String]) -> bool {
+    if cursor_hook_is_from_cli(identities) {
+        return false;
+    }
+    if source.eq_ignore_ascii_case("cursor") {
+        return true;
+    }
+    source.eq_ignore_ascii_case("claude")
+        && identities
+            .iter()
+            .any(|identity| looks_like_cursor_editor_identity(identity))
+        && !identities
+            .iter()
+            .any(|identity| looks_like_claude_cli_identity(identity))
+}
+
 fn looks_like_claude_cli_identity(identity: &str) -> bool {
     let lower = identity.replace('\\', "/").to_ascii_lowercase();
     if lower.contains("/claude/versions/") {
@@ -1056,7 +1126,8 @@ fn linux_hook_invoker_identities() -> Vec<String> {
             break;
         };
         let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
-        if !is_short_lived_hook_parent(comm.trim()) {
+        let cmdline = linux_process_cmdline(pid);
+        if !should_skip_linux_liveness_parent_with_cmd(comm.trim(), &cmdline) {
             if let Some(identity) = linux_process_identity(pid as u32, comm.trim()) {
                 identities.push(identity);
             }
@@ -1624,9 +1695,10 @@ fn runtime_state_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        hook_source_from_identities, is_short_lived_windows_hook_parent,
+        cursor_hook_is_from_cli, hook_source_from_identities, is_short_lived_windows_hook_parent,
         looks_like_claude_cli_identity, looks_like_cursor_cli_identity,
-        newest_windows_dock_under_mnt, resolve_windows_liveness_pid, stays_on_agent_os,
+        looks_like_cursor_editor_identity, newest_windows_dock_under_mnt,
+        resolve_windows_liveness_pid, should_ignore_non_cli_cursor_hook, stays_on_agent_os,
         trampoline_to_windows_predicate, Command, WINDOWS_APP_FOLDER,
     };
     use orbcue_core::{DockEvent, EventKind};
@@ -1718,6 +1790,50 @@ mod tests {
             "cursor"
         );
         assert_eq!(hook_source_from_identities("claude", &[]), "claude");
+
+        assert!(looks_like_cursor_editor_identity(
+            r"C:\Users\u\AppData\Local\Programs\cursor\Cursor.exe"
+        ));
+        assert!(looks_like_cursor_editor_identity(
+            "/mnt/c/Users/u/AppData/Local/Programs/cursor/resources/app/bin/cursor"
+        ));
+        assert!(looks_like_cursor_editor_identity("/usr/bin/cursor"));
+        assert!(!looks_like_cursor_editor_identity(
+            "/home/u/.local/share/cursor-agent/versions/x/node"
+        ));
+        assert!(!looks_like_cursor_editor_identity("cursor-agent.exe"));
+    }
+
+    #[test]
+    fn cursor_editor_hooks_are_ignored_but_cli_is_kept() {
+        let _guard = lock_env();
+        let previous_agent = std::env::var_os("CURSOR_AGENT");
+        let previous_invoked = std::env::var_os("CURSOR_INVOKED_AS");
+        std::env::remove_var("CURSOR_AGENT");
+        std::env::remove_var("CURSOR_INVOKED_AS");
+
+        let editor = [r"C:\Users\u\AppData\Local\Programs\cursor\Cursor.exe".to_owned()];
+        assert!(should_ignore_non_cli_cursor_hook("cursor", &editor));
+        assert!(should_ignore_non_cli_cursor_hook("claude", &editor));
+        assert!(!should_ignore_non_cli_cursor_hook(
+            "cursor",
+            &["/home/u/.local/share/cursor-agent/versions/x/node".to_owned()]
+        ));
+        assert!(!should_ignore_non_cli_cursor_hook(
+            "claude",
+            &["/home/u/.local/share/claude/versions/2.1.226".to_owned()]
+        ));
+        assert!(should_ignore_non_cli_cursor_hook("cursor", &[]));
+
+        std::env::set_var("CURSOR_AGENT", "1");
+        assert!(cursor_hook_is_from_cli(&[]));
+        assert!(!should_ignore_non_cli_cursor_hook("cursor", &[]));
+        std::env::remove_var("CURSOR_AGENT");
+        std::env::set_var("CURSOR_INVOKED_AS", "cursor-agent");
+        assert!(!should_ignore_non_cli_cursor_hook("cursor", &[]));
+
+        restore_env("CURSOR_AGENT", previous_agent);
+        restore_env("CURSOR_INVOKED_AS", previous_invoked);
     }
 
     #[test]
@@ -1792,6 +1908,69 @@ mod tests {
         assert!(super::liveness::should_skip_linux_liveness_parent("sh"));
         assert!(!super::liveness::should_skip_linux_liveness_parent("bash"));
         assert!(!super::liveness::should_skip_linux_liveness_parent("grok"));
+        assert!(super::liveness::is_cursor_sandbox_shell(
+            "bash",
+            "/bin/bash -O extglob -c snap=$(command cat <&3) && builtin eval \"${__CURSOR_SANDBOX_ENV_RESTORE:-}\""
+        ));
+        assert!(super::liveness::should_skip_linux_liveness_parent_with_cmd(
+            "bash",
+            "/bin/bash -O extglob -c hook.sh"
+        ));
+        assert!(
+            !super::liveness::should_skip_linux_liveness_parent_with_cmd(
+                "bash",
+                "/bin/bash -l /run/user/1000/orbcue-orb-7d386a.sh"
+            ),
+            "orb run login shell must stay visible so we do not walk to SessionLeader"
+        );
+        assert!(!super::liveness::should_skip_linux_liveness_parent_with_cmd(
+            "MainThread",
+            "/home/u/.local/bin/cursor-agent --use-system-ca /home/u/.local/share/cursor-agent/versions/x/index.js"
+        ));
+
+        let cursor_hook_tree = [
+            (
+                10,
+                9,
+                "sh",
+                "/bin/sh /home/u/.config/orbcue/cursor-hook.sh",
+                1u64,
+            ),
+            (
+                9,
+                8,
+                "bash",
+                "/bin/bash -O extglob -c snap=$(command cat <&3) && builtin eval \"${__CURSOR_SANDBOX_ENV_RESTORE:-}\"",
+                2u64,
+            ),
+            (
+                8,
+                1,
+                "MainThread",
+                "/home/u/.local/bin/cursor-agent --use-system-ca /home/u/.local/share/cursor-agent/versions/x/index.js",
+                100u64,
+            ),
+        ];
+        assert_eq!(
+            super::liveness::resolve_linux_liveness_pid(10, &cursor_hook_tree),
+            Some((8, 100)),
+            "must record the long-lived cursor-agent, not the sandbox bash"
+        );
+
+        let grok_tree = [
+            (
+                10,
+                9,
+                "sh",
+                "/bin/sh /home/u/.config/orbcue/grok-hook.sh",
+                1,
+            ),
+            (9, 1, "grok", "/home/u/.grok/bin/grok", 70),
+        ];
+        assert_eq!(
+            super::liveness::resolve_linux_liveness_pid(10, &grok_tree),
+            Some((9, 70))
+        );
     }
 
     #[test]
