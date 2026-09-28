@@ -14,7 +14,26 @@ pub fn codex_hook(payload: &Value) -> Option<DockEvent> {
 }
 
 pub fn cursor_hook(payload: &Value) -> Option<DockEvent> {
+    if is_cursor_unsubscribed_tool_event(payload) {
+        return None;
+    }
     map_cli_hook("cursor", payload)
+}
+
+/// Cursor's own hooks.json does not subscribe to Pre/Post tool. Cursor CLI
+/// still loads Claude Code `~/.claude/settings.json` and remaps those events
+/// to source `cursor`. A Task/subagent `PostToolUse` uses the child's
+/// `conversation_id` and would otherwise create/steal the terminal row, so
+/// the parent's later `stop` cannot mark the visible session completed.
+pub fn is_cursor_unsubscribed_tool_event(payload: &Value) -> bool {
+    let Some(event_name) = extract_hook_event(payload) else {
+        return false;
+    };
+    match event_name.as_str() {
+        "post_tool_use" | "post_tool_use_failure" => true,
+        "pre_tool_use" => !is_ask_user_question(payload),
+        _ => false,
+    }
 }
 
 pub fn grok_hook(payload: &Value) -> Option<DockEvent> {

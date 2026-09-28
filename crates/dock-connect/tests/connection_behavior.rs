@@ -1086,13 +1086,14 @@ fn cursor_preview_and_listing_admit_missing_stop() {
     assert!(preview
         .notes
         .iter()
-        .any(|note| note.contains("不会通知已经结束") && note.contains("工作中")));
+        .any(|note| note.contains("打印模式") && note.contains("-p") && note.contains("进程退出")));
     assert!(preview
         .notes
         .iter()
         .any(|note| note.contains("系统通知") && note.contains("设置")));
     let record = manager.connect("cursor", &original).unwrap();
-    assert!(record.limitation.contains("不会通知已经结束"));
+    assert!(record.limitation.contains("打印模式"));
+    assert!(record.limitation.contains("-p"));
     assert_eq!(
         manager.records()[0].limitation,
         ConnectionMethod::CursorHook.limitation()

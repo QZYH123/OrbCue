@@ -97,3 +97,28 @@ fn cursor_hook_from_editor_still_acks_without_reaching_dock() {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn cursor_hook_drops_task_child_post_tool_use() {
+    let root = isolated_root("orbcue-cursor-hook-stdout");
+    let payload = br#"{"hook_event_name":"postToolUse","conversation_id":"2f6d3fa6-7264-45c6-9ec0-433e6bf19f5d","session_id":"2f6d3fa6-7264-45c6-9ec0-433e6bf19f5d","tool_name":"Shell","cursor_version":"2026.09.26-dd393fe"}"#;
+    let output = run_orb_hook(&root, "cursor", payload, &|command| {
+        command
+            .env("ORBCUE_HOP", "wsl")
+            .env_remove("ORBCUE_WINDOWS_ORB");
+    });
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "dropped tool hook must stay fail-open: {:?}\nstdout: {stdout}\nstderr: {stderr}",
+        output.status.code()
+    );
+    assert_eq!(
+        stdout.trim(),
+        "{}",
+        "dropped Cursor tool hook must still ack: {stdout:?}\nstderr: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}

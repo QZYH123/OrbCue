@@ -717,15 +717,23 @@ impl DockState {
             if for_create && should_fork_resume(matches[0].1, event) {
                 return fork_resume_key(event, &base);
             }
-            if !for_create && !event_fits_instance(matches[0].1, event) {
-                return String::new();
+            if for_create || event_fits_instance(matches[0].1, event) {
+                return matches[0].0.clone();
             }
-            return matches[0].0.clone();
         }
         if for_create && !matches.is_empty() {
             return fork_resume_key(event, &base);
         }
         if !for_create {
+            // Task/subagent hooks may have replaced the visible row's
+            // session_id. Parent stop still carries the parent id; apply it
+            // to the only row on that terminal. Never for Closed: an unknown
+            // session ending must not remove a live row (liveness reaps it).
+            if !matches!(event.kind, EventKind::Closed) {
+                if let Some(key) = unique_terminal_session_key(self, event) {
+                    return key;
+                }
+            }
             return String::new();
         }
         base
@@ -1134,16 +1142,21 @@ fn event_fits_instance(record: &SessionRecord, event: &DockEvent) -> bool {
             return false;
         }
     }
-    if let Some(terminal_id) = normalize_optional(&event.terminal_id) {
-        if record
-            .terminal_id
-            .as_deref()
-            .is_some_and(|existing| existing != terminal_id)
-        {
-            return false;
+    true
+}
+
+fn unique_terminal_session_key(state: &DockState, event: &DockEvent) -> Option<String> {
+    let terminal_id = normalize_optional(&event.terminal_id)?;
+    let mut found = None;
+    for (key, record) in &state.sessions {
+        if record.source == event.source && record.terminal_id.as_deref() == Some(terminal_id) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(key.clone());
         }
     }
-    true
+    found
 }
 
 fn same_liveness(existing: &AgentLiveness, incoming: &AgentLiveness) -> bool {

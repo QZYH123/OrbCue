@@ -1156,3 +1156,58 @@ fn unique_completed_sessions_are_not_evicted_from_memory() {
     let applied = state.apply(event("late-start", EventKind::Started, "late"));
     assert_eq!(applied.snapshot.tracked_count, N + 1);
 }
+
+#[test]
+fn completed_without_liveness_still_matches_the_only_session_if_terminal_differs() {
+    let mut state = DockState::new();
+    let mut working = DockEvent::new("e1", EventKind::Working, "cursor", "parent");
+    attach_liveness(&mut working, 11, 100);
+    state.apply(working.with_terminal_id("orb:probe1"));
+
+    let completed = DockEvent::new("e2", EventKind::Completed, "cursor", "parent")
+        .with_terminal_id("/dev/pts/6");
+    let result = state.apply(completed);
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(result.snapshot.sessions[0].state, SessionState::Completed);
+    assert_eq!(
+        result.snapshot.sessions[0].terminal_id.as_deref(),
+        Some("/dev/pts/6")
+    );
+}
+
+#[test]
+fn parent_stop_completes_the_row_stolen_by_a_child_conversation() {
+    let mut state = DockState::new();
+    let mut parent = DockEvent::new("e1", EventKind::Working, "cursor", "parent-sid");
+    attach_liveness(&mut parent, 11, 100);
+    state.apply(parent.with_terminal_id("orb:probeT"));
+
+    let mut child = DockEvent::new("e2", EventKind::Working, "cursor", "child-sid");
+    attach_liveness(&mut child, 11, 100);
+    state.apply(child.with_terminal_id("orb:probeT"));
+    assert_eq!(state.snapshot().tracked_count, 1);
+    assert_eq!(state.snapshot().sessions[0].session_id, "child-sid");
+    assert_eq!(state.snapshot().sessions[0].state, SessionState::Working);
+
+    let parent_stop = DockEvent::new("e3", EventKind::Completed, "cursor", "parent-sid")
+        .with_terminal_id("orb:probeT");
+    let result = state.apply(parent_stop);
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(result.snapshot.sessions[0].state, SessionState::Completed);
+    assert_eq!(result.snapshot.sessions[0].session_id, "child-sid");
+}
+
+#[test]
+fn unknown_session_close_does_not_remove_the_only_row_on_that_terminal() {
+    let mut state = DockState::new();
+    let mut parent = DockEvent::new("e1", EventKind::Working, "cursor", "parent-sid");
+    attach_liveness(&mut parent, 11, 100);
+    state.apply(parent.with_terminal_id("orb:probeT"));
+
+    let mut child_end = DockEvent::new("e2", EventKind::Closed, "cursor", "child-sid");
+    attach_liveness(&mut child_end, 11, 100);
+    let result = state.apply(child_end.with_terminal_id("orb:probeT"));
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(result.snapshot.sessions[0].session_id, "parent-sid");
+    assert_eq!(result.snapshot.sessions[0].state, SessionState::Working);
+}

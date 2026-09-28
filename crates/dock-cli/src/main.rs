@@ -22,7 +22,9 @@ use liveness::{is_short_lived_windows_hook_parent, resolve_windows_liveness_pid}
 use liveness::{linux_process_cmdline, should_skip_linux_liveness_parent_with_cmd};
 #[cfg(windows)]
 use liveness::{windows_process_tree, WindowsProcess};
-use orbcue_adapters::{claude_hook, codex_hook, cursor_hook, grok_hook};
+use orbcue_adapters::{
+    claude_hook, codex_hook, cursor_hook, grok_hook, is_cursor_unsubscribed_tool_event,
+};
 use orbcue_connect::{ConnectionManager, ConnectionMethod, ConnectionPreview, PreviewAction};
 use orbcue_core::{
     dock_tab_title, dock_terminal_marker, session_terminal_title, DockEvent, EventKind, Severity,
@@ -568,6 +570,17 @@ fn run_hook(provider: HookProvider, endpoint: &Path, json_output: bool) {
         }
         return;
     }
+    // Claude-compat hooks remapped to `cursor` still carry PostToolUse.
+    // Cursor does not subscribe those; applying them as Working steals the
+    // row onto a Task conversation_id and the parent's stop misses it.
+    if should_drop_cursor_incompatible_hook(&event.source, &payload) {
+        if json_output {
+            println!("{{\"accepted\":false,\"rejection_reason\":\"unmapped_event\"}}");
+        } else {
+            acknowledge_cursor_hook(cursor_ack);
+        }
+        return;
+    }
     attach_terminal_id(&mut event);
     attach_liveness(&mut event);
     maybe_set_terminal_title(&event);
@@ -1055,6 +1068,10 @@ fn cursor_hook_is_from_cli(identities: &[String]) -> bool {
         .iter()
         .any(|identity| looks_like_cursor_cli_identity(identity))
         || cursor_cli_hook_env()
+}
+
+fn should_drop_cursor_incompatible_hook(source: &str, payload: &Value) -> bool {
+    source.eq_ignore_ascii_case("cursor") && is_cursor_unsubscribed_tool_event(payload)
 }
 
 fn should_ignore_non_cli_cursor_hook(source: &str, identities: &[String]) -> bool {
@@ -1698,8 +1715,9 @@ mod tests {
         cursor_hook_is_from_cli, hook_source_from_identities, is_short_lived_windows_hook_parent,
         looks_like_claude_cli_identity, looks_like_cursor_cli_identity,
         looks_like_cursor_editor_identity, newest_windows_dock_under_mnt,
-        resolve_windows_liveness_pid, should_ignore_non_cli_cursor_hook, stays_on_agent_os,
-        trampoline_to_windows_predicate, Command, WINDOWS_APP_FOLDER,
+        resolve_windows_liveness_pid, should_drop_cursor_incompatible_hook,
+        should_ignore_non_cli_cursor_hook, stays_on_agent_os, trampoline_to_windows_predicate,
+        Command, WINDOWS_APP_FOLDER,
     };
     use orbcue_core::{DockEvent, EventKind};
     use std::ffi::OsString;
@@ -1834,6 +1852,34 @@ mod tests {
 
         restore_env("CURSOR_AGENT", previous_agent);
         restore_env("CURSOR_INVOKED_AS", previous_invoked);
+    }
+
+    #[test]
+    fn remapped_claude_tool_hooks_are_dropped_for_cursor() {
+        let post = serde_json::json!({
+            "hook_event_name": "PostToolUse",
+            "conversation_id": "child-task",
+            "session_id": "child-task",
+            "tool_name": "Shell",
+            "cursor_version": "2026.09.26-dd393fe"
+        });
+        assert!(should_drop_cursor_incompatible_hook("cursor", &post));
+        assert!(!should_drop_cursor_incompatible_hook("claude", &post));
+        assert!(!should_drop_cursor_incompatible_hook(
+            "cursor",
+            &serde_json::json!({
+                "hook_event_name": "stop",
+                "conversation_id": "parent",
+                "status": "completed"
+            })
+        ));
+        assert!(!should_drop_cursor_incompatible_hook(
+            "cursor",
+            &serde_json::json!({
+                "hook_event_name": "beforeSubmitPrompt",
+                "conversation_id": "parent"
+            })
+        ));
     }
 
     #[test]

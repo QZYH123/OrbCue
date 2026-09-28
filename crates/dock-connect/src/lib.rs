@@ -84,7 +84,9 @@ impl ConnectionMethod {
             Self::CodexHook => {
                 "用 Esc 或 Ctrl+C 打断时不会离开「工作中」，对话报错也不会显示为失败；可用「清除」，或退出 Codex 后任务会消失"
             }
-            Self::CursorHook => "偶尔不会通知已经结束，任务会停在「工作中」，直到进程退出",
+            Self::CursorHook => {
+                "打印模式（-p）没有回合结束通知，条目要等进程退出后才消失"
+            }
         }
     }
 }

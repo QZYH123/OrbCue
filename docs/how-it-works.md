@@ -44,7 +44,7 @@ crate 目录仍叫 `dock-*`，包名是 `orbcue-*`。改领域行为先读 domai
 
 ## 连接
 
-不替换 Agent 可执行文件。只在工具自己的 hook 配置里登记 `orb hook <工具>`。WSL / Linux 脚本必须 `exec orb`，否则活性检查会把短命 hook 壳当成 Agent。Cursor 还会再包一层 `bash -O extglob` 沙箱，活性检查会跨过它，记下长寿的 `cursor-agent`。`~/.cursor/hooks.json` 对编辑器和 CLI 是同一份；只有 CLI 进程的事件会进小球。
+不替换 Agent 可执行文件。只在工具自己的 hook 配置里登记 `orb hook <工具>`。WSL / Linux 脚本必须 `exec orb`，否则活性检查会把短命 hook 壳当成 Agent。Cursor 还会再包一层 `bash -O extglob` 沙箱，活性检查会跨过它，记下长寿的 `cursor-agent`。`~/.cursor/hooks.json` 对编辑器和 CLI 是同一份；只有 CLI 进程的事件会进小球。Cursor CLI 也会跑 `~/.claude/settings.json` 里的 hook，并把 source 标成 `cursor`；其中 Pre/Post tool 不进小球，以免 Task 子会话抢走终端行。
 
 | 工具 | 改谁 |
 | --- | --- |
@@ -72,6 +72,6 @@ Windows Terminal 一个 HWND 对应整窗；WSL 里 OSC 改标题常被中继吞
 
 **故意留空：** 连接前已在跑的会话；手开终端只能窗口级跳回；面板不展示对话。
 
-**工具没发的节点：** Codex 打断/报错常停在工作中；Cursor 选择题不走 hook；Claude/Codex 授权框点拒绝往往没 follow-up。连接行上有 limitation；「清除」和进程退出后的活性检查是出口。
+**工具没发的节点：** Codex 打断/报错常停在工作中；Cursor 选择题不走 hook；Cursor 打印模式（`-p`）没有中途 `stop`，要等进程退出；Claude/Codex 授权框点拒绝往往没 follow-up。连接行上有 limitation；「清除」和进程退出后的活性检查是出口。
 
 **部署：** 两份 daemon；WSL 的 `orb` 没转到 Windows 管道；桌面 PATH 看不到 fnm 临时路径。先看当前 `orb` 连的是命名管道还是 WSL socket，有没有第二份 `orbd`。不要先改状态机。

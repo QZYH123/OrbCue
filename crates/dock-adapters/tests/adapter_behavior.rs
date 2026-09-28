@@ -809,3 +809,47 @@ fn cursor_session_end_with_official_close_fields_is_closed() {
     .unwrap();
     assert_eq!(started.kind, EventKind::Idle);
 }
+
+#[test]
+fn cursor_hook_drops_claude_compat_tool_events() {
+    // Captured from Cursor CLI Task child (2026.09.26-dd393fe). Claude
+    // settings.json still fires this; mapping it to Working steals the row.
+    let child_post = cursor_hook(&serde_json::json!({
+        "hook_event_name": "postToolUse",
+        "conversation_id": "2f6d3fa6-7264-45c6-9ec0-433e6bf19f5d",
+        "session_id": "2f6d3fa6-7264-45c6-9ec0-433e6bf19f5d",
+        "generation_id": "2f6d3fa6-7264-45c6-9ec0-433e6bf19f5d",
+        "tool_name": "Shell",
+        "tool_use_id": "f574fc6d-8d28-45fc-b6da-ab1864eb49fa",
+        "cursor_version": "2026.09.26-dd393fe",
+        "workspace_roots": ["/tmp/orbcue-cursor-probe3"]
+    }));
+    assert!(child_post.is_none());
+    assert!(cursor_hook(&serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "conversation_id": "child-task",
+        "tool_name": "Shell"
+    }))
+    .is_none());
+    assert!(cursor_hook(&serde_json::json!({
+        "hook_event_name": "PostToolUseFailure",
+        "conversation_id": "child-task"
+    }))
+    .is_none());
+    assert!(cursor_hook(&serde_json::json!({
+        "hook_event_name": "preToolUse",
+        "conversation_id": "child-task",
+        "tool_name": "Shell"
+    }))
+    .is_none());
+    assert_eq!(
+        claude_hook(&serde_json::json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": "claude-session",
+            "tool_name": "Read"
+        }))
+        .unwrap()
+        .kind,
+        EventKind::Working
+    );
+}
