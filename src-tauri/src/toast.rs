@@ -26,6 +26,15 @@ pub fn preview_attention_toast(app: &AppHandle) -> Result<(), String> {
     })
 }
 
+pub fn preview_completion_toast(app: &AppHandle) -> Result<(), String> {
+    PresenterToastSink { app: app.clone() }.show(&ToastSpec {
+        source: "dock".to_owned(),
+        session_id: "preview".to_owned(),
+        title: "完成通知已打开".to_owned(),
+        body: "任务正常完成时会再弹出一次".to_owned(),
+    })
+}
+
 impl NotificationSink for PresenterToastSink {
     fn show(&self, toast: &ToastSpec) -> Result<(), String> {
         #[cfg(windows)]

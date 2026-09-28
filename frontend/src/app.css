@@ -83,6 +83,30 @@ html, body, #app {
   font-size: 11px;
 }
 .alias-hint.error { color: var(--fail, #e07a7a); }
+.phone-row {
+  cursor: default;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.phone-row form {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+.phone-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--line, rgba(255, 255, 255, .12));
+  border-radius: 8px;
+  color: inherit;
+  background: var(--card, rgba(255, 255, 255, .06));
+  font: inherit;
+  font-size: 12px;
+}
+.phone-row input:focus { outline: 1px solid var(--working, #5ecf8f); }
+.phone-row button:disabled { opacity: .55; cursor: default; }
 
 .onboarding {
   gap: 10px;
@@ -508,6 +532,12 @@ button { font: inherit; }
   color: inherit;
   text-align: left;
   cursor: pointer;
+}
+.setting-row.phone-row {
+  align-items: stretch;
+  cursor: default;
+  padding-top: 4px;
+  padding-bottom: 4px;
 }
 .session-content, .audit-content, .connection-content, .hero-main {
   min-width: 0;

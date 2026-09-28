@@ -17,9 +17,10 @@ pub use jump::{
     TERMINAL_WINDOW_CLASSES,
 };
 pub use notify::{
-    attention_click_followup, attention_jump, dispatch_attention_toast, highlight_target,
-    AttentionClickFollowup, AttentionJump, HighlightTarget, NotificationSink, ToastDispatch,
-    ToastSpec,
+    attention_click_followup, attention_jump, cue_project_path, dispatch_attention_toast,
+    highlight_target, normalize_phone_notify_url, phone_notify_for_attention, phone_notify_request,
+    AttentionClickFollowup, AttentionJump, HighlightTarget, NotificationSink, PhoneNotifyRequest,
+    PhoneNotifyUrlError, ToastDispatch, ToastSpec,
 };
 
 use serde::{Deserialize, Serialize};

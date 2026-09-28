@@ -88,6 +88,7 @@
     failure: storedFlag(soundKeys.failure, true),
   };
   let notificationsEnabled = storedFlag('notifications-enabled', true);
+  let completionNotifyEnabled = storedFlag('completion-notify-enabled', true);
   let highlightedKey = '';
   let autostartEnabled = false;
   let autostartChecked = false;
@@ -112,6 +113,10 @@
   let runAliasDraft = '';
   let runAliasHint = '';
   let runAliasError = '';
+  let phoneNotifyDraft = '';
+  let phoneNotifyHint = '';
+  let phoneNotifyError = '';
+  let phoneNotifySaving = false;
   let replaceTabOnRun = false;
   let directRun = false;
   const shortcut = 'CommandOrControl+Shift+Space';
@@ -216,6 +221,7 @@
     void loadRunAlias();
     void loadReplaceTab();
     void loadDirectRun();
+    void loadPhoneNotify();
     if (previewMode) {
       const pageQ = new URLSearchParams(window.location.search).get('page');
       if (pageQ === 'audit' || pageQ === 'connections' || pageQ === 'settings' || pageQ === 'activity') {
@@ -249,6 +255,9 @@
               }
             }
             await invoke('set_notification_enabled', { enabled: notificationsEnabled });
+            await invoke('set_completion_notification_enabled', {
+              enabled: completionNotifyEnabled,
+            });
           } catch (error) {
             console.warn('Could not sync notification preference', error);
           }
@@ -817,6 +826,19 @@
     }
   }
 
+  async function toggleCompletionNotify() {
+    const next = !completionNotifyEnabled;
+    completionNotifyEnabled = next;
+    persistFlag('completion-notify-enabled', next);
+    if (previewMode) return;
+    try {
+      await invoke('set_completion_notification_enabled', { enabled: next });
+      if (next && notificationsEnabled) await invoke('preview_completion_notification');
+    } catch (error) {
+      console.warn('Could not update completion notification', error);
+    }
+  }
+
   async function toggleNotifications() {
     if (notificationsEnabled) {
       notificationsEnabled = false;
@@ -926,6 +948,48 @@
       apply(await invoke<boolean>(command, { enabled: next }));
     } catch (error) {
       console.warn(`Could not update ${command}`, error);
+    }
+  }
+
+  async function loadPhoneNotify() {
+    phoneNotifyError = '';
+    if (previewMode) return;
+    try {
+      phoneNotifyDraft = (await invoke<string>('phone_notify_url')) || '';
+    } catch (error) {
+      phoneNotifyError = String(error);
+    }
+  }
+
+  async function savePhoneNotify(event: SubmitEvent) {
+    event.preventDefault();
+    if (phoneNotifySaving) return;
+    const url = phoneNotifyDraft.trim();
+    phoneNotifyError = '';
+    phoneNotifyHint = '';
+    if (previewMode) {
+      phoneNotifyDraft = url;
+      phoneNotifyHint = url ? '预览不会发送' : '已关闭手机提醒';
+      return;
+    }
+    phoneNotifySaving = true;
+    try {
+      const saved = (await invoke<string>('set_phone_notify_url', { url })) || '';
+      phoneNotifyDraft = saved;
+      if (!saved) {
+        phoneNotifyHint = '已关闭手机提醒';
+        return;
+      }
+      try {
+        await invoke('preview_phone_notify');
+        phoneNotifyHint = '已发一条测试到手机';
+      } catch (error) {
+        phoneNotifyError = `已保存，测试没发出去：${error}`;
+      }
+    } catch (error) {
+      phoneNotifyError = String(error);
+    } finally {
+      phoneNotifySaving = false;
     }
   }
 
@@ -1147,6 +1211,13 @@
     {toggleSound}
     {notificationsEnabled}
     {toggleNotifications}
+    {completionNotifyEnabled}
+    {toggleCompletionNotify}
+    bind:phoneNotifyDraft
+    {savePhoneNotify}
+    {phoneNotifyError}
+    {phoneNotifyHint}
+    {phoneNotifySaving}
     {autostartEnabled}
     {toggleAutostart}
     {shortcutEnabled}

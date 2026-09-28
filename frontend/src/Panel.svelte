@@ -68,6 +68,13 @@
   export let toggleSound: (channel: 'completion' | 'attention' | 'failure') => void;
   export let notificationsEnabled: boolean;
   export let toggleNotifications: () => void;
+  export let completionNotifyEnabled: boolean;
+  export let toggleCompletionNotify: () => void;
+  export let phoneNotifyDraft: string;
+  export let savePhoneNotify: (event: SubmitEvent) => void;
+  export let phoneNotifyError: string;
+  export let phoneNotifyHint: string;
+  export let phoneNotifySaving: boolean;
   export let autostartEnabled: boolean;
   export let toggleAutostart: () => void;
   export let shortcutEnabled: boolean;
@@ -349,12 +356,25 @@
         {@render switchRow(soundEnabled.completion, '完成提示音', '任务正常完成时播放短音', () => toggleSound('completion'))}
         {@render switchRow(soundEnabled.attention, '等待提示音', '等待输入或授权时播放短音', () => toggleSound('attention'))}
         {@render switchRow(soundEnabled.failure, '失败提示音', '任务失败时播放较低音调', () => toggleSound('failure'))}
-        {@render switchRow(notificationsEnabled, '系统通知', '等待输入、授权或失败时弹出一次；已完成只走提示音', () => void toggleNotifications())}
+        {@render switchRow(notificationsEnabled, '系统通知', '等待输入、授权或失败时弹出一次', () => void toggleNotifications())}
+        {@render switchRow(completionNotifyEnabled, '完成通知', '任务正常完成时，电脑和手机都通知一次。系统通知关闭时，电脑上不弹', () => void toggleCompletionNotify())}
+        <div class="setting-row phone-row">
+          <span>
+            <strong>手机提醒</strong>
+            <small>贴上 ntfy 话题网址，留空则不发</small>
+          </span>
+          <form onsubmit={savePhoneNotify}>
+            <input bind:value={phoneNotifyDraft} maxlength="2048" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="https://ntfy.sh/话题名" aria-label="手机提醒地址" />
+            <button type="submit" class="secondary-button" disabled={phoneNotifySaving}>应用</button>
+          </form>
+        </div>
+        {#if phoneNotifyError}<p class="alias-hint error">{phoneNotifyError}</p>
+        {:else if phoneNotifyHint}<p class="alias-hint">{phoneNotifyHint}</p>{/if}
         {@render switchRow(autostartEnabled, '开机自启', '登录 Windows 后自动打开 OrbCue，不必先手动启动才能接收 Agent 状态', () => void toggleAutostart())}
         {@render switchRow(shortcutEnabled, '全局快捷键', `${shortcut} 打开或收起任务面板`, () => void toggleShortcut())}
       </div>
       </div>
-      <div class="privacy-note"><strong>本地与隐私优先</strong><p>OrbCue 默认不联网，不读取 transcript、prompt、命令或代码；持久化状态也不包含摘要。</p></div>
+      <div class="privacy-note"><strong>本地与隐私优先</strong><p>OrbCue 默认不联网，不读取 transcript、prompt、命令或代码；持久化状态也不包含摘要。填了手机提醒网址后，只把那句提示、工具名和项目文件夹名发到该地址，不发完整路径。</p></div>
     {/if}
     {#if onboardingComplete}
     <nav class="dock-nav" aria-label="OrbCue 页面">

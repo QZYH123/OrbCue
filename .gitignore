@@ -41,5 +41,8 @@ Thumbs.db
 /audit-after-fix.yml
 /panel-boxes.yml
 
+# Local promo workspace: Remotion project, renders, video, audio, fonts
+/docs/promo/
+
 # Tauri generated bindings
 /src-tauri/gen/

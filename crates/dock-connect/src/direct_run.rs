@@ -1,10 +1,11 @@
 //! Opt-in: a connected Agent's own command runs `orb run`.
 //!
 //! Interactive shells get an alias (`grok` → `command orb run grok`).
-//! `command grok` skips that alias and runs the real program. The Agent
-//! executable is not replaced. Windows also drops a `.cmd` into the OrbCue
-//! directory so cmd and PowerShell resolve the same name; discovery and
-//! `orb run` skip that shim.
+//! Cursor CLI is invoked as `agent` or `cursor-agent`, so both names alias
+//! to `orb run cursor`. `command grok` skips that alias and runs the real
+//! program. The Agent executable is not replaced. Windows also drops a `.cmd`
+//! into the OrbCue directory so cmd and PowerShell resolve the same name;
+//! discovery and `orb run` skip that shim.
 
 use crate::{ConnectionManager, ConnectionRecord, FIRST_PARTY_AGENTS};
 use orbcue_ipc::default_state_path;
@@ -96,16 +97,14 @@ pub(crate) fn is_direct_run_shim(path: &Path) -> bool {
 fn commands_from(records: &[ConnectionRecord]) -> Vec<DirectCommand> {
     let mut commands = Vec::new();
     for record in records {
-        let Some(command) = command_for(record) else {
-            continue;
-        };
-        if commands
-            .iter()
-            .any(|existing: &DirectCommand| existing.invoke.eq_ignore_ascii_case(&command.invoke))
-        {
-            continue;
+        for command in commands_for(record) {
+            if commands.iter().any(|existing: &DirectCommand| {
+                existing.invoke.eq_ignore_ascii_case(&command.invoke)
+            }) {
+                continue;
+            }
+            commands.push(command);
         }
-        commands.push(command);
     }
     commands.sort_by(|left, right| {
         left.invoke
@@ -115,18 +114,42 @@ fn commands_from(records: &[ConnectionRecord]) -> Vec<DirectCommand> {
     commands
 }
 
-fn command_for(record: &ConnectionRecord) -> Option<DirectCommand> {
+fn commands_for(record: &ConnectionRecord) -> Vec<DirectCommand> {
     if !FIRST_PARTY_AGENTS.contains(&record.name.as_str()) {
-        return None;
+        return Vec::new();
     }
-    let stem = record.original.file_stem()?.to_str()?;
-    if !invoke_allowed(stem) {
-        return None;
+    let Some(stem) = record.original.file_stem().and_then(|stem| stem.to_str()) else {
+        return Vec::new();
+    };
+    let mut invokes = Vec::new();
+    push_invoke(&mut invokes, stem);
+    if record.name == "cursor" {
+        // Cursor CLI installs both names as links to the same program.
+        // The connection stores one path, so the other name is added here.
+        if stem.eq_ignore_ascii_case("cursor-agent") {
+            push_invoke(&mut invokes, "agent");
+        } else if stem.eq_ignore_ascii_case("agent") {
+            push_invoke(&mut invokes, "cursor-agent");
+        }
     }
-    Some(DirectCommand {
-        invoke: stem.to_owned(),
-        agent: record.name.clone(),
-    })
+    invokes
+        .into_iter()
+        .map(|invoke| DirectCommand {
+            invoke,
+            agent: record.name.clone(),
+        })
+        .collect()
+}
+
+fn push_invoke(invokes: &mut Vec<String>, name: &str) {
+    if !invoke_allowed(name)
+        || invokes
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(name))
+    {
+        return;
+    }
+    invokes.push(name.to_owned());
 }
 
 fn invoke_allowed(name: &str) -> bool {
@@ -456,11 +479,20 @@ mod tests {
         assert_eq!(
             commands,
             vec![
+                command("agent", "cursor"),
                 command("claude", "claude"),
                 command("cursor-agent", "cursor"),
                 command("grok", "grok"),
             ]
         );
+        assert_eq!(
+            commands_from(&[record("cursor", "/home/u/.local/bin/agent")]),
+            vec![
+                command("agent", "cursor"),
+                command("cursor-agent", "cursor"),
+            ]
+        );
+        assert!(commands_from(&[record("cursor", "/usr/bin/cursor")]).is_empty());
     }
 
     #[test]

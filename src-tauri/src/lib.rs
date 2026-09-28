@@ -1,6 +1,7 @@
 #![cfg(windows)]
 
 mod focus;
+mod phone;
 mod region;
 mod toast;
 mod tray;
@@ -14,8 +15,8 @@ use orbcue_connect::{
     AgentOrigin, ConnectionManager, ConnectionPreview, ConnectionRecord, DiscoveredAgent,
 };
 use orbcue_core::{
-    attention_click_followup, attention_jump, dispatch_attention_toast, highlight_target,
-    AttentionClickFollowup, AttentionJump, ToastDispatch,
+    attention_click_followup, attention_jump, cue_project_path, dispatch_attention_toast,
+    highlight_target, AttentionClickFollowup, AttentionJump, ToastDispatch,
 };
 use orbcue_ipc::SnapshotView;
 use orbcue_service::{attach_or_listen, DockSession, SnapshotMessage};
@@ -33,11 +34,15 @@ use tauri::{
 };
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
-use toast::{prepare_windows_notifications, preview_attention_toast, PresenterToastSink};
+use toast::{
+    prepare_windows_notifications, preview_attention_toast, preview_completion_toast,
+    PresenterToastSink,
+};
 
 struct AppService(Mutex<Option<Arc<DockSession>>>);
 static LAST_BALL_SAVE_MS: AtomicU64 = AtomicU64::new(0);
 static NOTIFICATIONS_ENABLED: AtomicBool = AtomicBool::new(true);
+static COMPLETION_NOTIFICATIONS_ENABLED: AtomicBool = AtomicBool::new(true);
 static NOTIFICATION_FAIL_LOGGED: AtomicBool = AtomicBool::new(false);
 static INVENTORY_CACHE: Mutex<Option<AgentInventory>> = Mutex::new(None);
 static INVENTORY_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
@@ -566,8 +571,18 @@ fn set_notification_enabled(enabled: bool) {
 }
 
 #[tauri::command]
+fn set_completion_notification_enabled(enabled: bool) {
+    COMPLETION_NOTIFICATIONS_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+#[tauri::command]
 fn preview_notification(app: AppHandle) -> Result<(), String> {
     preview_attention_toast(&app)
+}
+
+#[tauri::command]
+fn preview_completion_notification(app: AppHandle) -> Result<(), String> {
+    preview_completion_toast(&app)
 }
 
 #[tauri::command]
@@ -835,10 +850,24 @@ fn apply_snapshot_update(
 ) {
     focus::apply_snapshot_captures(previous_sessions, &update.snapshot.sessions);
     *previous_sessions = update.snapshot.sessions.clone();
+    let project_path = update.attention.as_ref().and_then(|attention| {
+        cue_project_path(
+            &update.snapshot.sessions,
+            &attention.source,
+            &attention.session_id,
+        )
+    });
+    phone::queue(
+        update.attention.as_ref(),
+        COMPLETION_NOTIFICATIONS_ENABLED.load(Ordering::Relaxed),
+        project_path,
+    );
     if let ToastDispatch::Failed { error, .. } = dispatch_attention_toast(
         sink,
         update.attention.as_ref(),
         NOTIFICATIONS_ENABLED.load(Ordering::Relaxed),
+        COMPLETION_NOTIFICATIONS_ENABLED.load(Ordering::Relaxed),
+        project_path,
     ) {
         if !NOTIFICATION_FAIL_LOGGED.swap(true, Ordering::Relaxed) {
             eprintln!("OrbCue: cannot show system notification: {error}");
@@ -847,6 +876,7 @@ fn apply_snapshot_update(
 }
 
 pub fn run() {
+    phone::load();
     let (session, updates, initial) = start_session();
 
     tauri::Builder::default()
@@ -915,7 +945,12 @@ pub fn run() {
             undock_ball,
             focus_source,
             set_notification_enabled,
+            set_completion_notification_enabled,
             preview_notification,
+            preview_completion_notification,
+            phone::phone_notify_url,
+            phone::set_phone_notify_url,
+            phone::preview_phone_notify,
             activate_attention,
             run_alias,
             set_run_alias,

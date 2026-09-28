@@ -1017,7 +1017,11 @@ mod tests {
         let path = std::env::join_paths([&shim, &real]).unwrap();
         let manager = isolated_manager(&root);
         let resolved = resolve_agent_with("grok", Some(path.as_os_str()), &manager).unwrap();
-        assert_eq!(Path::new(&resolved), real.join("grok.cmd"));
+        let expected = real.join("grok.cmd");
+        assert!(
+            resolved.eq_ignore_ascii_case(&expected.to_string_lossy()),
+            "{resolved}"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

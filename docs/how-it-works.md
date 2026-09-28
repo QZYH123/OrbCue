@@ -16,7 +16,7 @@
 
 界面从不「发现」工具。它只订阅快照。点「清除」只改 Dock 列表，不向 Agent 发命令。「已读」只去掉 `?` / `!`。
 
-完成只出声，等待和失败才弹系统通知。这是提示策略，不是漏了 `completed`。
+等待、失败和正常完成都会弹系统通知。填了手机提醒地址时，同一时刻也发到 ntfy。通知正文是工具名；有项目时写成「项目文件夹名 · 工具名」，不带完整路径。完成通知默认开，关掉后完成只出声，手机也不发完成。
 
 ## 分层
 
@@ -27,7 +27,7 @@
 | `dock-ipc` | 一行 JSON、管道/socket | 生命周期含义 |
 | `dock-core` | `apply()` → 快照、跳回/通知决策 | IO、Win32 |
 | `dock-service` | 听端口、落盘、活性收割 | UI |
-| `src-tauri` | 窗、HWND、toast、WSL 装 `orb` | 自己发明状态 |
+| `src-tauri` | 窗、HWND、toast、手机提醒、WSL 装 `orb` | 自己发明状态 |
 | `frontend` | 球/面板、主题、贴边 | 推断 working/waiting |
 
 crate 目录仍叫 `dock-*`，包名是 `orbcue-*`。改领域行为先读 domain / event-contract，再动 `dock-core`。状态机的标准答案是 `crates/dock-core/tests/state_behavior.rs`。
@@ -70,7 +70,7 @@ Windows Terminal 一个 HWND 对应整窗；WSL 里 OSC 改标题常被中继吞
 
 ## 球停住时先问谁没说话
 
-**故意留空：** 连接前已在跑的会话；手开终端只能窗口级跳回；完成不弹系统通知；面板不展示对话。
+**故意留空：** 连接前已在跑的会话；手开终端只能窗口级跳回；面板不展示对话。
 
 **工具没发的节点：** Codex 打断/报错常停在工作中；Cursor 选择题不走 hook；Claude/Codex 授权框点拒绝往往没 follow-up。连接行上有 limitation；「清除」和进程退出后的活性检查是出口。
 

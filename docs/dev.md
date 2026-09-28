@@ -25,7 +25,7 @@
 | `crates/dock-adapters` | 各工具的结构化 payload → Dock 事件 |
 | `crates/dock-connect` | 发现已装工具、写 hook；断开时清遗留 wrapper / PATH |
 | `crates/dock-cli` | `orb` 命令 |
-| `src-tauri` | Windows 桌面壳；默认就是状态服务 |
+| `src-tauri` | Windows 桌面壳；默认就是状态服务。系统通知和可选的 ntfy 手机提醒也在这里发 |
 | `frontend` | 小球和面板（Svelte 5） |
 
 改领域行为或事件契约前读 [`docs/agents/domain.md`](agents/domain.md) 和 [`docs/event-contract.md`](event-contract.md)。
