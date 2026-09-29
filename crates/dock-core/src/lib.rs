@@ -9,7 +9,7 @@ mod jump;
 mod locale;
 mod notify;
 
-pub use locale::{apply_process_lang, pick, ui_lang, Lang};
+pub use locale::{apply_process_lang, apply_process_lang_prefer, pick, ui_lang, Lang};
 
 pub use capture::{captured_keys_to_drop, sessions_to_capture, CaptureSession, SessionKey};
 pub use jump::{

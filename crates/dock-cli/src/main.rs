@@ -134,6 +134,12 @@ pub(crate) enum Command {
         #[arg(long)]
         disable: bool,
     },
+    /// Save the language for this machine. Used by the panel.
+    #[command(hide = true, name = "ui-lang")]
+    UiLang {
+        /// `system`, `zh`, or `en`. Omit to print the current choice.
+        value: Option<String>,
+    },
     /// Start an Agent in a dedicated Windows Terminal tab.
     Run {
         /// Windows Terminal profile name or GUID. Defaults to the current tab.
@@ -185,7 +191,7 @@ struct AcknowledgeArgs {
 }
 
 fn main() {
-    orbcue_core::apply_process_lang();
+    orbcue_core::apply_process_lang_prefer(orbcue_connect::saved_ui_lang());
     #[cfg(windows)]
     attach_parent_console();
     let cli = Cli::parse();
@@ -246,6 +252,7 @@ fn run_early_command(command: &Command, endpoint: &Path, json_output: bool) -> O
         Command::DirectRun { enable, disable } => {
             run_direct_run_command(*enable, *disable, json_output)
         }
+        Command::UiLang { value } => run_ui_lang_command(value.as_deref(), json_output),
         Command::Agents | Command::Connect { .. } | Command::Disconnect { .. } => {
             run_connection_command(command, json_output)
         }
@@ -416,6 +423,37 @@ fn run_direct_run_command(enable: bool, disable: bool, json_output: bool) -> i32
             &error,
             false,
             "orb direct-run",
+        ),
+    }
+}
+
+fn run_ui_lang_command(value: Option<&str>, json_output: bool) -> i32 {
+    let result = match value {
+        Some(value) => orbcue_connect::set_ui_lang(value).map(str::to_owned),
+        None => Ok(orbcue_connect::ui_lang_pref().to_owned()),
+    };
+    match result {
+        Ok(pref) => {
+            orbcue_core::apply_process_lang_prefer(orbcue_connect::saved_ui_lang());
+            let human = match pref.as_str() {
+                "zh" => orbcue_core::pick("使用中文", "Using Chinese"),
+                "en" => orbcue_core::pick("使用 English", "Using English"),
+                _ => orbcue_core::pick("跟随系统语言", "Follows the system language"),
+            };
+            print_setting(
+                json_output,
+                &orbcue_connect::ui_lang_ok(&pref),
+                human,
+                true,
+                "orb ui-lang",
+            )
+        }
+        Err(error) => print_setting(
+            json_output,
+            &orbcue_connect::ui_lang_err(error.clone()),
+            &error,
+            false,
+            "orb ui-lang",
         ),
     }
 }
@@ -759,6 +797,7 @@ fn request_for(command: &Command) -> Result<IpcRequest, String> {
         | Command::Alias { .. }
         | Command::ReplaceTab { .. }
         | Command::DirectRun { .. }
+        | Command::UiLang { .. }
         | Command::Run { .. } => return Err("command is handled before event parsing".to_owned()),
     };
     Ok(request)
@@ -2077,6 +2116,7 @@ mod tests {
             enable: false,
             disable: false
         }));
+        assert!(stays_on_agent_os(&Command::UiLang { value: None }));
         assert!(trampoline_to_windows_predicate(true, true, false, false));
         assert!(!stays_on_agent_os(&Command::Status));
         assert!(!stays_on_agent_os(&Command::Up));

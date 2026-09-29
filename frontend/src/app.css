@@ -54,6 +54,33 @@ html, body, #app {
   background: var(--card-hover, rgba(255, 255, 255, .08));
 }
 
+.lang-row {
+  cursor: default;
+}
+.lang-row > span:first-child {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.lang-switch {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+.lang-switch button {
+  padding: 3px 7px;
+  border: 1px solid var(--line, rgba(255, 255, 255, .12));
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.lang-switch button[aria-pressed="true"] {
+  border-color: var(--working, #5ecf8f);
+  background: var(--card-hover, rgba(255, 255, 255, .08));
+}
 .alias-row {
   cursor: default;
   align-items: flex-start;
@@ -533,6 +560,7 @@ button { font: inherit; }
   text-align: left;
   cursor: pointer;
 }
+.setting-row.lang-row { cursor: default; }
 .setting-row.phone-row {
   align-items: stretch;
   cursor: default;

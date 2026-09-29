@@ -24,7 +24,15 @@
     sessionHighlightKey,
   } from './highlight';
   import { copyOf } from './copy';
-  import { uiLang } from './locale';
+  import {
+    applyDocumentLang,
+    isLangPref,
+    LANG_PREF_KEY,
+    readLangPref,
+    resolveLang,
+    type Lang,
+    type LangPref,
+  } from './locale';
   import { connectSuccessNotice, inventoryHasRows } from './inventory';
   import {
     clampToWorkArea,
@@ -58,8 +66,13 @@
     type OnboardingStep,
   } from './onboarding';
 
-  const lang = uiLang();
-  const text = copyOf(lang);
+  let langPref: LangPref = readLangPref(localStorage);
+  let honorQueryLang = true;
+  let lang: Lang = resolveLang(langPref, window.location.search, navigator.language, true);
+  let text = copyOf(lang);
+  $: lang = resolveLang(langPref, window.location.search, navigator.language, honorQueryLang);
+  $: text = copyOf(lang);
+  $: applyDocumentLang(lang);
   const previewMode = !tauriAvailable();
   let label: string = previewMode ? previewLabel() : 'ball';
   let snapshot: Snapshot = previewMode ? previewSnapshot() : emptySnapshot;
@@ -130,6 +143,7 @@
   const DIRECT_RUN_KEY = 'orbcue-direct-run';
   let badgeChannel: BroadcastChannel | null = null;
   let sideDockChannel: BroadcastChannel | null = null;
+  let langChannel: BroadcastChannel | null = null;
   let unsubscribe: (() => void) | undefined;
   let dragging = false;
   let suppressClick = false;
@@ -222,7 +236,9 @@
       true,
     );
     sideDockChannel = sideDockPreference.channel;
+    const stopLangPref = listenLangPref();
     void loadRunAlias();
+    void loadLanguage();
     void loadReplaceTab();
     void loadDirectRun();
     void loadPhoneNotify();
@@ -234,6 +250,7 @@
       return () => {
         badgePreference.stop();
         sideDockPreference.stop();
+        stopLangPref();
         unsubTheme();
       };
     }
@@ -383,6 +400,7 @@
       unsubscribe?.();
       badgePreference.stop();
       sideDockPreference.stop();
+      stopLangPref();
       unsubTheme();
     };
   });
@@ -906,6 +924,79 @@
     });
   }
 
+  function writeLangPref(next: LangPref, channel?: BroadcastChannel | null) {
+    if (next === 'system') localStorage.removeItem(LANG_PREF_KEY);
+    else localStorage.setItem(LANG_PREF_KEY, next);
+    channel?.postMessage(next);
+  }
+
+  function applyRemoteLang(value: unknown) {
+    if (!isLangPref(value)) return;
+    honorQueryLang = false;
+    langPref = value;
+    if (value === 'system') localStorage.removeItem(LANG_PREF_KEY);
+    else localStorage.setItem(LANG_PREF_KEY, value);
+    syncPreviewLimitations(value);
+  }
+
+  function listenLangPref() {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === LANG_PREF_KEY) applyRemoteLang(event.newValue ?? 'system');
+    };
+    window.addEventListener('storage', onStorage);
+    if (typeof BroadcastChannel === 'undefined') {
+      return () => window.removeEventListener('storage', onStorage);
+    }
+    const channel = new BroadcastChannel(LANG_PREF_KEY);
+    langChannel = channel;
+    channel.onmessage = (event) => applyRemoteLang(event.data);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      channel.close();
+    };
+  }
+
+  function syncPreviewLimitations(pref: LangPref) {
+    if (!previewMode) return;
+    const nextLang = resolveLang(pref, window.location.search, navigator.language, false);
+    const limitation = copyOf(nextLang).previewLimitation;
+    inventory = {
+      ...inventory,
+      connected: inventory.connected.map((record) =>
+        record.limitation ? { ...record, limitation } : record,
+      ),
+    };
+  }
+
+  async function loadLanguage() {
+    if (previewMode) return;
+    try {
+      const saved = await invoke<string>('ui_language');
+      if (isLangPref(saved) && saved !== langPref) applyRemoteLang(saved);
+    } catch (error) {
+      console.warn('Could not load language', error);
+    }
+  }
+
+  async function chooseLang(next: LangPref) {
+    const previous = langPref;
+    honorQueryLang = false;
+    langPref = next;
+    writeLangPref(next, langChannel);
+    syncPreviewLimitations(next);
+    if (previewMode) return;
+    try {
+      const saved = await invoke<string>('set_ui_language', { value: next });
+      if (isLangPref(saved) && saved !== next) applyRemoteLang(saved);
+    } catch (error) {
+      console.warn('Could not update language', error);
+      honorQueryLang = false;
+      langPref = previous;
+      writeLangPref(previous, langChannel);
+      syncPreviewLimitations(previous);
+    }
+  }
+
   function loadDirectRun() {
     return loadSwitch(DIRECT_RUN_KEY, 'direct_run', (value) => {
       directRun = value;
@@ -1152,12 +1243,16 @@
     {onBallPointerMove}
     {onBallClick}
     {markClass}
+    {lang}
   />
 {:else}
   <Panel
     {snapshot}
     {ballKind}
     {theme}
+    {lang}
+    {langPref}
+    {chooseLang}
     {heroBar}
     {closePanel}
     {setTheme}

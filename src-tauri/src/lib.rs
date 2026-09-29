@@ -48,7 +48,11 @@ static INVENTORY_CACHE: Mutex<Option<AgentInventory>> = Mutex::new(None);
 static INVENTORY_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static BALL_HIDDEN: AtomicBool = AtomicBool::new(false);
 
-struct TrayBallItem(tauri::menu::MenuItem<tauri::Wry>);
+struct TrayMenu {
+    toggle: tauri::menu::MenuItem<tauri::Wry>,
+    show: tauri::menu::MenuItem<tauri::Wry>,
+    quit: tauri::menu::MenuItem<tauri::Wry>,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -490,6 +494,24 @@ fn direct_run() -> Result<bool, String> {
 }
 
 #[tauri::command]
+fn ui_language() -> String {
+    orbcue_connect::ui_lang_pref().to_owned()
+}
+
+#[tauri::command]
+fn set_ui_language(app: AppHandle, value: String) -> Result<String, String> {
+    let saved = orbcue_connect::set_ui_lang(&value)?.to_owned();
+    orbcue_core::apply_process_lang_prefer(orbcue_connect::saved_ui_lang());
+    refresh_tray_labels(&app);
+    #[cfg(windows)]
+    warn_wsl(
+        wsl_session::set_ui_lang(&saved),
+        orbcue_core::pick("WSL 语言设置未更新", "WSL language was not updated"),
+    );
+    Ok(saved)
+}
+
+#[tauri::command]
 fn set_direct_run(enabled: bool) -> Result<bool, String> {
     let enabled = orbcue_connect::set_direct_run(enabled)?.enabled;
     #[cfg(windows)]
@@ -807,7 +829,7 @@ fn hide_ball_window(app: &AppHandle) {
         let _ = ball.hide();
     }
     hide_panel_window(app);
-    refresh_tray_ball_label(app);
+    refresh_tray_labels(app);
 }
 
 fn show_ball_window(app: &AppHandle) {
@@ -816,15 +838,20 @@ fn show_ball_window(app: &AppHandle) {
         let _ = ball.show();
         region::apply_ball_region(&ball);
     }
-    refresh_tray_ball_label(app);
+    refresh_tray_labels(app);
 }
 
-fn refresh_tray_ball_label(app: &AppHandle) {
-    if let Some(item) = app.try_state::<TrayBallItem>() {
-        let _ = item
-            .0
-            .set_text(tray::ball_toggle_label(BALL_HIDDEN.load(Ordering::Relaxed)));
-    }
+fn refresh_tray_labels(app: &AppHandle) {
+    let Some(menu) = app.try_state::<TrayMenu>() else {
+        return;
+    };
+    let _ = menu
+        .toggle
+        .set_text(tray::ball_toggle_label(BALL_HIDDEN.load(Ordering::Relaxed)));
+    let _ = menu
+        .show
+        .set_text(orbcue_core::pick("打开 OrbCue", "Open OrbCue"));
+    let _ = menu.quit.set_text(orbcue_core::pick("退出", "Quit"));
 }
 
 fn start_session() -> (
@@ -891,7 +918,7 @@ fn apply_snapshot_update(
 }
 
 pub fn run() {
-    orbcue_core::apply_process_lang();
+    orbcue_core::apply_process_lang_prefer(orbcue_connect::saved_ui_lang());
     phone::load();
     let (session, updates, initial) = start_session();
 
@@ -973,7 +1000,9 @@ pub fn run() {
             replace_tab_on_run,
             set_replace_tab_on_run,
             direct_run,
-            set_direct_run
+            set_direct_run,
+            ui_language,
+            set_ui_language
         ])
         .build(tauri::generate_context!())
         .expect("error while building OrbCue")
@@ -1048,7 +1077,7 @@ fn install_tray(app: &mut tauri::App) {
             return;
         }
     };
-    app.manage(TrayBallItem(toggle));
+    app.manage(TrayMenu { toggle, show, quit });
     let mut builder = TrayIconBuilder::new()
         .menu(&menu)
         .tooltip("OrbCue")

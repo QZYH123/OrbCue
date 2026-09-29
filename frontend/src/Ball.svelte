@@ -1,6 +1,6 @@
 <script lang="ts">
   import { copyOf } from './copy';
-  import { uiLang } from './locale';
+  import type { Lang } from './locale';
   import type { Snapshot } from './types';
   import type { WorkAreaEdge } from './placement';
   import type { DockTheme } from './theme';
@@ -21,8 +21,9 @@
   export let onBallPointerMove: (event: PointerEvent) => void;
   export let onBallClick: (event: MouseEvent) => void;
   export let markClass: (mark: string) => string;
+  export let lang: Lang;
 
-  const text = copyOf(uiLang());
+  $: text = copyOf(lang);
   $: idleLabel = snapshot.pending_mark || (snapshot.working_count ? text.working : text.idle);
 </script>
 

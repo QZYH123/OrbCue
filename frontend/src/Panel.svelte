@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { AgentInventory, AgentSide, ConnectionPreview, ConnectionRecord, DiscoveredAgent, SessionSnapshot, Snapshot } from './types';
   import { copyOf } from './copy';
-  import { uiLang } from './locale';
+  import type { Lang, LangPref } from './locale';
   import type { DockTheme } from './theme';
   import { THEMES, themeMeta } from './theme';
   import { isDockTerminalId, jumpPhrases } from './jumpBack';
@@ -13,6 +13,9 @@
   export let snapshot: Snapshot;
   export let ballKind: string;
   export let theme: DockTheme;
+  export let lang: Lang;
+  export let langPref: LangPref;
+  export let chooseLang: (next: LangPref) => void;
   export let heroBar: string[];
   export let closePanel: () => void;
   export let setTheme: (theme: DockTheme) => void;
@@ -85,10 +88,9 @@
   export let selectPage: (page: 'activity' | 'audit' | 'connections' | 'settings') => void;
   export let visibleSessions: SessionSnapshot[];
 
-  const lang = uiLang();
-  const text = copyOf(lang);
-  const phrases = jumpPhrases(lang);
-  const themes = themeMeta(lang);
+  $: text = copyOf(lang);
+  $: phrases = jumpPhrases(lang);
+  $: themes = themeMeta(lang);
   $: wslBanner = wslDockErrorBanner(inventory, lang);
 </script>
 
@@ -340,6 +342,17 @@
       <div class="panel-body">
       {@render themePicker()}
       <div class="settings-list">
+        <div class="setting-row lang-row">
+          <span>
+            <strong>{text.language}</strong>
+            <small>{text.languageHint}</small>
+          </span>
+          <span class="lang-switch" role="group" aria-label={text.language}>
+            <button type="button" aria-pressed={langPref === 'system'} onclick={() => chooseLang('system')}>{text.langSystem}</button>
+            <button type="button" aria-pressed={langPref === 'zh'} onclick={() => chooseLang('zh')}>{text.langZh}</button>
+            <button type="button" aria-pressed={langPref === 'en'} onclick={() => chooseLang('en')}>{text.langEn}</button>
+          </span>
+        </div>
         <div class="setting-row alias-row">
           <span>
             <strong>{text.runAlias}</strong>

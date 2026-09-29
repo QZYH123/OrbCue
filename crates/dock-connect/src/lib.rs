@@ -10,6 +10,7 @@ mod discover;
 mod grok_compat;
 mod replace_tab;
 mod run_alias;
+mod ui_lang;
 mod user_path;
 mod wsl_cli;
 
@@ -27,6 +28,10 @@ pub use run_alias::{
     current as current_run_alias, preferred as preferred_run_alias, set as set_run_alias,
     validate as validate_run_alias, view_err as run_alias_err, view_ok as run_alias_ok,
     wsl_dock_cli_is_missing, wsl_runtime_is_absent, wsl_side_is_absent, AliasView,
+};
+pub use ui_lang::{
+    pref as ui_lang_pref, saved_lang as saved_ui_lang, set as set_ui_lang, view_err as ui_lang_err,
+    view_ok as ui_lang_ok, UiLangView,
 };
 pub use user_path::install_windows_cli;
 pub use wsl_cli::{

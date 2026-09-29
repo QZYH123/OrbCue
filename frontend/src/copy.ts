@@ -61,6 +61,11 @@ export interface Copy {
   auditEmpty: string;
   auditEmptyHint: string;
   settingsIntro: string;
+  language: string;
+  languageHint: string;
+  langSystem: string;
+  langZh: string;
+  langEn: string;
   runAlias: string;
   runAliasHint: string;
   originalCommand: string;
@@ -176,6 +181,11 @@ const zh: Copy = {
   auditEmpty: '还没有审计记录',
   auditEmptyHint: '完成、失败、等待或关闭后会显示在这里',
   settingsIntro: '默认保持安静，只在任务真正需要你回来时提醒一次。',
+  language: '语言',
+  languageHint: '面板、通知、托盘和 orb 一起改',
+  langSystem: '系统',
+  langZh: '中文',
+  langEn: 'English',
   runAlias: '启动别名',
   runAliasHint: '把 orb run 收成短命令，空则删除',
   originalCommand: '原命令启动',
@@ -295,6 +305,11 @@ const en: Copy = {
   auditEmpty: 'No audit entries yet',
   auditEmptyHint: 'Completions, failures, waits, and closes show up here',
   settingsIntro: 'Quiet by default. It speaks once, when a task actually needs you back.',
+  language: 'Language',
+  languageHint: 'Panel, notifications, tray, and orb.',
+  langSystem: 'System',
+  langZh: '中文',
+  langEn: 'English',
   runAlias: 'Run alias',
   runAliasHint: 'A short command for orb run. Empty removes it.',
   originalCommand: 'Original command',

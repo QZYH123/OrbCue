@@ -16,6 +16,7 @@ pub(crate) fn stays_on_agent_os(command: &Command) -> bool {
             | Command::Alias { .. }
             | Command::ReplaceTab { .. }
             | Command::DirectRun { .. }
+            | Command::UiLang { .. }
             | Command::Run { .. }
             | Command::LivenessCheck
     )

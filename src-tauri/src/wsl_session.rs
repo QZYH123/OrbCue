@@ -1,5 +1,6 @@
 use orbcue_connect::{
     AliasView, ConnectionPreview, ConnectionRecord, DirectRunView, DiscoveredAgent, ReplaceTabView,
+    UiLangView,
 };
 use serde::Deserialize;
 use std::env;
@@ -102,6 +103,16 @@ fn direct_run_from_json(parsed: DirectRunView) -> Result<bool, String> {
 
 pub fn set_direct_run(enabled: bool) -> Result<bool, String> {
     wsl_switch("direct-run", enabled, direct_run_from_json)
+}
+
+pub fn set_ui_lang(value: &str) -> Result<String, String> {
+    let parsed = wsl_dock_json::<UiLangView>(&["ui-lang", value, "--json"])?;
+    json_ok(
+        parsed.ok,
+        parsed.lang,
+        parsed.error,
+        orbcue_core::pick("无法更新语言", "Couldn't update the language"),
+    )
 }
 
 fn wsl_switch<T, F>(command: &str, enabled: bool, finish: F) -> Result<bool, String>

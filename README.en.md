@@ -149,6 +149,7 @@ Connect scans the PATH the desktop app can read, the user PATH, and common insta
 | Completion alerts | On | On a normal finish, the PC and the phone are each notified once. Turn this off and a finish only plays a sound. If System notifications are off, the PC does not show a notification, and the phone still follows this switch |
 | Phone alerts | Off | Paste an ntfy topic URL. Waiting for input, Waiting for approval, and a failure each push once. A normal finish follows Completion alerts. Leave it empty and OrbCue stays offline. What is sent is in [Privacy and data](#privacy-and-data) |
 | **Orb** | | |
+| Language | System | System, 中文, or English. The panel, notifications, tray, and orb commands change together |
 | Appearance | | Prototype, Fluent, Glyph, Braun, and Glass |
 | Hide badge | Off | The orb no longer shows `?` and `!` |
 | Snap to edge | On | Drag within about one orb's width of a screen edge and it snaps there: a translucent semicircle with no number. Hover, and it slides out along that same edge; move away and it snaps back. While `?` or `!` is showing it stays open, until you drag it to the edge again. Turn this off and dragging is ordinary |

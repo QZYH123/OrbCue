@@ -3,13 +3,13 @@
 //! Unset stays Chinese, so tests and a missing locale keep the original copy.
 
 use std::cell::Cell;
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
 thread_local! {
     static OVERRIDE: Cell<Option<Lang>> = const { Cell::new(None) };
 }
 
-static PROCESS_LANG: OnceLock<Lang> = OnceLock::new();
+static PROCESS_LANG: RwLock<Option<Lang>> = RwLock::new(None);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
@@ -37,14 +37,26 @@ pub(crate) fn force_lang(lang: Lang) -> LangGuard {
 }
 
 pub fn apply_process_lang() {
-    let _ = PROCESS_LANG.set(detect_process_lang());
+    apply_process_lang_prefer(None);
+}
+
+/// `saved` is the Settings choice. `ORBCUE_LANG` still wins when it is set.
+pub fn apply_process_lang_prefer(saved: Option<Lang>) {
+    let lang = resolve_lang(saved);
+    match PROCESS_LANG.write() {
+        Ok(mut slot) => *slot = Some(lang),
+        Err(poisoned) => *poisoned.into_inner() = Some(lang),
+    }
 }
 
 pub fn ui_lang() -> Lang {
     if let Some(lang) = OVERRIDE.with(|cell| cell.get()) {
         return lang;
     }
-    PROCESS_LANG.get().copied().unwrap_or(Lang::Zh)
+    match PROCESS_LANG.read() {
+        Ok(slot) => slot.unwrap_or(Lang::Zh),
+        Err(poisoned) => poisoned.into_inner().unwrap_or(Lang::Zh),
+    }
 }
 
 pub fn pick<'a>(zh: &'a str, en: &'a str) -> &'a str {
@@ -64,12 +76,12 @@ fn classify_locale_tag(value: &str) -> Lang {
     }
 }
 
-fn detect_process_lang() -> Lang {
-    if let Ok(value) = std::env::var("ORBCUE_LANG") {
-        let value = value.trim();
-        if !value.is_empty() {
-            return classify_locale_tag(value);
-        }
+fn resolve_lang(saved: Option<Lang>) -> Lang {
+    if let Some(lang) = env_lang() {
+        return lang;
+    }
+    if let Some(lang) = saved {
+        return lang;
     }
     #[cfg(windows)]
     {
@@ -78,6 +90,18 @@ fn detect_process_lang() -> Lang {
     #[cfg(not(windows))]
     {
         unix_env_lang()
+    }
+}
+
+fn env_lang() -> Option<Lang> {
+    let Ok(value) = std::env::var("ORBCUE_LANG") else {
+        return None;
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(classify_locale_tag(value))
     }
 }
 
@@ -144,5 +168,21 @@ mod tests {
     fn forced_english_is_thread_local() {
         let _guard = force_lang(Lang::En);
         assert_eq!(pick("等待输入", "Waiting for input"), "Waiting for input");
+    }
+
+    #[test]
+    fn saved_choice_loses_to_orbcue_lang() {
+        let previous = std::env::var_os("ORBCUE_LANG");
+        std::env::remove_var("ORBCUE_LANG");
+        assert_eq!(super::resolve_lang(Some(Lang::En)), Lang::En);
+        assert_eq!(super::resolve_lang(Some(Lang::Zh)), Lang::Zh);
+        std::env::set_var("ORBCUE_LANG", "en");
+        assert_eq!(super::resolve_lang(Some(Lang::Zh)), Lang::En);
+        std::env::set_var("ORBCUE_LANG", "zh_CN.UTF-8");
+        assert_eq!(super::resolve_lang(Some(Lang::En)), Lang::Zh);
+        match previous {
+            Some(value) => std::env::set_var("ORBCUE_LANG", value),
+            None => std::env::remove_var("ORBCUE_LANG"),
+        }
     }
 }
