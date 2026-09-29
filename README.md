@@ -22,7 +22,7 @@
 
 <br>
 
-<img src="docs/screenshots/demo.gif" width="480" alt="工作时只显示数量，需要处理时出现问号，点开按项目分组的列表，并切换五套外观">
+<img src="docs/screenshots/demo.gif" width="720" alt="Agent 工作时小球只安静计数；轮到你时变色并弹出通知；点开面板看清谁在忙、谁在等；点一下跳回对应的终端">
 
 </div>
 
