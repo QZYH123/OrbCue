@@ -2,9 +2,9 @@
 
 pub fn ball_toggle_label(hidden: bool) -> &'static str {
     if hidden {
-        "显示小球"
+        orbcue_core::pick("显示小球", "Show orb")
     } else {
-        "隐藏小球"
+        orbcue_core::pick("隐藏小球", "Hide orb")
     }
 }
 

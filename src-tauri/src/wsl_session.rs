@@ -47,7 +47,12 @@ pub fn disconnect_agent(name: &str) -> Result<bool, String> {
 }
 
 fn alias_from_json(parsed: AliasView) -> Result<Option<String>, String> {
-    json_ok(parsed.ok, parsed.alias, parsed.error, "无法更新启动别名")
+    json_ok(
+        parsed.ok,
+        parsed.alias,
+        parsed.error,
+        orbcue_core::pick("无法更新启动别名", "Couldn't update the run alias"),
+    )
 }
 
 fn json_ok<T>(ok: bool, value: T, error: Option<String>, fallback: &str) -> Result<T, String> {
@@ -75,7 +80,10 @@ fn replace_tab_from_json(parsed: ReplaceTabView) -> Result<bool, String> {
         parsed.ok,
         parsed.replace_tab,
         parsed.error,
-        "无法更新替换标签页设置",
+        orbcue_core::pick(
+            "无法更新替换标签页设置",
+            "Couldn't update the replace-tab setting",
+        ),
     )
 }
 
@@ -88,7 +96,7 @@ fn direct_run_from_json(parsed: DirectRunView) -> Result<bool, String> {
         parsed.ok,
         parsed.enabled,
         parsed.error,
-        "无法更新原命令启动",
+        orbcue_core::pick("无法更新原命令启动", "Couldn't update the original command"),
     )
 }
 

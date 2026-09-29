@@ -23,7 +23,10 @@ pub fn write_exec(path: &Path, contents: &str) {
 }
 
 pub fn orb_cmd() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_orb"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_orb"));
+    // User-facing copy follows the process locale. Pin Chinese so these checks stay stable.
+    command.env("ORBCUE_LANG", "zh");
+    command
 }
 
 pub fn isolated_env<'a>(command: &'a mut Command, root: &Path, socket: &Path) -> &'a mut Command {

@@ -1,3 +1,5 @@
+import { copyOf } from './copy';
+import { uiLang } from './locale';
 import type { AgentInventory, AuditEntry, SessionSnapshot, Snapshot } from './types';
 
 export function tauriAvailable(): boolean {
@@ -129,7 +131,7 @@ export const demoInventory: AgentInventory = {
       method: 'ClaudeHook',
       wrapper: null,
       hook_script: '/home/qingz/.claude/hooks/orbcue.sh',
-      limitation: 'Hook 只转发明确的生命周期事件',
+      limitation: copyOf(uiLang()).previewLimitation,
       side: 'wsl',
     },
   ],

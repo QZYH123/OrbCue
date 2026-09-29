@@ -6,8 +6,8 @@
 #[cfg(windows)]
 use orbcue_core::{captured_hwnd_usable, select_unique_window_title};
 use orbcue_core::{
-    captured_keys_to_drop, dock_terminal_marker, focus_attempts, sessions_to_capture,
-    CaptureSession, FocusDecision, FocusRequest, SessionKey, SessionSnapshot, JUMP_WINDOW_MISSING,
+    captured_keys_to_drop, dock_terminal_marker, focus_attempts, jump_window_missing,
+    sessions_to_capture, CaptureSession, FocusDecision, FocusRequest, SessionKey, SessionSnapshot,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -133,7 +133,7 @@ pub fn focus_session(
     terminal_id: Option<String>,
     open_deep_link: impl FnOnce(&str) -> Result<(), String>,
 ) -> FocusResult {
-    let mut last = FocusResult::failure(JUMP_WINDOW_MISSING);
+    let mut last = FocusResult::failure(jump_window_missing());
     let mut opener = Some(open_deep_link);
     for decision in focus_attempts(&FocusRequest {
         deep_link,
@@ -145,7 +145,10 @@ pub fn focus_session(
                     Ok(()) => FocusResult::success(true),
                     Err(reason) => FocusResult::failure(reason),
                 },
-                None => FocusResult::failure("无法打开会话链接"),
+                None => FocusResult::failure(orbcue_core::pick(
+                    "无法打开会话链接",
+                    "Couldn't open the session link",
+                )),
             },
             FocusDecision::FocusDockMarker { marker } => focus_dock_marker(&marker),
             FocusDecision::UseCapturedWindow => focus_captured_window(source, session_id),
@@ -167,7 +170,10 @@ fn focus_captured_window(source: &str, session_id: &str) -> FocusResult {
                 if win32::bring_to_foreground(hwnd) {
                     return FocusResult::success(false);
                 }
-                return FocusResult::failure("无法把窗口提到前台");
+                return FocusResult::failure(orbcue_core::pick(
+                    "无法把窗口提到前台",
+                    "Couldn't bring the window forward",
+                ));
             }
             forget_hwnd(source, session_id);
             log_capture(&format!(
@@ -180,12 +186,12 @@ fn focus_captured_window(source: &str, session_id: &str) -> FocusResult {
         let _ = (source, session_id);
         forget_hwnd(source, session_id);
     }
-    FocusResult::failure(JUMP_WINDOW_MISSING)
+    FocusResult::failure(jump_window_missing())
 }
 
 fn focus_dock_marker(marker: &str) -> FocusResult {
     if dock_terminal_marker(marker).is_none() {
-        return FocusResult::failure(JUMP_WINDOW_MISSING);
+        return FocusResult::failure(jump_window_missing());
     }
     #[cfg(windows)]
     {
@@ -196,13 +202,16 @@ fn focus_dock_marker(marker: &str) -> FocusResult {
             Ok(()) => FocusResult::success(true),
             Err(reason) => {
                 log_capture(&format!("jump-marker {marker} missed: {reason}"));
-                FocusResult::failure(JUMP_WINDOW_MISSING)
+                FocusResult::failure(jump_window_missing())
             }
         }
     }
     #[cfg(not(windows))]
     {
-        FocusResult::failure("当前平台不能聚焦源终端")
+        FocusResult::failure(orbcue_core::pick(
+            "当前平台不能聚焦源终端",
+            "This platform can't focus the source terminal",
+        ))
     }
 }
 

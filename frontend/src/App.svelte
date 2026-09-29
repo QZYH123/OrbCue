@@ -23,6 +23,8 @@
     revealHighlightedGroup,
     sessionHighlightKey,
   } from './highlight';
+  import { copyOf } from './copy';
+  import { uiLang } from './locale';
   import { connectSuccessNotice, inventoryHasRows } from './inventory';
   import {
     clampToWorkArea,
@@ -56,6 +58,8 @@
     type OnboardingStep,
   } from './onboarding';
 
+  const lang = uiLang();
+  const text = copyOf(lang);
   const previewMode = !tauriAvailable();
   let label: string = previewMode ? previewLabel() : 'ball';
   let snapshot: Snapshot = previewMode ? previewSnapshot() : emptySnapshot;
@@ -144,7 +148,7 @@
     if (filter === 'working') return session.state === 'working';
     return true;
   });
-  $: sessionGroups = filterSessionSections(presentSessionSections(snapshot.sessions), visibleSessions);
+  $: sessionGroups = filterSessionSections(presentSessionSections(snapshot.sessions, undefined, text.other), visibleSessions);
   $: auditRows = presentAuditRows(snapshot.audit, snapshot.sessions);
   $: unread = unreadCount(snapshot.sessions);
   $: ringRatio = snapshot.tracked_count <= 0 ? 0 : snapshot.working_count / snapshot.tracked_count;
@@ -754,7 +758,7 @@
         side: agent.side,
       });
       closeConnectDialog();
-      connectSuccess = connectSuccessNotice(agent.name, agent.side);
+      connectSuccess = connectSuccessNotice(agent.name, agent.side, lang);
       await refreshAgents();
     } catch (error) {
       connectionError = String(error);
@@ -969,7 +973,7 @@
     phoneNotifyHint = '';
     if (previewMode) {
       phoneNotifyDraft = url;
-      phoneNotifyHint = url ? '预览不会发送' : '已关闭手机提醒';
+      phoneNotifyHint = url ? text.previewOff : text.phoneOff;
       return;
     }
     phoneNotifySaving = true;
@@ -977,14 +981,14 @@
       const saved = (await invoke<string>('set_phone_notify_url', { url })) || '';
       phoneNotifyDraft = saved;
       if (!saved) {
-        phoneNotifyHint = '已关闭手机提醒';
+        phoneNotifyHint = text.phoneOff;
         return;
       }
       try {
         await invoke('preview_phone_notify');
-        phoneNotifyHint = '已发一条测试到手机';
+        phoneNotifyHint = text.phoneTestSent;
       } catch (error) {
-        phoneNotifyError = `已保存，测试没发出去：${error}`;
+        phoneNotifyError = text.phoneSavedTestFailed(String(error));
       }
     } catch (error) {
       phoneNotifyError = String(error);
@@ -1002,14 +1006,14 @@
       if (name) localStorage.setItem('orbcue-run-alias', name);
       else localStorage.removeItem('orbcue-run-alias');
       runAlias = name;
-      runAliasHint = name ? `预览：${name} grok 等于 orb run grok` : '已清除别名';
+      runAliasHint = name ? text.previewAlias(name) : text.aliasCleared;
       return;
     }
     try {
       const value = await invoke<string | null>('set_run_alias', { name });
       runAlias = value || '';
       runAliasDraft = runAlias;
-      runAliasHint = runAlias ? `之后在新终端输入 ${runAlias} grok` : '已删除别名';
+      runAliasHint = runAlias ? text.aliasNext(runAlias) : text.aliasRemoved;
     } catch (error) {
       runAliasError = String(error);
     }
@@ -1086,7 +1090,7 @@
         terminalId: session.terminal_id,
         deepLink: session.deep_link,
       });
-      const feedback = jumpFeedback(result);
+      const feedback = jumpFeedback(result, lang);
       if (feedback.kind === 'error') {
         clearFocusNote(key);
         focusErrors = { ...focusErrors, [key]: feedback.text };
@@ -1112,18 +1116,18 @@
 
   function stateLabel(item: { state: SessionSnapshot['state']; attention_reason: string | null }) {
     if (item.state === 'needs_attention') {
-      return item.attention_reason === 'permission' ? '等待授权' : '等待输入';
+      return item.attention_reason === 'permission' ? text.needsApproval : text.needsInput;
     }
     return (
       {
-        idle: '空闲',
-        working: '工作中',
-        failed: '失败',
-        completed: '已完成',
-        closed: '已关闭',
-        cancelled: '已取消',
+        idle: text.idle,
+        working: text.working,
+        failed: text.failed,
+        completed: text.done,
+        closed: text.closed,
+        cancelled: text.cancelled,
       } as Record<string, string>
-    )[item.state] ?? '已取消';
+    )[item.state] ?? text.cancelled;
   }
 
 </script>

@@ -18,7 +18,7 @@
   <a href="#支持的工具"><img src="https://img.shields.io/badge/CLI-Claude%20%7C%20Codex%20%7C%20Cursor%20%7C%20Grok-555" alt="CLI: Claude, Codex, Cursor, Grok"></a>
 </p>
 
-[**下载安装**](https://github.com/QZYH123/OrbCue/releases/latest) · [快速开始](#快速开始) · [界面](#界面) · [隐私与数据](#隐私与数据) · [常见问题](#常见问题)
+[English](README.en.md) · [**下载安装**](https://github.com/QZYH123/OrbCue/releases/latest) · [快速开始](#快速开始) · [界面](#界面) · [隐私与数据](#隐私与数据) · [常见问题](#常见问题)
 
 <br>
 

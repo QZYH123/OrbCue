@@ -6,6 +6,7 @@ import {
   JUMP_WINDOW_LEVEL,
   JUMP_WINDOW_MISSING,
   jumpFeedback,
+  jumpPhrases,
 } from './jumpBack';
 
 describe('isDockTerminalId', () => {
@@ -56,5 +57,13 @@ describe('orb run copy', () => {
 
   it('says Windows-only users can connect without WSL', () => {
     expect(CONNECTIONS_INTRO).toContain('没有 WSL');
+  });
+
+  it('keeps the same facts in English', () => {
+    const english = jumpPhrases('en');
+    expect(english.intro).toContain('orb run');
+    expect(english.intro).toContain('Without WSL');
+    expect(english.missing).toContain('orb run');
+    expect(english.empty).toContain('orb run');
   });
 });

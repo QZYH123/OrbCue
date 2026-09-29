@@ -35,10 +35,10 @@ fn attention_toast(
     project_path: Option<&str>,
 ) -> Option<ToastSpec> {
     let title = match attention.reason.as_str() {
-        "input" => "等待输入",
-        "permission" => "等待授权",
-        "failed" => "任务失败",
-        "completed" if notify_completion => "任务完成",
+        "input" => crate::pick("等待输入", "Waiting for input"),
+        "permission" => crate::pick("等待授权", "Waiting for approval"),
+        "failed" => crate::pick("任务失败", "Task failed"),
+        "completed" if notify_completion => crate::pick("任务完成", "Task finished"),
         _ => return None,
     };
     Some(ToastSpec {
@@ -161,9 +161,18 @@ pub enum PhoneNotifyUrlError {
 impl PhoneNotifyUrlError {
     pub fn message(self) -> &'static str {
         match self {
-            Self::Invalid => "手机提醒地址需要是 http 或 https 链接",
-            Self::MissingTopic => "地址要带话题名，例如 https://ntfy.sh/你的话题",
-            Self::Credentials => "先不要在地址里写账号或密码",
+            Self::Invalid => crate::pick(
+                "手机提醒地址需要是 http 或 https 链接",
+                "The phone URL has to be an http or https link",
+            ),
+            Self::MissingTopic => crate::pick(
+                "地址要带话题名，例如 https://ntfy.sh/你的话题",
+                "The URL needs a topic, for example https://ntfy.sh/your-topic",
+            ),
+            Self::Credentials => crate::pick(
+                "先不要在地址里写账号或密码",
+                "Don't put a username or password in the URL",
+            ),
         }
     }
 }
@@ -428,6 +437,23 @@ mod tests {
         assert!(attention_toast(&attention("completed"), true, None).is_some());
         assert!(attention_toast(&attention("cancelled"), true, None).is_none());
         assert!(attention_toast(&attention("other"), true, None).is_none());
+    }
+
+    #[test]
+    fn english_cues_use_english_titles() {
+        let _guard = crate::locale::force_lang(crate::locale::Lang::En);
+        assert_eq!(
+            attention_toast(&attention("input"), false, None)
+                .unwrap()
+                .title,
+            "Waiting for input"
+        );
+        assert_eq!(
+            attention_toast(&attention("completed"), true, None)
+                .unwrap()
+                .title,
+            "Task finished"
+        );
     }
 
     #[test]

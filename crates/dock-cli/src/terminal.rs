@@ -75,11 +75,17 @@ impl WindowsTerminalAdapter {
 fn execute_plan(plan: &SpawnPlan) -> Result<(), String> {
     match ProcessCommand::new(&plan.program).args(&plan.args).status() {
         Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(format!(
-            "Windows Terminal 退出码 {}",
-            status.code().unwrap_or(1)
+        Ok(status) => {
+            let code = status.code().unwrap_or(1);
+            Err(orbcue_core::t!(
+                "Windows Terminal 退出码 {code}",
+                "Windows Terminal exited with code {code}"
+            ))
+        }
+        Err(error) => Err(orbcue_core::t!(
+            "无法启动 Windows Terminal（{error}）",
+            "Couldn't start Windows Terminal ({error})"
         )),
-        Err(error) => Err(format!("无法启动 Windows Terminal（{}）", error)),
     }
 }
 
@@ -195,7 +201,7 @@ fn run_command_inner(
     args: &[String],
     profile: Option<&str>,
 ) -> Result<StartedTab, String> {
-    let cwd = env::current_dir().map_err(|error| format!("无法读取当前目录：{error}"))?;
+    let cwd = env::current_dir().map_err(could_not_read_current_dir)?;
     let marker = allocate_dock_marker();
     let profile = resolve_wt_profile(profile)?;
     let inner = if native_windows_run() {
@@ -224,7 +230,7 @@ pub fn prepare_wsl_run(
     args: &[String],
     profile: Option<&str>,
 ) -> Result<WslRunSpec, String> {
-    let cwd = env::current_dir().map_err(|error| format!("无法读取当前目录：{error}"))?;
+    let cwd = env::current_dir().map_err(could_not_read_current_dir)?;
     let marker = allocate_dock_marker();
     let profile = resolve_wt_profile(profile)?;
     let InnerCommand::Wsl(inner) = wsl_inner(agent, args, &cwd, &marker)? else {
@@ -360,7 +366,7 @@ pub fn spawn_plan(
     }
     let cwd = inner_cwd(&request.inner)
         .to_str()
-        .ok_or_else(|| "当前目录不是有效 UTF-8".to_owned())?;
+        .ok_or_else(current_dir_not_utf8)?;
     let title = dock_tab_title(&request.agent, Some(cwd), &request.marker);
     let mut args = vec!["-w".to_owned(), "0".to_owned(), "nt".to_owned()];
     if let Some(profile) = request
@@ -379,8 +385,7 @@ pub fn spawn_plan(
     ]);
     match &request.inner {
         InnerCommand::Wsl(inner) => {
-            let wsl =
-                wsl.ok_or_else(|| "找不到 wsl.exe。WSL 侧 orb run 需要 Win+WSL。".to_owned())?;
+            let wsl = wsl.ok_or_else(missing_wsl_exe)?;
             args.extend(wsl_inner_args(wsl, inner)?);
         }
         InnerCommand::Native(inner) => args.extend(native_inner_args(inner)?),
@@ -401,12 +406,9 @@ fn inner_cwd(inner: &InnerCommand) -> &Path {
 
 pub fn wsl_inner_args(wsl: &Path, inner: &WslInner) -> Result<Vec<String>, String> {
     if inner.distro.trim().is_empty() {
-        return Err("缺少 WSL 发行版名。在 WSL 里运行，或设置 ORBCUE_WSL_DISTRO。".to_owned());
+        return Err(missing_wsl_distro());
     }
-    let cwd = inner
-        .cwd
-        .to_str()
-        .ok_or_else(|| "当前目录不是有效 UTF-8".to_owned())?;
+    let cwd = inner.cwd.to_str().ok_or_else(current_dir_not_utf8)?;
     Ok(vec![
         "--".to_owned(),
         windows_wsl_command(wsl),
@@ -422,10 +424,7 @@ pub fn wsl_inner_args(wsl: &Path, inner: &WslInner) -> Result<Vec<String>, Strin
 }
 
 pub fn native_inner_args(inner: &NativeInner) -> Result<Vec<String>, String> {
-    let cwd = inner
-        .cwd
-        .to_str()
-        .ok_or_else(|| "当前目录不是有效 UTF-8".to_owned())?;
+    let cwd = inner.cwd.to_str().ok_or_else(current_dir_not_utf8)?;
     let mut args = vec!["--startingDirectory".to_owned(), cwd.to_owned()];
     for (key, value) in &inner.extra_env {
         if !valid_export_key(key) {
@@ -496,12 +495,21 @@ fn write_wsl_run_script(
         &path,
         inner_script(command, args, extra_exports, marker, shell),
     )
-    .map_err(|error| format!("无法写入启动脚本：{error}"))?;
+    .map_err(|error| {
+        orbcue_core::t!(
+            "无法写入启动脚本：{error}",
+            "Couldn't write the launch script: {error}"
+        )
+    })?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
-            .map_err(|error| format!("无法设置启动脚本权限：{error}"))?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            orbcue_core::t!(
+                "无法设置启动脚本权限：{error}",
+                "Couldn't set permissions on the launch script: {error}"
+            )
+        })?;
     }
     Ok(path)
 }
@@ -533,7 +541,10 @@ const CURSOR_EDITOR_ON_PATH: &str = "cursor 在 PATH 上是 Cursor 编辑器，�
 
 fn resolve_agent(name: &str) -> Result<String, String> {
     if !valid_run_agent_name(name) {
-        return Err("agent 名只能包含字母、数字、'.'、'_' 或 '-'".to_owned());
+        return Err(orbcue_core::t!(
+            "agent 名只能包含字母、数字、'.'、'_' 或 '-'",
+            "An agent name can only contain letters, numbers, '.', '_', or '-'"
+        ));
     }
     let dock_binary = env::current_exe().unwrap_or_else(|_| PathBuf::from("orb"));
     let manager = ConnectionManager::from_environment(dock_binary);
@@ -569,10 +580,15 @@ fn resolve_agent_with(
         }
     }
     if name.eq_ignore_ascii_case("cursor") && look_on_path_in("cursor", path).is_some() {
-        return Err(CURSOR_EDITOR_ON_PATH.to_owned());
+        return Err(orbcue_core::pick(
+            CURSOR_EDITOR_ON_PATH,
+            "`cursor` on PATH is the Cursor editor, not the CLI. OrbCue needs the Cursor CLI (agent or cursor-agent). Install it, then run orb run cursor.",
+        )
+        .to_owned());
     }
-    Err(format!(
-        "`{name}` 未连接，也不在 PATH 上。先执行 `orb connect {name}`，或确认该命令可用。"
+    Err(orbcue_core::t!(
+        "`{name}` 未连接，也不在 PATH 上。先执行 `orb connect {name}`，或确认该命令可用。",
+        "`{name}` is not connected and is not on PATH. Run `orb connect {name}`, or check that the command works."
     ))
 }
 
@@ -621,7 +637,10 @@ fn choose_wt_profile(
             return Ok(None);
         }
         if !valid_wt_profile(trimmed) {
-            return Err("Windows Terminal 配置文件名无效".to_owned());
+            return Err(orbcue_core::t!(
+                "Windows Terminal 配置文件名无效",
+                "The Windows Terminal profile name is invalid"
+            ));
         }
         return Ok(Some(trimmed.to_owned()));
     }
@@ -685,7 +704,7 @@ fn wsl_distro() -> Result<String, String> {
             }
         }
     }
-    Err("缺少 WSL 发行版名。在 WSL 里运行，或设置 ORBCUE_WSL_DISTRO。".to_owned())
+    Err(missing_wsl_distro())
 }
 
 fn find_wt() -> Result<PathBuf, String> {
@@ -695,7 +714,12 @@ fn find_wt() -> Result<PathBuf, String> {
     look_on_path("wt.exe")
         .or_else(|| look_on_path("wt"))
         .or_else(windows_apps_wt)
-        .ok_or_else(|| "找不到 Windows Terminal（wt.exe）。".to_owned())
+        .ok_or_else(|| {
+            orbcue_core::t!(
+                "找不到 Windows Terminal（wt.exe）。",
+                "Couldn't find Windows Terminal (wt.exe)."
+            )
+        })
 }
 
 fn find_wsl() -> Result<PathBuf, String> {
@@ -706,7 +730,35 @@ fn find_wsl() -> Result<PathBuf, String> {
         .or_else(|| look_on_path("wsl"))
         .or_else(|| existing_path(PathBuf::from("/mnt/c/Windows/System32/wsl.exe")))
         .or_else(|| existing_path(PathBuf::from(r"C:\Windows\System32\wsl.exe")))
-        .ok_or_else(|| "找不到 wsl.exe。WSL 侧 orb run 需要 Win+WSL。".to_owned())
+        .ok_or_else(missing_wsl_exe)
+}
+
+fn could_not_read_current_dir(error: std::io::Error) -> String {
+    orbcue_core::t!(
+        "无法读取当前目录：{error}",
+        "Couldn't read the current directory: {error}"
+    )
+}
+
+fn current_dir_not_utf8() -> String {
+    orbcue_core::t!(
+        "当前目录不是有效 UTF-8",
+        "The current directory is not valid UTF-8"
+    )
+}
+
+fn missing_wsl_distro() -> String {
+    orbcue_core::t!(
+        "缺少 WSL 发行版名。在 WSL 里运行，或设置 ORBCUE_WSL_DISTRO。",
+        "Missing the WSL distro name. Run this inside WSL, or set ORBCUE_WSL_DISTRO."
+    )
+}
+
+fn missing_wsl_exe() -> String {
+    orbcue_core::t!(
+        "找不到 wsl.exe。WSL 侧 orb run 需要 Win+WSL。",
+        "Couldn't find wsl.exe. orb run from WSL needs Windows and WSL."
+    )
 }
 
 fn env_executable(key: &str) -> Option<PathBuf> {

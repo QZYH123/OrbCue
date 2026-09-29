@@ -1,3 +1,5 @@
+import { copyOf } from './copy';
+import type { Lang } from './locale';
 import { displayAgent } from './sessionIdentity';
 import type { AgentInventory, AgentSide } from './types';
 
@@ -16,18 +18,18 @@ export function sideLabel(side: AgentSide): string {
   return side === 'wsl' ? 'WSL' : 'Windows';
 }
 
-export function wslDockErrorBanner(inventory: AgentInventory): string | null {
+export function wslDockErrorBanner(inventory: AgentInventory, lang: Lang = 'zh'): string | null {
   const raw = inventory.wsl_error?.trim();
   if (!raw) {
     return null;
   }
-  return `WSL 侧 orb 未就绪：${raw}`;
+  return copyOf(lang).wslOrbNotReady(raw);
 }
 
 /** Agents whose CLI command differs from the agent name shown in the UI. */
 const AGENT_COMMANDS: Record<string, string> = { cursor: 'agent' };
 
-export function connectSuccessNotice(name: string, side: AgentSide): string {
+export function connectSuccessNotice(name: string, side: AgentSide, lang: Lang = 'zh'): string {
   const command = AGENT_COMMANDS[name.trim().toLowerCase()] ?? name;
-  return `已连接 ${displayAgent(name)}（${sideLabel(side)}）。正在运行的 ${command} 不受影响；新开一个终端重新启动它，任务才会出现在小球上。`;
+  return copyOf(lang).connectSuccess(displayAgent(name), sideLabel(side), command);
 }

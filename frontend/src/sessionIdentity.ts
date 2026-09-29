@@ -30,8 +30,6 @@ const AGENT_NAMES: Record<string, string> = {
   'cursor-agent': 'Cursor',
 };
 
-const OTHER_LABEL = '其他';
-
 export function folderName(path: string | null | undefined): string | null {
   if (!path) return null;
   const trimmed = path.trim().replace(/[\\/]+$/, '');
@@ -109,8 +107,9 @@ export function unreadCount(sessions: Array<{ acknowledged: boolean }>): number 
 export function presentSessionSections<T extends SessionLike>(
   sessions: T[],
   home?: string,
+  otherLabel = '其他',
 ): SessionSection<T>[] {
-  const groups = groupSessionsByProject(sessions, home);
+  const groups = groupSessionsByProject(sessions, home, otherLabel);
   const folderCounts = new Map<string, number>();
   for (const group of groups) {
     if (!group.key) continue;
@@ -123,7 +122,7 @@ export function presentSessionSections<T extends SessionLike>(
     const folder = folderName(group.key);
     const label =
       !group.key || !folder
-        ? OTHER_LABEL
+        ? otherLabel
         : (folderCounts.get(folder) ?? 0) > 1
           ? shortenProjectPath(group.key, home)
           : folder;

@@ -192,7 +192,7 @@ fn home_dir() -> Result<PathBuf, String> {
         .or_else(|| env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
-        .ok_or_else(|| "找不到用户目录".to_owned())
+        .ok_or_else(|| orbcue_core::t!("找不到用户目录", "Couldn't find the home directory"))
 }
 
 fn windows_cli_dir() -> Option<PathBuf> {
@@ -322,7 +322,7 @@ fn strip_block(original: &str) -> Option<String> {
 
 fn write_profile(path: &Path, text: &str) -> Result<(), String> {
     super::atomic_write(path, text.as_bytes(), super::existing_mode(path, 0o644))
-        .map_err(|error| format!("无法写入 {}: {error}", path.display()))
+        .map_err(|error| super::could_not_write(path, error))
 }
 
 fn sync_cmd_shims(
@@ -333,7 +333,13 @@ fn sync_cmd_shims(
     if commands.is_empty() && !dir.exists() {
         return Ok(());
     }
-    fs::create_dir_all(dir).map_err(|error| format!("无法创建 {}: {error}", dir.display()))?;
+    fs::create_dir_all(dir).map_err(|error| {
+        orbcue_core::t!(
+            "无法创建 {dir}: {error}",
+            "Couldn't create {dir}: {error}",
+            dir = dir.display()
+        )
+    })?;
     for old in previous {
         if commands.iter().any(|command| command.invoke == old.invoke) {
             continue;
@@ -346,13 +352,14 @@ fn sync_cmd_shims(
     for command in commands {
         let path = dir.join(format!("{}.cmd", command.invoke));
         if path.exists() && !is_direct_run_shim(&path) {
-            return Err(format!(
-                "已有同名命令 {}，没有覆盖",
-                path.file_name().unwrap_or_default().to_string_lossy()
+            let shown = path.file_name().unwrap_or_default().to_string_lossy();
+            return Err(orbcue_core::t!(
+                "已有同名命令 {shown}，没有覆盖",
+                "A command named {shown} already exists, so it was left alone."
             ));
         }
         fs::write(&path, cmd_shim(&command.agent))
-            .map_err(|error| format!("无法写入 {}: {error}", path.display()))?;
+            .map_err(|error| super::could_not_write(&path, error))?;
     }
     Ok(())
 }

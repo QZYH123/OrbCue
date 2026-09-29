@@ -51,14 +51,13 @@ pub fn set_phone_notify_url(url: String) -> Result<String, String> {
         None => match fs::remove_file(&path) {
             Ok(()) => {}
             Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("写不了手机提醒地址：{error}")),
+            Err(error) => return Err(phone_url_save_error(error)),
         },
         Some(url) => {
             if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|error| format!("写不了手机提醒地址：{error}"))?;
+                fs::create_dir_all(parent).map_err(phone_url_save_error)?;
             }
-            fs::write(&path, url).map_err(|error| format!("写不了手机提醒地址：{error}"))?;
+            fs::write(&path, url).map_err(phone_url_save_error)?;
         }
     }
     let stored = url.unwrap_or_default();
@@ -66,17 +65,27 @@ pub fn set_phone_notify_url(url: String) -> Result<String, String> {
     Ok(stored)
 }
 
+fn phone_url_save_error(error: std::io::Error) -> String {
+    orbcue_core::t!(
+        "写不了手机提醒地址：{error}",
+        "Couldn't save the phone URL: {error}"
+    )
+}
+
 #[tauri::command]
 pub fn preview_phone_notify() -> Result<(), String> {
     let url = url_slot().clone();
     let Some(request) = phone_notify_request(
         &url,
-        "手机提醒已打开",
-        "等待输入、授权、失败或完成时会再发一次",
+        orbcue_core::pick("手机提醒已打开", "Phone alerts are on"),
+        orbcue_core::pick(
+            "等待输入、授权、失败或完成时会再发一次",
+            "Another alert is sent for input, approval, failure, or completion.",
+        ),
     )
     .map_err(|error| error.message().to_owned())?
     else {
-        return Err("先填写话题地址".to_owned());
+        return Err(orbcue_core::t!("先填写话题地址", "Enter a topic URL first"));
     };
     post(&request)
 }
@@ -107,7 +116,13 @@ pub fn queue(attention: Option<&Attention>, notify_completion: bool, project_pat
         })
         .is_err()
     {
-        eprintln!("OrbCue: phone notify failed: 发不出去");
+        eprintln!(
+            "{}",
+            orbcue_core::pick(
+                "OrbCue: phone notify failed: 发不出去",
+                "OrbCue: phone notify failed: couldn't send"
+            )
+        );
     }
 }
 
@@ -190,7 +205,8 @@ unsafe fn post_winhttp(request: &PhoneNotifyRequest) -> Result<(), String> {
         .encode_utf16()
         .collect::<Vec<_>>();
     let body = request.body.as_bytes();
-    let len = u32::try_from(body.len()).map_err(|_| "消息太长".to_owned())?;
+    let len = u32::try_from(body.len())
+        .map_err(|_| orbcue_core::t!("消息太长", "The message is too long"))?;
     WinHttpSendRequest(
         http.0,
         Some(headers.as_slice()),
@@ -218,9 +234,9 @@ unsafe fn post_winhttp(request: &PhoneNotifyRequest) -> Result<(), String> {
         Ok(())
     } else {
         Err(match status {
-            401 | 403 => "这个话题拒绝发送".to_owned(),
-            404 => "话题地址不对".to_owned(),
-            _ => format!("ntfy 返回 {status}"),
+            401 | 403 => orbcue_core::t!("这个话题拒绝发送", "This topic refused the message"),
+            404 => orbcue_core::t!("话题地址不对", "The topic URL looks wrong"),
+            _ => orbcue_core::t!("ntfy 返回 {status}", "ntfy returned {status}"),
         })
     }
 }
@@ -233,7 +249,7 @@ fn error_text(error: windows::core::Error) -> String {
     let message = error.message();
     let message = message.trim();
     if message.is_empty() {
-        "连不上".to_owned()
+        orbcue_core::t!("连不上", "Couldn't connect")
     } else {
         message.to_owned()
     }

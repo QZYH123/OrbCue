@@ -810,5 +810,33 @@ footer {
 .ticket-rail.idle, .ticket-rail.cancelled, .ticket-rail.closed { background: var(--faint); }
 .led { display: none; }
 .dock-nav .nav-key { display: none; }
+html[lang="en"] .filters button {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  letter-spacing: 0;
+  text-transform: none;
+}
+html[lang="en"] .state-chip,
+html[lang="en"] .dock-nav button,
+html[lang="en"] .text-button,
+html[lang="en"] .session-actions button,
+html[lang="en"] .hero-meta {
+  letter-spacing: 0;
+  text-transform: none;
+}
+html[lang="en"] .theme-picker button {
+  flex: 1 0 auto;
+  padding-left: 2px;
+  padding-right: 2px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+html[lang="en"] .connections-toolbar { flex-wrap: wrap; }
+html[lang="en"] .connection-note {
+  display: -webkit-box;
+  white-space: normal;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
 ::-webkit-scrollbar { width: 6px; height: 0; }
 ::-webkit-scrollbar-thumb { border-radius: 99px; background: var(--thumb); }

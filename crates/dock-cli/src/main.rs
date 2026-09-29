@@ -185,6 +185,7 @@ struct AcknowledgeArgs {
 }
 
 fn main() {
+    orbcue_core::apply_process_lang();
     #[cfg(windows)]
     attach_parent_console();
     let cli = Cli::parse();
@@ -320,8 +321,11 @@ fn run_alias_command(name: Option<&str>, clear: bool, json_output: bool) -> i32 
     match result {
         Ok(alias) => {
             let human = match &alias {
-                Some(alias) => format!("{alias} grok 等同 orb run grok"),
-                None => "没有启动别名".to_owned(),
+                Some(alias) => orbcue_core::t!(
+                    "{alias} grok 等同 orb run grok",
+                    "{alias} grok means orb run grok"
+                ),
+                None => orbcue_core::t!("没有启动别名", "No run alias"),
             };
             print_setting(
                 json_output,
@@ -352,9 +356,15 @@ fn run_replace_tab_command(enable: bool, disable: bool, json_output: bool) -> i3
     match result {
         Ok(enabled) => {
             let human = if enabled {
-                "orb run 会替换当前标签页"
+                orbcue_core::pick(
+                    "orb run 会替换当前标签页",
+                    "orb run will replace the current tab",
+                )
             } else {
-                "orb run 会留下当前标签页"
+                orbcue_core::pick(
+                    "orb run 会留下当前标签页",
+                    "orb run will leave the current tab",
+                )
             };
             print_setting(
                 json_output,
@@ -385,13 +395,17 @@ fn run_direct_run_command(enable: bool, disable: bool, json_output: bool) -> i32
     match result {
         Ok(view) => {
             let human = if !view.enabled {
-                "原命令启动已关闭".to_owned()
+                orbcue_core::t!("原命令启动已关闭", "Original command is off")
             } else if view.commands.is_empty() {
-                "原命令启动已打开。先连接工具，然后新开终端".to_owned()
+                orbcue_core::t!(
+                    "原命令启动已打开。先连接工具，然后新开终端",
+                    "Original command is on. Connect a tool, then open a new terminal."
+                )
             } else {
-                format!(
-                    "原命令启动已打开：{}。新开终端后生效",
-                    view.commands.join("、")
+                let list = view.commands.join(orbcue_core::pick("、", ", "));
+                orbcue_core::t!(
+                    "原命令启动已打开：{list}。新开终端后生效",
+                    "Original command is on: {list}. Open a new terminal for it to take effect."
                 )
             };
             print_setting(json_output, &view, &human, true, "orb direct-run")
@@ -408,7 +422,13 @@ fn run_direct_run_command(enable: bool, disable: bool, json_output: bool) -> i32
 
 fn refresh_direct_run() {
     if let Err(error) = orbcue_connect::refresh_direct_run() {
-        eprintln!("orb: 原命令启动未更新: {error}");
+        eprintln!(
+            "{}",
+            orbcue_core::t!(
+                "orb: 原命令启动未更新: {error}",
+                "orb: original command was not updated: {error}"
+            )
+        );
     }
 }
 

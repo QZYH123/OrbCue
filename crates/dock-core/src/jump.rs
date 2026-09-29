@@ -4,6 +4,13 @@ pub const DOCK_TERMINAL_PREFIX: &str = "orb:";
 pub const DOCK_MARKER_HEX_LEN: usize = 6;
 pub const JUMP_WINDOW_MISSING: &str = "找不到该会话的窗口。用 orb run 启动可获得精确跳回";
 
+pub fn jump_window_missing() -> &'static str {
+    crate::pick(
+        JUMP_WINDOW_MISSING,
+        "Can't find that session's window. Start it with orb run to jump back to the exact tab.",
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FocusRequest {
     pub deep_link: Option<String>,
@@ -69,8 +76,14 @@ pub fn select_unique_window_title<'a, T: AsRef<str>>(
     let matches = titles_matching(titles, hint);
     match matches.len() {
         1 => Ok(matches[0]),
-        0 => Err(format!("没有找到匹配的终端窗口（线索：「{hint}」）")),
-        _ => Err(format!("终端窗口匹配不唯一（线索：「{hint}」）")),
+        0 => Err(crate::t!(
+            "没有找到匹配的终端窗口（线索：「{hint}」）",
+            "No terminal window matched (“{hint}”)."
+        )),
+        _ => Err(crate::t!(
+            "终端窗口匹配不唯一（线索：「{hint}」）",
+            "More than one terminal window matched (“{hint}”)."
+        )),
     }
 }
 

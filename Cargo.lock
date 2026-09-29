@@ -2663,6 +2663,7 @@ dependencies = [
 name = "orbcue-connect"
 version = "0.2.8"
 dependencies = [
+ "orbcue-core",
  "orbcue-ipc",
  "serde",
  "serde_json",

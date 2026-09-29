@@ -3,17 +3,31 @@ import fluentHref from './themes/fluent.css?url';
 import glyphHref from './themes/glyph.css?url';
 import braunHref from './themes/braun.css?url';
 import glassHref from './themes/glass.css?url';
+import type { Lang } from './locale';
 
 export const THEMES = ['prototype', 'fluent', 'glyph', 'braun', 'glass'] as const;
 export type DockTheme = (typeof THEMES)[number];
 
-export const THEME_META: Record<DockTheme, { name: string; note: string }> = {
-  prototype: { name: '原型', note: '石墨哑光圆球' },
-  fluent: { name: 'Fluent', note: 'Win11 飞出层' },
-  glyph: { name: 'Glyph', note: '点阵，球上显示数字' },
-  braun: { name: 'Braun', note: 'ET66 仪器' },
-  glass: { name: 'Glass', note: '白霜毛玻璃' },
+const THEME_TEXT: Record<Lang, Record<DockTheme, { name: string; note: string }>> = {
+  zh: {
+    prototype: { name: '原型', note: '石墨哑光圆球' },
+    fluent: { name: 'Fluent', note: 'Win11 飞出层' },
+    glyph: { name: 'Glyph', note: '点阵，球上显示数字' },
+    braun: { name: 'Braun', note: 'ET66 仪器' },
+    glass: { name: 'Glass', note: '白霜毛玻璃' },
+  },
+  en: {
+    prototype: { name: 'Prototype', note: 'Matte graphite orb' },
+    fluent: { name: 'Fluent', note: 'Windows 11 flyout' },
+    glyph: { name: 'Glyph', note: 'Dot matrix, with the count on the orb' },
+    braun: { name: 'Braun', note: 'ET66 instrument' },
+    glass: { name: 'Glass', note: 'Frosted glass' },
+  },
 };
+
+export function themeMeta(lang: Lang = 'zh') {
+  return THEME_TEXT[lang];
+}
 
 const STORAGE_KEY = 'dock-theme';
 const CHANNEL = 'dock-theme';

@@ -24,7 +24,11 @@ pub(crate) fn grok_compat_cursor_hooks_enabled(grok_home: &Path) -> bool {
 pub(crate) fn connection_warnings(name: &str, grok_home: &Path) -> Vec<String> {
     match name {
         "cursor" | "grok" if grok_compat_cursor_hooks_enabled(grok_home) => {
-            vec![GROK_COMPAT_CURSOR_HOOKS_WARNING.to_owned()]
+            vec![orbcue_core::pick(
+                GROK_COMPAT_CURSOR_HOOKS_WARNING,
+                "Grok has compat.cursor.hooks turned on. A Grok session may also run Cursor's hooks, so one task can be counted twice. Turn it off in ~/.grok/settings.json.",
+            )
+            .to_owned()]
         }
         _ => Vec::new(),
     }

@@ -1,6 +1,5 @@
 export const PROJECT_PATH_DISPLAY_LIMIT = 36;
 const OTHER_KEY = '';
-const OTHER_LABEL = '其他';
 
 export interface ProjectGroup<T> {
   key: string;
@@ -19,6 +18,7 @@ export function shortenProjectPath(path: string, home?: string): string {
 export function groupSessionsByProject<T extends { project_path?: string | null }>(
   sessions: T[],
   home?: string,
+  otherLabel = '其他',
 ): ProjectGroup<T>[] {
   const groups = new Map<string, T[]>();
   const other: T[] = [];
@@ -46,7 +46,7 @@ export function groupSessionsByProject<T extends { project_path?: string | null 
     }));
 
   if (other.length > 0) {
-    result.push({ key: OTHER_KEY, label: OTHER_LABEL, sessions: other });
+    result.push({ key: OTHER_KEY, label: otherLabel, sessions: other });
   }
   return result;
 }

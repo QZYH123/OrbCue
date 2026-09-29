@@ -33,23 +33,35 @@ pub struct AliasView {
 pub fn validate(raw: &str) -> Result<String, String> {
     let name = raw.trim();
     if name.is_empty() {
-        return Err("别名不能为空".to_owned());
+        return Err(orbcue_core::t!("别名不能为空", "The alias can't be empty"));
     }
     if name.len() > 24 {
-        return Err("别名最多 24 个字符".to_owned());
+        return Err(orbcue_core::t!(
+            "别名最多 24 个字符",
+            "An alias can be at most 24 characters"
+        ));
     }
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
-        return Err("别名不能为空".to_owned());
+        return Err(orbcue_core::t!("别名不能为空", "The alias can't be empty"));
     };
     if !first.is_ascii_alphabetic() {
-        return Err("别名必须以字母开头".to_owned());
+        return Err(orbcue_core::t!(
+            "别名必须以字母开头",
+            "An alias must start with a letter"
+        ));
     }
     if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
-        return Err("别名只能用字母、数字、下划线和连字符".to_owned());
+        return Err(orbcue_core::t!(
+            "别名只能用字母、数字、下划线和连字符",
+            "An alias can only use letters, numbers, underscores, and hyphens"
+        ));
     }
     if RESERVED.iter().any(|item| item.eq_ignore_ascii_case(name)) {
-        return Err(format!("不能占用 {name} 这个名字"));
+        return Err(orbcue_core::t!(
+            "不能占用 {name} 这个名字",
+            "The name {name} is reserved"
+        ));
     }
     Ok(name.to_owned())
 }
@@ -202,21 +214,27 @@ fn is_ours(path: &Path) -> bool {
 
 fn write_shim(name: &str) -> Result<(), String> {
     let dir = bin_dir();
-    fs::create_dir_all(&dir).map_err(|error| format!("无法创建 {dir:?}: {error}"))?;
+    fs::create_dir_all(&dir).map_err(|error| {
+        orbcue_core::t!(
+            "无法创建 {dir:?}: {error}",
+            "Couldn't create {dir:?}: {error}"
+        )
+    })?;
     let path = shim_path(name);
     if path.exists() && !is_ours(&path) {
-        return Err(format!(
-            "已有同名命令 {}，换一个名字",
-            path.file_name().unwrap_or_default().to_string_lossy()
+        let shown = path.file_name().unwrap_or_default().to_string_lossy();
+        return Err(orbcue_core::t!(
+            "已有同名命令 {shown}，换一个名字",
+            "A command named {shown} already exists. Pick another name."
         ));
     }
-    fs::write(&path, shim_bytes())
-        .map_err(|error| format!("无法写入 {}: {error}", path.display()))?;
+    fs::write(&path, shim_bytes()).map_err(|error| super::could_not_write(&path, error))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
-            .map_err(|error| format!("无法设置权限: {error}"))?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).map_err(|error| {
+            orbcue_core::t!("无法设置权限: {error}", "Couldn't set permissions: {error}")
+        })?;
     }
     Ok(())
 }

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { copyOf } from './copy';
+  import { uiLang } from './locale';
   import type { Snapshot } from './types';
   import type { WorkAreaEdge } from './placement';
   import type { DockTheme } from './theme';
@@ -20,7 +22,8 @@
   export let onBallClick: (event: MouseEvent) => void;
   export let markClass: (mark: string) => string;
 
-  $: idleLabel = snapshot.pending_mark || (snapshot.working_count ? '工作中' : '空闲');
+  const text = copyOf(uiLang());
+  $: idleLabel = snapshot.pending_mark || (snapshot.working_count ? text.working : text.idle);
 </script>
 
 {#snippet ballCount(withSeparator: boolean)}
@@ -47,8 +50,8 @@
   <button
     class="ball {ballKind}"
     style="--ratio: {ringRatio}"
-    aria-label={`${snapshot.count_label}，${idleLabel}。点击展开或收起面板`}
-    title={`${snapshot.count_label}，${idleLabel}。点击展开或收起面板`}
+    aria-label={text.ballToggle(snapshot.count_label, idleLabel)}
+    title={text.ballToggle(snapshot.count_label, idleLabel)}
     onpointerdown={onBallPointerDown}
     onpointermove={onBallPointerMove}
     onclick={onBallClick}

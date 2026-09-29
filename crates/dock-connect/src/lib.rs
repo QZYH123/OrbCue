@@ -76,17 +76,20 @@ pub enum ConnectionMethod {
 impl ConnectionMethod {
     pub fn limitation(self) -> &'static str {
         match self {
-            Self::Wrapper => {
-                "遗留包装连接，看不到「正在等你输入」。可断开后改用 `orb start` / `orb complete`"
-            }
+            Self::Wrapper => orbcue_core::pick(
+                "遗留包装连接，看不到「正在等你输入」。可断开后改用 `orb start` / `orb complete`",
+                "Leftover wrapper connection. It can't see “waiting for input”. Disconnect it and use `orb start` / `orb complete`.",
+            ),
             Self::ClaudeHook => "",
             Self::GrokHook => "",
-            Self::CodexHook => {
-                "用 Esc 或 Ctrl+C 打断时不会离开「工作中」，对话报错也不会显示为失败；可用「清除」，或退出 Codex 后任务会消失"
-            }
-            Self::CursorHook => {
-                "打印模式（-p）没有回合结束通知，条目要等进程退出后才消失"
-            }
+            Self::CodexHook => orbcue_core::pick(
+                "用 Esc 或 Ctrl+C 打断时不会离开「工作中」，对话报错也不会显示为失败；可用「清除」，或退出 Codex 后任务会消失",
+                "Esc or Ctrl+C does not leave Working, and a chat error is not shown as a failure. Use Clear, or the row disappears when you quit Codex.",
+            ),
+            Self::CursorHook => orbcue_core::pick(
+                "打印模式（-p）没有回合结束通知，条目要等进程退出后才消失",
+                "Print mode (-p) has no end-of-turn signal. The row stays until the process exits.",
+            ),
         }
     }
 }
@@ -108,7 +111,12 @@ fn connection_record(
     }
 }
 
-const NATIVE_NOTIFY_NOTE: &str = "该 Agent 自己也可能弹系统通知；Dock 的通知可在设置里关掉";
+fn native_notify_note() -> &'static str {
+    orbcue_core::pick(
+        "该 Agent 自己也可能弹系统通知；Dock 的通知可在设置里关掉",
+        "This agent may also show its own notifications. You can turn OrbCue's off in Settings.",
+    )
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectionRecord {
@@ -257,11 +265,14 @@ impl ConnectionManager {
 
     pub fn add_scan_dir(&self, dir: &Path) -> Result<Vec<DiscoveredAgent>, String> {
         if !dir.is_dir() {
-            return Err("请选择一个文件夹".to_owned());
+            return Err(orbcue_core::t!("请选择一个文件夹", "Pick a folder."));
         }
         let found = discover::agents_in_dir(dir);
         if found.is_empty() {
-            return Err("这个文件夹里没有支持的工具（Claude、Grok、Codex 或 Cursor）".to_owned());
+            return Err(orbcue_core::t!(
+                "这个文件夹里没有支持的工具（Claude、Grok、Codex 或 Cursor）",
+                "This folder has no supported tool (Claude, Grok, Codex, or Cursor)."
+            ));
         }
         let mut file = self.load();
         if !file.extra_dirs.iter().any(|existing| existing == dir) {
@@ -303,9 +314,21 @@ impl ConnectionManager {
             method,
             files: self.preview_files(name, method),
             will_not: vec![
-                format!("不替换 Agent 本体（{}）", original.display()),
-                "不修改、不删除用户其他 Hook".to_owned(),
-                "不读取 transcript / prompt / 命令 / 代码".to_owned(),
+                orbcue_core::t!(
+                    "不替换 Agent 本体（{shown}）",
+                    "Won't replace the agent program ({shown})",
+                    shown = original.display()
+                ),
+                orbcue_core::pick(
+                    "不修改、不删除用户其他 Hook",
+                    "Won't change or delete your other hooks",
+                )
+                .to_owned(),
+                orbcue_core::pick(
+                    "不读取 transcript / prompt / 命令 / 代码",
+                    "Won't read transcripts, prompts, commands, or code",
+                )
+                .to_owned(),
             ],
             notes: preview_notes(method),
             warnings: self.connect_warnings(name),
@@ -433,7 +456,11 @@ impl ConnectionManager {
                 files.push(PreviewFile {
                     path: config.with_file_name(backup_name),
                     action: PreviewAction::Create,
-                    entries: vec!["仅在备份不存在时创建".to_owned()],
+                    entries: vec![orbcue_core::pick(
+                        "仅在备份不存在时创建",
+                        "Created only if no backup exists yet",
+                    )
+                    .to_owned()],
                 });
             }
         }
@@ -924,6 +951,14 @@ fn retain_nonempty_hook_arrays(hooks: &mut serde_json::Map<String, Value>) {
     });
 }
 
+pub(crate) fn could_not_write(path: &Path, error: impl std::fmt::Display) -> String {
+    orbcue_core::t!(
+        "无法写入 {path}: {error}",
+        "Couldn't write {path}: {error}",
+        path = path.display()
+    )
+}
+
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -970,21 +1005,32 @@ fn preview_action(path: &Path) -> PreviewAction {
 }
 
 fn preview_notes(method: ConnectionMethod) -> Vec<String> {
+    let settings_backup = orbcue_core::pick(
+        "首次修改前备份 settings.json",
+        "Backs up settings.json before the first edit",
+    );
+    let hooks_backup = orbcue_core::pick(
+        "首次修改前备份 hooks.json",
+        "Backs up hooks.json before the first edit",
+    );
+    let trust = orbcue_core::pick(
+        "Codex 可能要求在 /hooks 里信任新命令",
+        "Codex may ask you to trust the new command under /hooks",
+    );
     match method {
-        ConnectionMethod::ClaudeHook => vec![
-            "首次修改前备份 settings.json".to_owned(),
-            NATIVE_NOTIFY_NOTE.to_owned(),
-        ],
+        ConnectionMethod::ClaudeHook => {
+            vec![settings_backup.to_owned(), native_notify_note().to_owned()]
+        }
         ConnectionMethod::CodexHook => vec![
-            "首次修改前备份 hooks.json".to_owned(),
+            hooks_backup.to_owned(),
             ConnectionMethod::CodexHook.limitation().to_owned(),
-            "Codex 可能要求在 /hooks 里信任新命令".to_owned(),
-            NATIVE_NOTIFY_NOTE.to_owned(),
+            trust.to_owned(),
+            native_notify_note().to_owned(),
         ],
         ConnectionMethod::CursorHook => vec![
-            "首次修改前备份 hooks.json".to_owned(),
+            hooks_backup.to_owned(),
             ConnectionMethod::CursorHook.limitation().to_owned(),
-            NATIVE_NOTIFY_NOTE.to_owned(),
+            native_notify_note().to_owned(),
         ],
         ConnectionMethod::Wrapper | ConnectionMethod::GrokHook => Vec::new(),
     }
@@ -1300,8 +1346,9 @@ fn hook_agent_named(name: &str) -> Option<&'static HookAgent> {
 }
 
 fn unsupported_connect_name(name: &str) -> String {
-    format!(
-        "OrbCue 只连接 Claude、Grok、Codex 和 Cursor（{name} 不行）。其他工具请用 `orb start` / `orb complete` 接入"
+    orbcue_core::t!(
+        "OrbCue 只连接 Claude、Grok、Codex 和 Cursor（{name} 不行）。其他工具请用 `orb start` / `orb complete` 接入",
+        "OrbCue only connects Claude, Grok, Codex, and Cursor ({name} is not one of them). Other tools can use `orb start` / `orb complete`."
     )
 }
 

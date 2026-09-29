@@ -423,7 +423,13 @@ fn connect_agent(
 
 fn note_direct_run() {
     if let Err(error) = orbcue_connect::refresh_direct_run() {
-        eprintln!("OrbCue: 原命令启动未更新: {error}");
+        eprintln!(
+            "{}",
+            orbcue_core::t!(
+                "OrbCue: 原命令启动未更新: {error}",
+                "OrbCue: original command was not updated: {error}"
+            )
+        );
     }
 }
 
@@ -454,7 +460,7 @@ fn set_run_alias(name: String) -> Result<Option<String>, String> {
     #[cfg(windows)]
     warn_wsl(
         wsl_session::set_run_alias(parsed.as_deref()),
-        "WSL 启动别名未更新",
+        orbcue_core::pick("WSL 启动别名未更新", "WSL run alias was not updated"),
     );
     Ok(local)
 }
@@ -470,7 +476,10 @@ fn set_replace_tab_on_run(enabled: bool) -> Result<bool, String> {
     #[cfg(windows)]
     warn_wsl(
         wsl_session::set_replace_tab_on_run(enabled),
-        "WSL 替换标签页设置未更新",
+        orbcue_core::pick(
+            "WSL 替换标签页设置未更新",
+            "WSL replace-tab setting was not updated",
+        ),
     );
     Ok(local)
 }
@@ -484,7 +493,13 @@ fn direct_run() -> Result<bool, String> {
 fn set_direct_run(enabled: bool) -> Result<bool, String> {
     let enabled = orbcue_connect::set_direct_run(enabled)?.enabled;
     #[cfg(windows)]
-    warn_wsl(wsl_session::set_direct_run(enabled), "WSL 原命令启动未更新");
+    warn_wsl(
+        wsl_session::set_direct_run(enabled),
+        orbcue_core::pick(
+            "WSL 原命令启动未更新",
+            "WSL original command was not updated",
+        ),
+    );
     Ok(enabled)
 }
 
@@ -876,6 +891,7 @@ fn apply_snapshot_update(
 }
 
 pub fn run() {
+    orbcue_core::apply_process_lang();
     phone::load();
     let (session, updates, initial) = start_session();
 
@@ -1018,10 +1034,11 @@ fn install_tray(app: &mut tauri::App) {
     let Some(toggle) = tray_item(app, "toggle-ball", tray::ball_toggle_label(false)) else {
         return;
     };
-    let Some(show) = tray_item(app, "show", "打开 OrbCue") else {
+    let Some(show) = tray_item(app, "show", orbcue_core::pick("打开 OrbCue", "Open OrbCue"))
+    else {
         return;
     };
-    let Some(quit) = tray_item(app, "quit", "退出") else {
+    let Some(quit) = tray_item(app, "quit", orbcue_core::pick("退出", "Quit")) else {
         return;
     };
     let menu = match Menu::with_items(app, &[&toggle, &show, &quit]) {

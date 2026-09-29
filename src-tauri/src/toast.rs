@@ -21,8 +21,12 @@ pub fn preview_attention_toast(app: &AppHandle) -> Result<(), String> {
     PresenterToastSink { app: app.clone() }.show(&ToastSpec {
         source: "dock".to_owned(),
         session_id: "preview".to_owned(),
-        title: "系统通知已打开".to_owned(),
-        body: "等待输入、授权或失败时会再弹出一次".to_owned(),
+        title: orbcue_core::pick("系统通知已打开", "System notifications are on").to_owned(),
+        body: orbcue_core::pick(
+            "等待输入、授权或失败时会再弹出一次",
+            "You'll get one toast for input, approval, or failure.",
+        )
+        .to_owned(),
     })
 }
 
@@ -30,8 +34,12 @@ pub fn preview_completion_toast(app: &AppHandle) -> Result<(), String> {
     PresenterToastSink { app: app.clone() }.show(&ToastSpec {
         source: "dock".to_owned(),
         session_id: "preview".to_owned(),
-        title: "完成通知已打开".to_owned(),
-        body: "任务正常完成时会再弹出一次".to_owned(),
+        title: orbcue_core::pick("完成通知已打开", "Completion alerts are on").to_owned(),
+        body: orbcue_core::pick(
+            "任务正常完成时会再弹出一次",
+            "You'll get one toast when a task finishes normally.",
+        )
+        .to_owned(),
     })
 }
 
