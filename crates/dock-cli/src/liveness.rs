@@ -1,5 +1,5 @@
 //! Agent process liveness for hooks and `orb liveness-check`.
-use orbcue_core::{DockEvent, EventKind};
+use orbcue_core::{select_desktop_process, DesktopApp, DockEvent, EventKind};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Read;
@@ -23,26 +23,63 @@ pub(crate) fn liveness_from_env() -> Option<(u32, u64)> {
     (pid > 0).then_some((pid, starttime))
 }
 
-pub(crate) fn attach_liveness(event: &mut DockEvent) {
-    if event
-        .parent_session_id
-        .as_deref()
-        .is_some_and(|value| !value.is_empty())
+/// PID of the desktop app that spawned this hook. No match means the caller
+/// must not fall back to a short-lived helper: that row stays until SessionEnd
+/// or the user clears it.
+fn desktop_process_liveness(app: DesktopApp) -> Option<(u32, u64)> {
+    #[cfg(unix)]
     {
-        return;
+        return linux_desktop_liveness(app);
     }
-    // Completed/Failed/Cancelled update the live record; a short-lived hook
-    // parent must not replace the agent PID. Closed only uses liveness to pick
-    // which instance to remove and does not merge onto remaining sessions.
-    if matches!(
-        event.kind,
-        EventKind::Completed | EventKind::Failed | EventKind::Cancelled
-    ) {
+    #[cfg(windows)]
+    {
+        return windows_desktop_liveness(app);
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = app;
+        None
+    }
+}
+
+pub(crate) fn attach_liveness(event: &mut DockEvent) {
+    if !liveness_applies(event) {
         return;
     }
     let Some((pid, starttime)) = liveness_from_env().or_else(platform_parent_liveness) else {
         return;
     };
+    write_agent_liveness(event, pid, starttime);
+}
+
+pub(crate) fn attach_desktop_liveness(event: &mut DockEvent, app: DesktopApp) {
+    if !liveness_applies(event) {
+        return;
+    }
+    let Some((pid, starttime)) = desktop_process_liveness(app) else {
+        return;
+    };
+    write_agent_liveness(event, pid, starttime);
+}
+
+fn liveness_applies(event: &DockEvent) -> bool {
+    if event
+        .parent_session_id
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return false;
+    }
+    // Completed/Failed/Cancelled update the live record; a short-lived hook
+    // parent must not replace the agent PID. Closed only uses liveness to pick
+    // which instance to remove and does not merge onto remaining sessions.
+    !matches!(
+        event.kind,
+        EventKind::Completed | EventKind::Failed | EventKind::Cancelled
+    )
+}
+
+fn write_agent_liveness(event: &mut DockEvent, pid: u32, starttime: u64) {
     event
         .metadata
         .insert("agent_os".to_owned(), current_agent_os().to_owned());
@@ -125,6 +162,13 @@ pub(crate) fn resolve_windows_liveness_pid(
 #[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
+    fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+    fn QueryFullProcessImageNameW(
+        process: isize,
+        flags: u32,
+        name: *mut u16,
+        size: *mut u32,
+    ) -> i32;
     fn CloseHandle(handle: isize) -> i32;
 }
 
@@ -203,9 +247,60 @@ fn windows_parent_liveness() -> Option<(u32, u64)> {
         .map(|(pid, process)| (*pid, process.parent, process.name.as_str()))
         .collect();
     let pid = resolve_windows_liveness_pid(current, &named)?;
+    windows_process_start(pid)
+}
+
+#[cfg(windows)]
+fn windows_desktop_liveness(app: DesktopApp) -> Option<(u32, u64)> {
+    let (current, by_pid) = windows_process_tree()?;
+    let mut pid = by_pid.get(&current)?.parent;
+    let mut chain = Vec::new();
+    for _ in 0..16 {
+        if pid == 0 {
+            break;
+        }
+        let Some(process) = by_pid.get(&pid) else {
+            break;
+        };
+        let image = windows_process_image(pid).unwrap_or_else(|| process.name.clone());
+        chain.push((pid, image));
+        if process.parent == 0 || process.parent == pid {
+            break;
+        }
+        pid = process.parent;
+    }
+    let refs: Vec<(u32, &str)> = chain
+        .iter()
+        .map(|(pid, image)| (*pid, image.as_str()))
+        .collect();
+    let chosen = select_desktop_process(app, &refs)?;
+    windows_process_start(chosen)
+}
+
+#[cfg(windows)]
+fn windows_process_start(pid: u32) -> Option<(u32, u64)> {
     match orbcue_ipc::process_creation(pid) {
         orbcue_ipc::ProcessCreation::Time(creation) => Some((pid, creation)),
         _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn windows_process_image(pid: u32) -> Option<String> {
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle == 0 {
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let mut size = buf.len() as u32;
+        let written = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size);
+        CloseHandle(handle);
+        if written == 0 || size == 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buf[..size as usize]))
     }
 }
 
@@ -288,6 +383,52 @@ fn linux_agent_liveness() -> Option<(u32, u64)> {
         })
         .collect();
     resolve_linux_liveness_pid(pid, &indexed)
+}
+
+#[cfg(unix)]
+fn linux_desktop_liveness(app: DesktopApp) -> Option<(u32, u64)> {
+    let mut pid = unsafe { libc::getppid() };
+    let mut chain = Vec::new();
+    for _ in 0..16 {
+        if pid <= 1 {
+            break;
+        }
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            break;
+        };
+        let Some((ppid, _, starttime)) = orbcue_ipc::parse_proc_stat(&stat) else {
+            break;
+        };
+        chain.push((pid as u32, linux_process_image(pid), starttime));
+        if ppid <= 1 || ppid == pid {
+            break;
+        }
+        pid = ppid;
+    }
+    let refs: Vec<(u32, &str)> = chain
+        .iter()
+        .map(|(pid, image, _)| (*pid, image.as_str()))
+        .collect();
+    let chosen = select_desktop_process(app, &refs)?;
+    chain
+        .into_iter()
+        .find(|(pid, _, _)| *pid == chosen)
+        .map(|(pid, _, starttime)| (pid, starttime))
+}
+
+#[cfg(unix)]
+fn linux_process_image(pid: i32) -> String {
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe"))
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let cmdline = linux_process_cmdline(pid);
+    if exe.is_empty() {
+        cmdline
+    } else if cmdline.is_empty() {
+        exe
+    } else {
+        format!("{exe} {cmdline}")
+    }
 }
 
 /// Walk from the hook's parent toward the agent. Cursor CLI wraps hooks in a

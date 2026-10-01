@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CONNECTIONS_INTRO,
   EMPTY_TRACKING_HINT,
+  isDesktopTerminalId,
   isDockTerminalId,
   JUMP_WINDOW_LEVEL,
   JUMP_WINDOW_MISSING,
@@ -16,6 +17,9 @@ describe('isDockTerminalId', () => {
     expect(isDockTerminalId('orb:abc')).toBe(false);
     expect(isDockTerminalId('/dev/pts/3')).toBe(false);
     expect(isDockTerminalId(null)).toBe(false);
+    expect(isDesktopTerminalId('app:claude:ab12')).toBe(true);
+    expect(isDesktopTerminalId('app:cursor:')).toBe(false);
+    expect(isDesktopTerminalId('orb:ab12cd')).toBe(false);
   });
 });
 
@@ -31,6 +35,13 @@ describe('jumpFeedback', () => {
     expect(jumpFeedback({ focused: true, precise: false, reason: null })).toEqual({
       kind: 'note',
       text: JUMP_WINDOW_LEVEL,
+    });
+  });
+
+  it('labels a desktop-app hit separately from a terminal window', () => {
+    expect(jumpFeedback({ focused: true, precise: false, app: true, reason: null })).toEqual({
+      kind: 'note',
+      text: '已把这个程序调到前面',
     });
   });
 

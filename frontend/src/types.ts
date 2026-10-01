@@ -42,6 +42,7 @@ export interface Snapshot {
 export interface FocusResult {
   focused: boolean;
   precise: boolean;
+  app?: boolean;
   reason: string | null;
 }
 

@@ -1,11 +1,13 @@
 import type { Lang } from './locale';
 
 export const DOCK_TERMINAL_ID = /^orb:[0-9a-fA-F]{6}$/;
+export const DESKTOP_TERMINAL_ID = /^app:(claude|codex|cursor):.+/;
 
 const JUMP = {
   zh: {
     missing: '找不到该会话的窗口。用 orb run 启动可获得精确跳回',
     level: '已回到最近交互的窗口',
+    app: '已把这个程序调到前面',
     empty: 'Agent 发出事件后会显示在这里。想精确跳回终端时用 orb run 启动',
     intro:
       '只连接本机已有的工具，不下载、不替换、也不读取工作内容。没有 WSL 时只显示 Windows 上的工具。想精确跳回终端，用 orb run 启动。',
@@ -14,6 +16,7 @@ const JUMP = {
     missing:
       "Can't find that session's window. Start it with orb run to jump back to the exact tab.",
     level: 'Back at the last window you used.',
+    app: 'Brought that app forward.',
     empty: 'Sessions show up here after an agent sends an event. Use orb run to jump back to the exact tab.',
     intro:
       'Only installed tools. Nothing downloaded, replaced, or read. Without WSL, Windows tools only. Use orb run to jump to the exact tab.',
@@ -32,6 +35,7 @@ export function jumpPhrases(lang: Lang = 'zh') {
 export interface JumpResult {
   focused: boolean;
   precise?: boolean;
+  app?: boolean;
   reason: string | null;
 }
 
@@ -44,11 +48,18 @@ export function isDockTerminalId(terminalId: string | null | undefined): boolean
   return DOCK_TERMINAL_ID.test(terminalId ?? '');
 }
 
+export function isDesktopTerminalId(terminalId: string | null | undefined): boolean {
+  return DESKTOP_TERMINAL_ID.test(terminalId ?? '');
+}
+
 export function jumpFeedback(result: JumpResult, lang: Lang = 'zh'): JumpFeedback {
   const phrases = jumpPhrases(lang);
   if (result.focused) {
     if (result.precise) {
       return { kind: 'silent', text: null };
+    }
+    if (result.app) {
+      return { kind: 'note', text: phrases.app };
     }
     return { kind: 'note', text: phrases.level };
   }

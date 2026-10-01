@@ -52,7 +52,7 @@ OrbCue 把「盯着」这件事交给一颗小球。orb 是它的样子，cue �
 | Codex | `codex` | 开始、等待、完成、关闭（打断和报错看不到） |
 | Cursor Agent | `agent` / `cursor-agent` | 开始、完成、失败、关闭（选择题不会标成「等待」） |
 
-以上均指命令行（CLI）版本，不包含 Cursor 编辑器本身。编辑器（含 WSL Remote）与 CLI 共用用户级 `~/.cursor/hooks.json`，但 OrbCue 只认 `cursor-agent` 进程，编辑器里的 Agent / 子代理不会出现在小球上。无论是安装在 Windows 还是 WSL 里的工具都能接入，并在同一个小球上显示。其他工具也可以通过命令[自行接入](#给其他工具接入)。
+命令行之外，小球也显示这三处本机写代码界面：Claude Desktop 的 Code、ChatGPT 桌面里的 Codex 线程、Cursor 编辑器。一条会话一行，状态和通知与对应命令行相同。点那一行只把这个程序调到前面，不打开具体对话。普通聊天不出现。Cursor 编辑器里的授权和选择题仍然标不出来，和 Cursor 命令行一样。这三处读的是 Windows 用户目录里的 hook；只在 WSL 里连接过的话，Windows 上的桌面程序看不到，需要在连接页接 Windows 这一侧。无论是安装在 Windows 还是 WSL 里的命令行工具都能接入，并在同一个小球上显示。其他工具也可以通过命令[自行接入](#给其他工具接入)。
 
 ## 快速开始
 
@@ -116,7 +116,7 @@ OrbCue 把「盯着」这件事交给一颗小球。orb 是它的样子，cue �
 | 用 `orb run`、原命令启动或启动别名打开的 Windows Terminal 专属标签 | 精确回到该标签页，标签页被拖出或合并过也依然有效 |
 | 手动打开的普通终端 | 回到该窗口最近交互过的位置；窗口若已关闭则提示失败，不会跳错地方 |
 
-窗口级跳转支持 Windows Terminal、cmd / PowerShell 独立窗口、Alacritty、WezTerm、Git Bash（mintty）和 Tabby；不支持 VS Code、Cursor 等编辑器的内置终端。
+窗口级跳转支持 Windows Terminal、cmd / PowerShell 独立窗口、Alacritty、WezTerm、Git Bash（mintty）和 Tabby；不支持 VS Code、Cursor 等编辑器的内置终端。Claude Desktop 的 Code、ChatGPT 桌面里的 Codex 线程、Cursor 编辑器上的一行，点返回箭头只把那个程序调到前面。
 
 打开专属标签页的三种方式（任选其一）：
 

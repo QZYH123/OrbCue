@@ -50,6 +50,8 @@ export interface Copy {
   jumpExact: string;
   jumpWindow: string;
   jumpWindowTitle: string;
+  jumpApp: string;
+  jumpAppTitle: string;
   emptyAll: string;
   emptyFiltered: string;
   checkingTools: string;
@@ -170,6 +172,8 @@ const zh: Copy = {
   jumpExact: '精确跳回',
   jumpWindow: '回到最近交互的窗口',
   jumpWindowTitle: '回到最近交互的窗口（不保证精确）',
+  jumpApp: '把这个程序调到前面',
+  jumpAppTitle: '把 Claude、ChatGPT 或 Cursor 调到前面，不打开具体对话',
   emptyAll: '还没有追踪中的任务',
   emptyFiltered: '没有符合条件的任务',
   checkingTools: '正在检测本机工具',
@@ -293,6 +297,8 @@ const en: Copy = {
   jumpExact: 'Exact tab',
   jumpWindow: 'Last window',
   jumpWindowTitle: 'Last window you used. It may not be the exact tab.',
+  jumpApp: 'Bring this app forward',
+  jumpAppTitle: 'Brings Claude, ChatGPT, or Cursor forward. It does not open a specific chat.',
   emptyAll: 'No sessions yet',
   emptyFiltered: 'Nothing matches this filter',
   checkingTools: 'Checking this machine',

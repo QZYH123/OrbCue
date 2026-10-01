@@ -1,10 +1,10 @@
 <script lang="ts">
   import type { AgentInventory, AgentSide, ConnectionPreview, ConnectionRecord, DiscoveredAgent, SessionSnapshot, Snapshot } from './types';
-  import { copyOf } from './copy';
+  import { copyOf, type Copy } from './copy';
   import type { Lang, LangPref } from './locale';
   import type { DockTheme } from './theme';
   import { THEMES, themeMeta } from './theme';
-  import { isDockTerminalId, jumpPhrases } from './jumpBack';
+  import { isDesktopTerminalId, isDockTerminalId, jumpPhrases } from './jumpBack';
   import { displayAgent, formatAuditTime, sessionDomKey, type AuditRow, type SessionSection } from './sessionIdentity';
   import { sessionHighlightKey } from './highlight';
   import { showDetectingPlaceholder, sideLabel, wslDockErrorBanner } from './inventory';
@@ -90,6 +90,17 @@
 
   $: text = copyOf(lang);
   $: phrases = jumpPhrases(lang);
+
+  function jumpButtonText(terminalId: string | null | undefined, copy: Copy) {
+    if (isDesktopTerminalId(terminalId)) {
+      return { precise: false, label: copy.jumpApp, title: copy.jumpAppTitle };
+    }
+    if (isDockTerminalId(terminalId)) {
+      return { precise: true, label: copy.jumpExact, title: copy.jumpExact };
+    }
+    return { precise: false, label: copy.jumpWindow, title: copy.jumpWindowTitle };
+  }
+
   $: themes = themeMeta(lang);
   $: wslBanner = wslDockErrorBanner(inventory, lang);
 </script>
@@ -238,6 +249,7 @@
               {#if !collapsedGroups[group.key]}
               {#each group.rows as row (sessionDomKey(row.session))}
                 {@const session = row.session}
+                {@const jump = jumpButtonText(session.terminal_id, text)}
                 <article
                   class:unread={session.mark === '?' || session.mark === '!'}
                   class:highlighted={highlightedKey === sessionHighlightKey(session.source, session.session_id)}
@@ -263,10 +275,10 @@
                   </div>
                   <button
                     class="jump-btn"
-                    class:precise={isDockTerminalId(session.terminal_id)}
+                    class:precise={jump.precise}
                     onclick={() => jumpBack(session)}
-                    aria-label={isDockTerminalId(session.terminal_id) ? text.jumpExact : text.jumpWindow}
-                    title={isDockTerminalId(session.terminal_id) ? text.jumpExact : text.jumpWindowTitle}
+                    aria-label={jump.label}
+                    title={jump.title}
                   >
                     <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
                       <path d="M5.5 4.5 2 8l3.5 3.5M2.5 8H9a4 4 0 0 0 4-4V3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />

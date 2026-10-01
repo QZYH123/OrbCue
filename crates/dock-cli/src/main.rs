@@ -15,7 +15,9 @@ use hop::{newest_windows_dock_under_mnt, stays_on_agent_os, trampoline_to_window
 use liveness::is_short_lived_hook_parent;
 #[cfg(test)]
 use liveness::liveness_from_env;
-use liveness::{attach_liveness, platform_parent_liveness, run_liveness_check};
+use liveness::{
+    attach_desktop_liveness, attach_liveness, platform_parent_liveness, run_liveness_check,
+};
 #[cfg(any(windows, test))]
 use liveness::{is_short_lived_windows_hook_parent, resolve_windows_liveness_pid};
 #[cfg(unix)]
@@ -27,7 +29,8 @@ use orbcue_adapters::{
 };
 use orbcue_connect::{ConnectionManager, ConnectionMethod, ConnectionPreview, PreviewAction};
 use orbcue_core::{
-    dock_tab_title, dock_terminal_marker, session_terminal_title, DockEvent, EventKind, Severity,
+    desktop_app_from_terminal_id, dock_tab_title, dock_terminal_marker, format_desktop_terminal_id,
+    is_desktop_app_image, session_terminal_title, DesktopApp, DockEvent, EventKind, Severity,
     EVENT_VERSION,
 };
 #[cfg(unix)]
@@ -615,11 +618,10 @@ fn run_hook(provider: HookProvider, endpoint: &Path, json_output: bool) {
     };
     let identities = hook_invoker_identities();
     event.source = hook_source_from_identities(&event.source, &identities);
-    // Cursor IDE and CLI share ~/.cursor/hooks.json. Product scope is CLI
-    // (`agent` / `cursor-agent`); editor Agent / Task subagents must not
-    // create rows or session.closed. Distinguish by process identity
-    // (`cursor-agent` in the parent chain) or CLI hook env
-    // (`CURSOR_AGENT=1`, `CURSOR_INVOKED_AS=agent|cursor-agent`).
+    // Cursor CLI and the editor share ~/.cursor/hooks.json. CLI is
+    // `cursor-agent` in the parent chain, or `CURSOR_AGENT=1` /
+    // `CURSOR_INVOKED_AS=agent|cursor-agent`. The editor is kept and later
+    // marked as a desktop row. Anything that is neither is dropped.
     if should_ignore_non_cli_cursor_hook(&event.source, &identities) {
         if json_output {
             println!("{{\"accepted\":false,\"rejection_reason\":\"not_cursor_cli\"}}");
@@ -640,7 +642,11 @@ fn run_hook(provider: HookProvider, endpoint: &Path, json_output: bool) {
         return;
     }
     attach_terminal_id(&mut event);
-    attach_liveness(&mut event);
+    if let Some(app) = note_desktop_host(&mut event, &identities) {
+        attach_desktop_liveness(&mut event, app);
+    } else {
+        attach_liveness(&mut event);
+    }
     maybe_set_terminal_title(&event);
     // Observer hook stdout is an agent control channel; trampoline summaries
     // must not land there. Grok/Claude treat exit 2 as a Stop or PreToolUse
@@ -932,6 +938,13 @@ fn should_set_terminal_title(event: &DockEvent) -> bool {
         return false;
     }
     if event
+        .terminal_id
+        .as_deref()
+        .is_some_and(|terminal_id| desktop_app_from_terminal_id(terminal_id).is_some())
+    {
+        return false;
+    }
+    if event
         .parent_session_id
         .as_deref()
         .is_some_and(|value| !value.is_empty())
@@ -1073,15 +1086,66 @@ fn hook_source_from_identities(provider: &str, identities: &[String]) -> String 
     if !provider.eq_ignore_ascii_case("claude") {
         return provider.to_owned();
     }
+    let mut cursor_editor = false;
     for identity in identities {
-        if looks_like_claude_cli_identity(identity) {
+        if real_claude_cli_identity(identity) {
             return "claude".to_owned();
         }
         if looks_like_cursor_cli_identity(identity) {
             return "cursor".to_owned();
         }
+        if looks_like_cursor_editor_identity(identity) {
+            cursor_editor = true;
+        }
     }
-    "claude".to_owned()
+    if cursor_editor {
+        "cursor".to_owned()
+    } else {
+        "claude".to_owned()
+    }
+}
+
+/// Claude Desktop Code, ChatGPT desktop Codex, or the Cursor editor.
+/// A real CLI in the same chain stays a command-line session.
+fn desktop_host(source: &str, identities: &[String]) -> Option<DesktopApp> {
+    if cursor_hook_is_from_cli(identities) {
+        return None;
+    }
+    if source.eq_ignore_ascii_case("codex")
+        && identities
+            .iter()
+            .any(|identity| is_desktop_app_image(DesktopApp::Codex, identity))
+    {
+        return Some(DesktopApp::Codex);
+    }
+    let claude_cli = identities
+        .iter()
+        .any(|identity| real_claude_cli_identity(identity));
+    if source.eq_ignore_ascii_case("claude") && claude_cli {
+        return None;
+    }
+    if source.eq_ignore_ascii_case("claude")
+        && identities
+            .iter()
+            .any(|identity| is_desktop_app_image(DesktopApp::Claude, identity))
+    {
+        return Some(DesktopApp::Claude);
+    }
+    if (source.eq_ignore_ascii_case("cursor") || source.eq_ignore_ascii_case("claude"))
+        && identities
+            .iter()
+            .any(|identity| looks_like_cursor_editor_identity(identity))
+    {
+        return Some(DesktopApp::Cursor);
+    }
+    None
+}
+
+fn note_desktop_host(event: &mut DockEvent, identities: &[String]) -> Option<DesktopApp> {
+    let app = desktop_host(&event.source, identities)?;
+    let terminal_id = format_desktop_terminal_id(app, &event.session_id)?;
+    event.terminal_id = Some(terminal_id);
+    Some(app)
 }
 
 fn looks_like_cursor_cli_identity(identity: &str) -> bool {
@@ -1104,10 +1168,7 @@ fn looks_like_cursor_editor_identity(identity: &str) -> bool {
     }
     lower
         .split(|character: char| character == '/' || character.is_ascii_whitespace())
-        .any(|segment| {
-            let stem = path_segment_stem(segment);
-            stem.eq_ignore_ascii_case("cursor") || stem.eq_ignore_ascii_case("cursor helper")
-        })
+        .any(|segment| path_segment_stem(segment).eq_ignore_ascii_case("cursor"))
 }
 
 fn cursor_cli_hook_env() -> bool {
@@ -1134,19 +1195,10 @@ fn should_drop_cursor_incompatible_hook(source: &str, payload: &Value) -> bool {
 }
 
 fn should_ignore_non_cli_cursor_hook(source: &str, identities: &[String]) -> bool {
-    if cursor_hook_is_from_cli(identities) {
+    if cursor_hook_is_from_cli(identities) || desktop_host(source, identities).is_some() {
         return false;
     }
-    if source.eq_ignore_ascii_case("cursor") {
-        return true;
-    }
-    source.eq_ignore_ascii_case("claude")
-        && identities
-            .iter()
-            .any(|identity| looks_like_cursor_editor_identity(identity))
-        && !identities
-            .iter()
-            .any(|identity| looks_like_claude_cli_identity(identity))
+    source.eq_ignore_ascii_case("cursor")
 }
 
 fn looks_like_claude_cli_identity(identity: &str) -> bool {
@@ -1157,6 +1209,10 @@ fn looks_like_claude_cli_identity(identity: &str) -> bool {
     lower.split_whitespace().any(|token| {
         path_segment_stem(token.rsplit('/').next().unwrap_or(token)).eq_ignore_ascii_case("claude")
     })
+}
+
+fn real_claude_cli_identity(identity: &str) -> bool {
+    looks_like_claude_cli_identity(identity) && !is_desktop_app_image(DesktopApp::Claude, identity)
 }
 
 fn path_segment_stem(segment: &str) -> &str {
@@ -1773,12 +1829,12 @@ mod tests {
     use super::{
         cursor_hook_is_from_cli, hook_source_from_identities, is_short_lived_windows_hook_parent,
         looks_like_claude_cli_identity, looks_like_cursor_cli_identity,
-        looks_like_cursor_editor_identity, newest_windows_dock_under_mnt,
+        looks_like_cursor_editor_identity, newest_windows_dock_under_mnt, note_desktop_host,
         resolve_windows_liveness_pid, should_drop_cursor_incompatible_hook,
         should_ignore_non_cli_cursor_hook, stays_on_agent_os, trampoline_to_windows_predicate,
         Command, WINDOWS_APP_FOLDER,
     };
-    use orbcue_core::{DockEvent, EventKind};
+    use orbcue_core::{desktop_app_from_terminal_id, DesktopApp, DockEvent, EventKind};
     use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1867,6 +1923,13 @@ mod tests {
             "cursor"
         );
         assert_eq!(hook_source_from_identities("claude", &[]), "claude");
+        assert_eq!(
+            hook_source_from_identities(
+                "claude",
+                &[r"C:\Users\u\AppData\Local\Programs\cursor\Cursor.exe".to_owned()]
+            ),
+            "cursor"
+        );
 
         assert!(looks_like_cursor_editor_identity(
             r"C:\Users\u\AppData\Local\Programs\cursor\Cursor.exe"
@@ -1882,7 +1945,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_editor_hooks_are_ignored_but_cli_is_kept() {
+    fn cursor_editor_hooks_are_kept_and_cli_is_kept() {
         let _guard = lock_env();
         let previous_agent = std::env::var_os("CURSOR_AGENT");
         let previous_invoked = std::env::var_os("CURSOR_INVOKED_AS");
@@ -1890,8 +1953,8 @@ mod tests {
         std::env::remove_var("CURSOR_INVOKED_AS");
 
         let editor = [r"C:\Users\u\AppData\Local\Programs\cursor\Cursor.exe".to_owned()];
-        assert!(should_ignore_non_cli_cursor_hook("cursor", &editor));
-        assert!(should_ignore_non_cli_cursor_hook("claude", &editor));
+        assert!(!should_ignore_non_cli_cursor_hook("cursor", &editor));
+        assert!(!should_ignore_non_cli_cursor_hook("claude", &editor));
         assert!(!should_ignore_non_cli_cursor_hook(
             "cursor",
             &["/home/u/.local/share/cursor-agent/versions/x/node".to_owned()]
@@ -1909,6 +1972,59 @@ mod tests {
         std::env::set_var("CURSOR_INVOKED_AS", "cursor-agent");
         assert!(!should_ignore_non_cli_cursor_hook("cursor", &[]));
 
+        restore_env("CURSOR_AGENT", previous_agent);
+        restore_env("CURSOR_INVOKED_AS", previous_invoked);
+    }
+
+    #[test]
+    fn desktop_hosts_get_separate_app_ids_and_cli_rows_keep_theirs() {
+        let _guard = lock_env();
+        let previous_agent = std::env::var_os("CURSOR_AGENT");
+        let previous_invoked = std::env::var_os("CURSOR_INVOKED_AS");
+        std::env::remove_var("CURSOR_AGENT");
+        std::env::remove_var("CURSOR_INVOKED_AS");
+        let editor = [r"C:\Users\u\AppData\Local\Programs\cursor\Cursor.exe".to_owned()];
+        let mut first = DockEvent::new("e1", EventKind::Working, "cursor", "conv-1");
+        let mut second = DockEvent::new("e2", EventKind::Working, "cursor", "conv-2");
+        assert_eq!(
+            note_desktop_host(&mut first, &editor),
+            Some(DesktopApp::Cursor)
+        );
+        assert_eq!(
+            note_desktop_host(&mut second, &editor),
+            Some(DesktopApp::Cursor)
+        );
+        assert_ne!(first.terminal_id, second.terminal_id);
+        assert_eq!(
+            desktop_app_from_terminal_id(first.terminal_id.as_deref().unwrap()),
+            Some(DesktopApp::Cursor)
+        );
+
+        let cli = ["/home/u/.local/share/cursor-agent/versions/x/node".to_owned()];
+        let mut cli_event = DockEvent::new("e3", EventKind::Working, "cursor", "conv-3");
+        cli_event.terminal_id = Some("orb:ab12cd".to_owned());
+        assert_eq!(note_desktop_host(&mut cli_event, &cli), None);
+        assert_eq!(cli_event.terminal_id.as_deref(), Some("orb:ab12cd"));
+
+        let claude = [r"C:\Users\u\AppData\Local\AnthropicClaude\app\claude.exe".to_owned()];
+        let mut claude_event = DockEvent::new("e4", EventKind::Working, "claude", "code-1");
+        assert_eq!(
+            note_desktop_host(&mut claude_event, &claude),
+            Some(DesktopApp::Claude)
+        );
+        let claude_cli = ["/home/u/.local/bin/claude".to_owned()];
+        let mut claude_cli_event = DockEvent::new("e5", EventKind::Working, "claude", "code-2");
+        assert_eq!(note_desktop_host(&mut claude_cli_event, &claude_cli), None);
+
+        let chatgpt = [r"C:\Program Files\WindowsApps\OpenAI.Codex_1\app\ChatGPT.exe".to_owned()];
+        let mut codex_event = DockEvent::new("e6", EventKind::Working, "codex", "thread-1");
+        assert_eq!(
+            note_desktop_host(&mut codex_event, &chatgpt),
+            Some(DesktopApp::Codex)
+        );
+        let codex_cli = ["/home/u/.local/bin/codex".to_owned()];
+        let mut codex_cli_event = DockEvent::new("e7", EventKind::Working, "codex", "thread-2");
+        assert_eq!(note_desktop_host(&mut codex_cli_event, &codex_cli), None);
         restore_env("CURSOR_AGENT", previous_agent);
         restore_env("CURSOR_INVOKED_AS", previous_invoked);
     }

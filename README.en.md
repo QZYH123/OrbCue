@@ -52,7 +52,7 @@ OrbCue does the watching. The orb is what you see. The cue is its job: one alert
 | Codex | `codex` | start, waiting, done, closed (an interrupt and a chat error are not visible) |
 | Cursor Agent | `agent` / `cursor-agent` | start, done, failed, closed (a multiple-choice prompt is not marked as waiting) |
 
-These are the command-line (CLI) tools, not the Cursor editor. While the editor (including WSL Remote) and the CLI share the user-level `~/.cursor/hooks.json`, OrbCue only recognizes the `cursor-agent` process. Agents and subagents inside the editor do not appear on the orb. Tools installed on Windows or in WSL can both be connected, and both show on the same orb. Other tools can [connect on their own](#connect-another-tool).
+Besides the command line, the orb also shows three local coding surfaces: Code in Claude Desktop, a Codex thread in the ChatGPT desktop app, and the Cursor editor. One session is one row, with the same states and notifications as that tool's command line. Clicking the row only brings that app forward. It does not open a specific chat. Ordinary chat does not appear. Permission prompts and multiple-choice questions in the Cursor editor stay unmarked, the same as the Cursor command line. Those three apps read the hook files in the Windows user profile. A connection made only inside WSL is invisible to them; connect the Windows side on the connections page. Command-line tools installed on Windows or in WSL can both be connected, and both show on the same orb. Other tools can [connect on their own](#connect-another-tool).
 
 ## Quick start
 
@@ -116,7 +116,7 @@ Where the back arrow lands depends on how the terminal was opened.
 | A Windows Terminal tab opened with `orb run`, Original command, or Run alias | Jumps to that exact tab. This still works after the tab was dragged out or merged. |
 | An ordinary terminal you opened yourself | Jumps to the place in that window you used most recently. If the window is already closed, OrbCue reports a failure and does not jump somewhere else. |
 
-Window-level jumping works for Windows Terminal, a standalone cmd or PowerShell window, Alacritty, WezTerm, Git Bash (mintty), and Tabby. It does not work for the built-in terminal in VS Code, Cursor, or other editors.
+Window-level jumping works for Windows Terminal, a standalone cmd or PowerShell window, Alacritty, WezTerm, Git Bash (mintty), and Tabby. It does not work for the built-in terminal in VS Code, Cursor, or other editors. A row from Claude Desktop Code, a ChatGPT desktop Codex thread, or the Cursor editor only brings that app forward.
 
 Three ways to open a dedicated tab (any one is enough):
 

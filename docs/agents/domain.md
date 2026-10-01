@@ -25,5 +25,6 @@
 - 不把摘要或原始 payload 写入默认持久化；
 - 修改 Claude `settings.json`、Codex `~/.codex/hooks.json`、Cursor `~/.cursor/hooks.json` 前保留一次用户可恢复的备份，断开时只清理 Dock 自己的 Hook；
 - 不让两个 `orbd` 同时服务同一用户。Presenter 在 GUI OS 上 `attach_or_listen`；没有 WSL 时也是这条路径。仅当 Agent 跑在另一 OS（WSL）时由该 OS 的 `orb` trampoline 把事件送到这个 daemon。`ORBCUE_BACKEND=wsl` 已删除，设置了也当没看见。
+- 桌面写代码（Claude Desktop 的 Code、ChatGPT 桌面里的 Codex 线程、Cursor 编辑器）和对应命令行共用 hook、状态和这一个小球。命令行的跳回阶梯不变。这些桌面行的「回去」只把该程序调到前面。普通聊天不做。
 
 旧 spec / ticket 在 `.scratch/agent-activity-dock/`，frozen，不要当现行需求。

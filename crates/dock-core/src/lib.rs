@@ -13,11 +13,12 @@ pub use locale::{apply_process_lang, apply_process_lang_prefer, pick, ui_lang, L
 
 pub use capture::{captured_keys_to_drop, sessions_to_capture, CaptureSession, SessionKey};
 pub use jump::{
-    captured_hwnd_usable, dock_tab_title, dock_terminal_marker, focus_attempts, format_dock_marker,
-    is_terminal_window_candidate, jump_window_missing, process_image_file_name, project_path_hint,
-    select_unique_window_title, session_terminal_title, FocusDecision, FocusRequest,
-    DOCK_MARKER_HEX_LEN, DOCK_TERMINAL_PREFIX, JUMP_WINDOW_MISSING, TERMINAL_PROCESS_NAMES,
-    TERMINAL_WINDOW_CLASSES,
+    captured_hwnd_usable, desktop_app_from_terminal_id, desktop_app_missing, dock_tab_title,
+    dock_terminal_marker, focus_attempts, format_desktop_terminal_id, format_dock_marker,
+    is_desktop_app_image, is_terminal_window_candidate, jump_window_missing,
+    process_image_file_name, project_path_hint, select_desktop_process, select_unique_window_title,
+    session_terminal_title, DesktopApp, FocusDecision, FocusRequest, DOCK_MARKER_HEX_LEN,
+    DOCK_TERMINAL_PREFIX, JUMP_WINDOW_MISSING, TERMINAL_PROCESS_NAMES, TERMINAL_WINDOW_CLASSES,
 };
 pub use notify::{
     attention_click_followup, attention_jump, cue_project_path, dispatch_attention_toast,

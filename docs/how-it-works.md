@@ -44,14 +44,14 @@ crate 目录仍叫 `dock-*`，包名是 `orbcue-*`。改领域行为先读 domai
 
 ## 连接
 
-不替换 Agent 可执行文件。只在工具自己的 hook 配置里登记 `orb hook <工具>`。WSL / Linux 脚本必须 `exec orb`，否则活性检查会把短命 hook 壳当成 Agent。Cursor 还会再包一层 `bash -O extglob` 沙箱，活性检查会跨过它，记下长寿的 `cursor-agent`。`~/.cursor/hooks.json` 对编辑器和 CLI 是同一份；只有 CLI 进程的事件会进小球。Cursor CLI 也会跑 `~/.claude/settings.json` 里的 hook，并把 source 标成 `cursor`；其中 Pre/Post tool 不进小球，以免 Task 子会话抢走终端行。
+不替换 Agent 可执行文件。只在工具自己的 hook 配置里登记 `orb hook <工具>`。WSL / Linux 脚本必须 `exec orb`，否则活性检查会把短命 hook 壳当成 Agent。Cursor 还会再包一层 `bash -O extglob` 沙箱，活性检查会跨过它，记下长寿的 `cursor-agent`。`~/.cursor/hooks.json` 对编辑器和 CLI 是同一份。命令行进程和 Cursor 编辑器进程的事件都会进小球；编辑器那一行点回去只把 Cursor 调到前面。Cursor CLI 也会跑 `~/.claude/settings.json` 里的 hook，并把 source 标成 `cursor`；编辑器唤起的 Claude hook 同样标成 `cursor`。其中 Pre/Post tool 不进小球，以免 Task 子会话抢走终端行。Claude Desktop 的 Code、ChatGPT 桌面里的 Codex 线程读的是 Windows 用户目录里的那份 hook。只在 WSL 里接过的话，Windows 上的桌面程序看不到。
 
 | 工具 | 改谁 |
 | --- | --- |
 | Claude | `~/.claude/settings.json` |
 | Grok | `~/.grok/hooks/orbcue.json` |
 | Codex | `~/.codex/hooks.json` |
-| Cursor CLI | `~/.cursor/hooks.json` |
+| Cursor | `~/.cursor/hooks.json` |
 
 改之前留 `*.orbcue.bak`。断开只撤 OrbCue 自己写的那段。新连接不创建 wrapper；连接页「断开」仍能清掉遗留包装。各工具能报到哪一步，以 event-contract 的适配器表为准：没发的节点不能假装看见。
 
@@ -64,13 +64,15 @@ crate 目录仍叫 `dock-*`，包名是 `orbcue-*`。改领域行为先读 domai
 3. 新主会话或转入 working 时记下的前台终端 HWND（窗口还在且仍是终端类才用；不冒充标签级精确）
 4. 找不到就老实说，并提示用 `orb run`
 
+`terminal_id` 以 `app:claude:`、`app:codex:`、`app:cursor:` 开头时不走这四档，只把对应桌面程序调到前面。命令行会话不会带这种 id。
+
 Windows Terminal 一个 HWND 对应整窗；WSL 里 OSC 改标题常被中继吞掉。所以不能靠模糊匹配项目名。手开的终端没有 `orb:`，只能走第 3 档。一直 working 不会反复覆盖 HWND。
 
 两个终端 `grok --resume` 同一段对话会在列表里占两行（两个活进程），但跳回/通知仍按这段对话（`source` + `session_id`）。这不是「请双开 resume」的产品。
 
 ## 球停住时先问谁没说话
 
-**故意留空：** 连接前已在跑的会话；手开终端只能窗口级跳回；面板不展示对话。
+**故意留空：** 连接前已在跑的会话；手开终端只能窗口级跳回；面板不展示对话。桌面里某条会话没发结束事件就没了，会留到整个程序退出或在面板里清除。
 
 **工具没发的节点：** Codex 打断/报错常停在工作中；Cursor 选择题不走 hook；Cursor 打印模式（`-p`）没有中途 `stop`，要等进程退出；Claude/Codex 授权框点拒绝往往没 follow-up。连接行上有 limitation；「清除」和进程退出后的活性检查是出口。
 

@@ -1,13 +1,16 @@
 //! Presenter-side jump-back execution.
 //!
-//! Ladder: deep_link → orb: marker (precise tab) → captured HWND (window-level)
-//! → honest failure. Used only for the user's explicit「回去」click.
+//! Desktop rows (`app:claude|codex|cursor:`) only bring that program forward.
+//! Command-line rows keep the ladder: deep_link → orb: marker (precise tab) →
+//! captured HWND (window-level) → honest failure. Used only for the user's
+//! explicit「回去」click.
 
 #[cfg(windows)]
 use orbcue_core::{captured_hwnd_usable, select_unique_window_title};
 use orbcue_core::{
-    captured_keys_to_drop, dock_terminal_marker, focus_attempts, jump_window_missing,
-    sessions_to_capture, CaptureSession, FocusDecision, FocusRequest, SessionKey, SessionSnapshot,
+    captured_keys_to_drop, desktop_app_missing, dock_terminal_marker, focus_attempts,
+    jump_window_missing, sessions_to_capture, CaptureSession, DesktopApp, FocusDecision,
+    FocusRequest, SessionKey, SessionSnapshot,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -18,6 +21,9 @@ pub struct FocusResult {
     pub focused: bool,
     #[serde(default)]
     pub precise: bool,
+    /// Desktop coding row: the app was brought forward, not a terminal tab.
+    #[serde(default)]
+    pub app: bool,
     pub reason: Option<String>,
 }
 
@@ -26,6 +32,16 @@ impl FocusResult {
         Self {
             focused: true,
             precise,
+            app: false,
+            reason: None,
+        }
+    }
+
+    fn success_app() -> Self {
+        Self {
+            focused: true,
+            precise: false,
+            app: true,
             reason: None,
         }
     }
@@ -34,6 +50,7 @@ impl FocusResult {
         Self {
             focused: false,
             precise: false,
+            app: false,
             reason: Some(reason.into()),
         }
     }
@@ -152,12 +169,37 @@ pub fn focus_session(
             },
             FocusDecision::FocusDockMarker { marker } => focus_dock_marker(&marker),
             FocusDecision::UseCapturedWindow => focus_captured_window(source, session_id),
+            FocusDecision::FocusDesktopApp { app } => focus_desktop_app(app),
         };
         if last.focused {
             return last;
         }
     }
     last
+}
+
+fn focus_desktop_app(app: DesktopApp) -> FocusResult {
+    #[cfg(windows)]
+    {
+        if let Some(hwnd) = win32::top_app_window(app) {
+            if win32::bring_to_foreground(hwnd) {
+                return FocusResult::success_app();
+            }
+            return FocusResult::failure(orbcue_core::pick(
+                "无法把窗口提到前台",
+                "Couldn't bring the window forward",
+            ));
+        }
+        return FocusResult::failure(desktop_app_missing(app));
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        FocusResult::failure(orbcue_core::pick(
+            "当前平台不能把桌面程序调到前面",
+            "This platform can't bring that app forward",
+        ))
+    }
 }
 
 fn focus_captured_window(source: &str, session_id: &str) -> FocusResult {
@@ -359,6 +401,48 @@ mod win32 {
             EnumWindows(enum_proc, &mut windows as *mut Vec<VisibleWindow> as isize);
         }
         windows
+    }
+
+    pub fn top_app_window(app: orbcue_core::DesktopApp) -> Option<isize> {
+        let mut search = AppSearch {
+            app,
+            found: Vec::new(),
+        };
+        unsafe {
+            EnumWindows(enum_app_proc, &mut search as *mut AppSearch as isize);
+        }
+        search
+            .found
+            .iter()
+            .find(|window| window.titled)
+            .or_else(|| search.found.first())
+            .map(|window| window.hwnd)
+    }
+
+    struct AppWindow {
+        hwnd: isize,
+        titled: bool,
+    }
+
+    struct AppSearch {
+        app: orbcue_core::DesktopApp,
+        found: Vec<AppWindow>,
+    }
+
+    unsafe extern "system" fn enum_app_proc(hwnd: isize, lparam: isize) -> i32 {
+        let search = unsafe { &mut *(lparam as *mut AppSearch) };
+        if unsafe { IsWindowVisible(hwnd) } == 0 {
+            return 1;
+        }
+        if !orbcue_core::is_desktop_app_image(search.app, &process_image(hwnd)) {
+            return 1;
+        }
+        let len = unsafe { GetWindowTextLengthW(hwnd) };
+        search.found.push(AppWindow {
+            hwnd,
+            titled: len > 0,
+        });
+        1
     }
 
     pub fn bring_to_foreground(hwnd: isize) -> bool {
