@@ -66,7 +66,7 @@ These are the command-line (CLI) tools, not the Cursor editor. While the editor 
 
 Download the NSIS installer from [GitHub Releases](https://github.com/QZYH123/OrbCue/releases/latest). After it is installed, start OrbCue. The orb appears at the bottom right of the desktop. Only one OrbCue instance runs per user. To start with Windows, turn on Start at login in Settings.
 
-You can also build it from source. The steps are in [Build the Windows desktop app](docs/dev.md#构建-windows-桌面程序). That page is in Chinese.
+You can also build it from source. See [Build from source](#build-from-source).
 
 ### First run
 
@@ -296,7 +296,15 @@ After that, Waiting for input, Waiting for approval, a failure, and a normal fin
 
 ## Connect another tool
 
-Connect comes ready only for the tools listed above. Another tool that can send its own status can connect with commands such as `orb start`, `orb waiting`, and `orb complete`. You do not need to change OrbCue's code. The fields are in [`docs/event-contract.md`](docs/event-contract.md). An example is in [`examples/mcp-skill-note.md`](examples/mcp-skill-note.md). Both of those docs are in Chinese.
+Connect only has presets for the tools listed above. Other tools that send their own status use these commands with one session id. You do not need to change OrbCue's code. `orb stop` and `orb completed` match `orb complete`. `orb error` matches `orb fail`.
+
+```bash
+orb start <stable-session-id> --source <tool-name>
+orb waiting <stable-session-id> --source <tool-name>
+orb permission <stable-session-id> --source <tool-name>
+orb complete <stable-session-id> --source <tool-name>
+orb fail <stable-session-id> --source <tool-name>
+```
 
 ## Build from source
 
@@ -308,12 +316,6 @@ npm run tauri -- dev
 ```
 
 `npm --prefix frontend run dev` is only a preview of the interface in a browser, using sample data. It is not the full OrbCue.
-
-| Doc | What it covers |
-| --- | --- |
-| [`docs/dev.md`](docs/dev.md) | Development and building. In Chinese. |
-| [`docs/how-it-works.md`](docs/how-it-works.md) | How it works. In Chinese. |
-| [`docs/agents/domain.md`](docs/agents/domain.md) | Terms and boundaries. In Chinese. |
 
 <br>
 
