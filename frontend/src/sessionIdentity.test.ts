@@ -30,6 +30,7 @@ describe('displayAgent', () => {
     expect(displayAgent('claude')).toBe('Claude');
     expect(displayAgent('GROK')).toBe('Grok');
     expect(displayAgent('cursor')).toBe('Cursor');
+    expect(displayAgent('opencode')).toBe('OpenCode');
     expect(displayAgent('my-bot')).toBe('My-bot');
     expect(displayAgent('')).toBe('Agent');
   });

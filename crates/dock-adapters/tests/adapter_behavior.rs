@@ -1,4 +1,6 @@
-use orbcue_adapters::{claude_hook, codex_hook, codex_notification, cursor_hook, grok_hook};
+use orbcue_adapters::{
+    claude_hook, codex_hook, codex_notification, cursor_hook, grok_hook, opencode_hook,
+};
 use orbcue_core::{DockEvent, DockState, EventKind, SessionState};
 
 #[test]
@@ -851,5 +853,177 @@ fn cursor_hook_drops_claude_compat_tool_events() {
         .unwrap()
         .kind,
         EventKind::Working
+    );
+}
+
+#[test]
+fn opencode_adapter_follows_the_plugin_lifecycle() {
+    let mut state = DockState::new();
+    let opened = opencode_hook(&serde_json::json!({
+        "type": "session.created",
+        "sessionID": "ses_parent",
+        "cwd": "/tmp/orbcue-opencode",
+        "event_id": "oc-1",
+        "title": "do not keep",
+        "questions": ["secret question"]
+    }))
+    .unwrap();
+    assert_eq!(opened.kind, EventKind::Idle);
+    assert_eq!(opened.source, "opencode");
+    assert_eq!(opened.cwd.as_deref(), Some("/tmp/orbcue-opencode"));
+    assert!(opened.metadata.is_empty());
+    assert!(opened.terminal_id.as_deref().unwrap().starts_with("oc:"));
+    assert!(state.apply(opened).accepted);
+
+    let other = opencode_hook(&serde_json::json!({
+        "type": "session.created",
+        "sessionID": "ses_other",
+        "event_id": "oc-other"
+    }))
+    .unwrap();
+    let parent_terminal = state.snapshot().sessions[0].terminal_id.clone();
+    assert_ne!(
+        other.terminal_id, parent_terminal,
+        "parallel OpenCode sessions must not share a terminal id"
+    );
+    assert!(state.apply(other).accepted);
+    assert_eq!(state.snapshot().tracked_count, 2);
+
+    let busy = opencode_hook(&serde_json::json!({
+        "type": "session.status",
+        "sessionID": "ses_parent",
+        "status": "busy",
+        "event_id": "oc-2"
+    }))
+    .unwrap();
+    assert_eq!(busy.kind, EventKind::Working);
+    assert!(state.apply(busy).accepted);
+
+    let permission = opencode_hook(&serde_json::json!({
+        "type": "permission.asked",
+        "sessionID": "ses_parent",
+        "event_id": "oc-3",
+        "patterns": ["rm -rf /"]
+    }))
+    .unwrap();
+    assert_eq!(permission.kind, EventKind::PermissionRequested);
+    assert!(permission.metadata.is_empty());
+    let waiting = state.apply(permission);
+    let parent = waiting
+        .snapshot
+        .sessions
+        .iter()
+        .find(|session| session.session_id == "ses_parent")
+        .unwrap();
+    assert_eq!(parent.attention_reason.as_deref(), Some("permission"));
+
+    let replied = opencode_hook(&serde_json::json!({
+        "type": "permission.replied",
+        "sessionID": "ses_parent",
+        "event_id": "oc-4"
+    }))
+    .unwrap();
+    assert_eq!(replied.kind, EventKind::Working);
+    let resumed = state.apply(replied);
+    let parent = resumed
+        .snapshot
+        .sessions
+        .iter()
+        .find(|session| session.session_id == "ses_parent")
+        .unwrap();
+    assert_eq!(parent.state, SessionState::Working);
+
+    let question = opencode_hook(&serde_json::json!({
+        "type": "question.asked",
+        "sessionID": "ses_parent",
+        "event_id": "oc-5"
+    }))
+    .unwrap();
+    assert_eq!(question.kind, EventKind::WaitingInput);
+    let asked = state.apply(question);
+    let parent = asked
+        .snapshot
+        .sessions
+        .iter()
+        .find(|session| session.session_id == "ses_parent")
+        .unwrap();
+    assert_eq!(parent.attention_reason.as_deref(), Some("input"));
+    let answered = opencode_hook(&serde_json::json!({
+        "type": "question.replied",
+        "sessionID": "ses_parent",
+        "event_id": "oc-6"
+    }))
+    .unwrap();
+    let answered = state.apply(answered);
+    let parent = answered
+        .snapshot
+        .sessions
+        .iter()
+        .find(|session| session.session_id == "ses_parent")
+        .unwrap();
+    assert_eq!(parent.state, SessionState::Working);
+
+    let idle = opencode_hook(&serde_json::json!({
+        "type": "session.status",
+        "sessionID": "ses_parent",
+        "status": "idle",
+        "event_id": "oc-7"
+    }))
+    .unwrap();
+    assert_eq!(idle.kind, EventKind::Completed);
+    assert!(state.apply(idle).attention.is_some());
+    let again = opencode_hook(&serde_json::json!({
+        "type": "session.idle",
+        "sessionID": "ses_parent",
+        "event_id": "oc-8"
+    }))
+    .unwrap();
+    assert_eq!(again.kind, EventKind::Completed);
+    assert!(state.apply(again).attention.is_none());
+
+    let aborted = opencode_hook(&serde_json::json!({
+        "type": "session.error",
+        "sessionID": "ses_parent",
+        "errorName": "MessageAbortedError",
+        "event_id": "oc-9"
+    }))
+    .unwrap();
+    assert_eq!(aborted.kind, EventKind::Cancelled);
+
+    let failed = opencode_hook(&serde_json::json!({
+        "type": "session.error",
+        "sessionID": "ses_parent",
+        "errorName": "APIError",
+        "event_id": "oc-10"
+    }))
+    .unwrap();
+    assert_eq!(failed.kind, EventKind::Failed);
+    let failed = state.apply(failed);
+    let parent = failed
+        .snapshot
+        .sessions
+        .iter()
+        .find(|session| session.session_id == "ses_parent")
+        .unwrap();
+    assert_eq!(parent.state, SessionState::Failed);
+
+    let closed = opencode_hook(&serde_json::json!({
+        "type": "session.deleted",
+        "sessionID": "ses_parent",
+        "event_id": "oc-11"
+    }))
+    .unwrap();
+    assert_eq!(closed.kind, EventKind::Closed);
+    assert!(state.apply(closed).accepted);
+    assert_eq!(state.snapshot().tracked_count, 1);
+    assert_eq!(state.snapshot().sessions[0].session_id, "ses_other");
+
+    assert!(opencode_hook(
+        &serde_json::json!({"type": "session.updated", "sessionID": "ses_other"})
+    )
+    .is_none());
+    assert!(
+        opencode_hook(&serde_json::json!({"type": "session.diff", "sessionID": "ses_other"}))
+            .is_none()
     );
 }

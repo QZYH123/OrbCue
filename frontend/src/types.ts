@@ -66,7 +66,13 @@ export interface DiscoveredAgent {
   side: AgentSide;
 }
 
-export type ConnectionMethod = 'Wrapper' | 'ClaudeHook' | 'GrokHook' | 'CodexHook' | 'CursorHook';
+export type ConnectionMethod =
+  | 'Wrapper'
+  | 'ClaudeHook'
+  | 'GrokHook'
+  | 'CodexHook'
+  | 'CursorHook'
+  | 'OpenCodeHook';
 
 export interface ConnectionRecord {
   name: string;

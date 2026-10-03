@@ -28,6 +28,7 @@ const AGENT_NAMES: Record<string, string> = {
   codex: 'Codex',
   cursor: 'Cursor',
   'cursor-agent': 'Cursor',
+  opencode: 'OpenCode',
 };
 
 export function folderName(path: string | null | undefined): string | null {

@@ -1207,3 +1207,59 @@ fn cursor_and_grok_preview_warn_when_grok_compat_hooks_are_on() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn opencode_connect_writes_a_local_plugin_and_refuses_a_foreign_file() {
+    let root = temp_root();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let config_dir = root.join("opencode-config");
+    let original = root.join("opencode");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let orb = root.join("bin").join("orb");
+    fs::create_dir_all(orb.parent().unwrap()).unwrap();
+    executable(&orb, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(home, root.join("config"), root.join("data"), orb.clone());
+    let _guard = lock_env();
+    let previous = std::env::var_os("OPENCODE_CONFIG_DIR");
+    std::env::set_var("OPENCODE_CONFIG_DIR", &config_dir);
+
+    let preview = manager.preview("opencode", &original).unwrap();
+    assert_eq!(preview.method, ConnectionMethod::OpenCodeHook);
+    let plugin = config_dir.join("plugins").join("orbcue.js");
+    assert!(preview.files.iter().any(|file| file.path == plugin));
+    assert!(preview.notes.iter().any(|note| note.contains("重新启动")));
+    assert!(preview
+        .files
+        .iter()
+        .any(|file| file.entries.iter().any(|entry| entry == "question.asked")));
+    manager.connect("opencode", &original).unwrap();
+    let text = fs::read_to_string(&plugin).unwrap();
+    assert!(text.contains("OrbCue generated OpenCode plugin."));
+    assert!(text.contains("\"hook\", \"opencode\""));
+    assert!(text.contains("parentID || sessionID"));
+    assert!(text.contains(&orb.to_string_lossy().to_string()));
+    assert!(!text.contains("properties.questions"));
+    assert!(!config_dir.join("opencode.json").exists());
+
+    fs::remove_file(&plugin).unwrap();
+    let records = manager.records();
+    assert_eq!(records[0].method, ConnectionMethod::OpenCodeHook);
+    assert!(plugin.is_file(), "repair must recreate the plugin");
+
+    assert!(manager.disconnect("opencode").unwrap());
+    assert!(!plugin.exists());
+
+    fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+    let foreign = "export const Mine = async () => ({})\n";
+    fs::write(&plugin, foreign).unwrap();
+    let error = manager.connect("opencode", &original).unwrap_err();
+    assert!(error.contains("refusing"), "{error}");
+    assert_eq!(fs::read_to_string(&plugin).unwrap(), foreign);
+
+    match previous {
+        Some(value) => std::env::set_var("OPENCODE_CONFIG_DIR", value),
+        None => std::env::remove_var("OPENCODE_CONFIG_DIR"),
+    }
+    fs::remove_dir_all(root).unwrap();
+}

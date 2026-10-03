@@ -36,6 +36,59 @@ pub fn is_cursor_unsubscribed_tool_event(payload: &Value) -> bool {
     }
 }
 
+/// OpenCode plugin events. The plugin forwards lifecycle fields only.
+/// `session.created` is idle, `session.status` `busy`/`retry` is working, and
+/// both `session.status` `idle` and `session.idle` are completed. A second
+/// completed event does not cue again. `permission.replied` returns to
+/// working for allow and reject. `question.asked` waits for input.
+/// `MessageAbortedError` is cancelled; any other `session.error` is failed.
+/// `session.deleted` closes the row. A main session gets its own `oc:` terminal
+/// id so parallel conversations in one TUI do not retire each other.
+pub fn opencode_hook(payload: &Value) -> Option<DockEvent> {
+    let event_type = json_str(payload, &["type"])?;
+    let session_id = json_str(payload, &["sessionID", "session_id", "sessionId"])?;
+    let kind = match event_type {
+        "session.created" => EventKind::Idle,
+        "session.idle" => EventKind::Completed,
+        "session.deleted" => EventKind::Closed,
+        "session.status" => match json_str(payload, &["status"])? {
+            "busy" | "retry" => EventKind::Working,
+            "idle" => EventKind::Completed,
+            _ => return None,
+        },
+        "session.error" => match json_str(payload, &["errorName", "error_name"]).unwrap_or("") {
+            "MessageAbortedError" => EventKind::Cancelled,
+            _ => EventKind::Failed,
+        },
+        "permission.asked" => EventKind::PermissionRequested,
+        "permission.replied" => EventKind::Working,
+        "question.asked" => EventKind::WaitingInput,
+        "question.replied" | "question.rejected" => EventKind::Working,
+        _ => return None,
+    };
+    let mut event = attentive_event("opencode", session_id, kind, payload);
+    if event.parent_session_id.is_none() {
+        event.terminal_id = Some(opencode_terminal_id(session_id));
+    }
+    if event.event_id.len() > orbcue_core::MAX_EVENT_ID_LEN {
+        event.event_id = format!(
+            "opencode-{}-{}",
+            kind_name(kind),
+            opencode_terminal_id(session_id)
+        );
+    }
+    Some(event)
+}
+
+fn opencode_terminal_id(session_id: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in session_id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("oc:{hash:016x}")
+}
+
 pub fn grok_hook(payload: &Value) -> Option<DockEvent> {
     if json_str(payload, &["subagentType", "subagent_type"]).is_some() {
         return None;
@@ -260,6 +313,7 @@ fn extract_parent(payload: &Value) -> Option<String> {
             "parentAgentId",
             "parent_id",
             "parentId",
+            "parentID",
             "parent_conversation_id",
             "parentConversationId",
         ],

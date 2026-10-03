@@ -1,7 +1,8 @@
 //! Revocable, zero-reinstall Agent connections.
 //!
-//! Discovers Claude, Grok, Codex, and Cursor already on PATH or in folders the
-//! user adds, then writes native hooks. It never replaces an Agent executable.
+//! Discovers Claude, Grok, Codex, Cursor, and OpenCode already on PATH or in
+//! folders the user adds, then writes native hooks. It never replaces an Agent
+//! executable.
 //! Other tools emit events with `orb start` / `orb complete`; leftover wrapper
 //! records can still be disconnected.
 
@@ -66,7 +67,7 @@ const LEGACY_PATH_START: &str = "# >>> agent-activity-dock PATH >>>";
 const LEGACY_PATH_END: &str = "# <<< agent-activity-dock PATH <<<";
 
 /// Agents the connections page can attach through native hooks.
-pub(crate) const FIRST_PARTY_AGENTS: &[&str] = &["claude", "codex", "cursor", "grok"];
+pub(crate) const FIRST_PARTY_AGENTS: &[&str] = &["claude", "codex", "cursor", "grok", "opencode"];
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ConnectionMethod {
@@ -76,6 +77,7 @@ pub enum ConnectionMethod {
     GrokHook,
     CodexHook,
     CursorHook,
+    OpenCodeHook,
 }
 
 impl ConnectionMethod {
@@ -94,6 +96,10 @@ impl ConnectionMethod {
             Self::CursorHook => orbcue_core::pick(
                 "打印模式（-p）没有回合结束通知，条目要等进程退出后才消失",
                 "Print mode (-p) has no end-of-turn signal. The row stays until the process exits.",
+            ),
+            Self::OpenCodeHook => orbcue_core::pick(
+                "点回去会回到 OpenCode 所在的终端，不会定位到里面的某一段对话",
+                "Jump back focuses the terminal running OpenCode, not one conversation inside it.",
             ),
         }
     }
@@ -275,8 +281,8 @@ impl ConnectionManager {
         let found = discover::agents_in_dir(dir);
         if found.is_empty() {
             return Err(orbcue_core::t!(
-                "这个文件夹里没有支持的工具（Claude、Grok、Codex 或 Cursor）",
-                "This folder has no supported tool (Claude, Grok, Codex, or Cursor)."
+                "这个文件夹里没有支持的工具（Claude、Grok、Codex、Cursor 或 OpenCode）",
+                "This folder has no supported tool (Claude, Grok, Codex, Cursor, or OpenCode)."
             ));
         }
         let mut file = self.load();
@@ -293,6 +299,7 @@ impl ConnectionManager {
             self.grok_home.join("bin"),
             self.home.join("AppData").join("Local").join("cursor-agent"),
             self.home.join("AppData").join("Roaming").join("npm"),
+            self.home.join(".opencode").join("bin"),
         ];
         dirs.extend(self.load().extra_dirs);
         dirs
@@ -352,7 +359,7 @@ impl ConnectionManager {
             if existing.original == original && existing.method == method {
                 self.reinstall_artifacts(method)?;
                 let mut record = existing.clone();
-                if let Some(hook) = current_hook_script(&self.config_dir, method) {
+                if let Some(hook) = self.current_hook_script(method) {
                     record.hook_script = Some(hook);
                 }
                 if record != *existing {
@@ -404,7 +411,7 @@ impl ConnectionManager {
             let Some(record) = file.agents.get(&name).cloned() else {
                 continue;
             };
-            let Some(hook) = current_hook_script(&self.config_dir, record.method) else {
+            let Some(hook) = self.current_hook_script(record.method) else {
                 continue;
             };
             if self.hook_install_is_current(record.method, &hook) {
@@ -441,6 +448,17 @@ impl ConnectionManager {
         let Some(agent) = hook_agent(method) else {
             unreachable!("new connections are hook-only: {name}");
         };
+        if matches!(agent.layout, HookLayout::OpenCode) {
+            let plugin = self.opencode_plugin_path();
+            return vec![
+                PreviewFile {
+                    path: plugin.clone(),
+                    action: preview_action(&plugin),
+                    entries: opencode_plugin_events(),
+                },
+                self.preview_connections_file(),
+            ];
+        }
         let hook = hook_path(&self.config_dir, agent.name);
         let config = self.hooks_config_path(agent);
         let events = hook_spec_labels(agent.specs());
@@ -501,6 +519,9 @@ impl ConnectionManager {
     }
 
     fn hook_install_is_current(&self, method: ConnectionMethod, hook: &Path) -> bool {
+        if method == ConnectionMethod::OpenCodeHook {
+            return opencode_plugin_is_current(hook, &self.dock_binary);
+        }
         if !hook.is_file() || !hook_script_forwards_args(hook) {
             return false;
         }
@@ -555,11 +576,42 @@ impl ConnectionManager {
             "grok" => self.grok_hooks_file(),
             "codex" => self.codex_hooks_file(),
             "cursor" => self.cursor_hooks_file(),
+            "opencode" => self.opencode_plugin_path(),
             _ => unreachable!("unknown hook agent {}", agent.name),
         }
     }
 
+    fn opencode_plugin_path(&self) -> PathBuf {
+        opencode_config_dir(&self.home)
+            .join("plugins")
+            .join("orbcue.js")
+    }
+
+    fn write_opencode_plugin(&self) -> Result<PathBuf, String> {
+        let path = self.opencode_plugin_path();
+        if let Ok(existing) = fs::read_to_string(&path) {
+            if !existing.contains(OPENCODE_PLUGIN_MARKER) {
+                return Err(format!(
+                    "refusing to overwrite non-OrbCue file {}",
+                    path.display()
+                ));
+            }
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        atomic_write(
+            &path,
+            opencode_plugin_source(&self.dock_binary).as_bytes(),
+            0o644,
+        )?;
+        Ok(path)
+    }
+
     fn install_hook(&self, agent: &HookAgent) -> Result<PathBuf, String> {
+        if matches!(agent.layout, HookLayout::OpenCode) {
+            return self.write_opencode_plugin();
+        }
         let dest = hook_path(&self.config_dir, agent.name);
         let existed = dest.is_file();
         let hook = self.write_hook_script(agent.name)?;
@@ -572,6 +624,7 @@ impl ConnectionManager {
             ),
             HookLayout::GrokFile => install_grok_hooks(&self.grok_hooks_file(), &hook),
             HookLayout::Cursor => install_cursor_hooks_at(&self.cursor_hooks_file(), &hook),
+            HookLayout::OpenCode => unreachable!("OpenCode plugin is written above"),
         };
         match result {
             Ok(()) => Ok(hook),
@@ -617,10 +670,11 @@ impl ConnectionManager {
                     HookLayout::Cursor => {
                         uninstall_cursor_hooks_at(&self.cursor_hooks_file(), hook)?
                     }
+                    HookLayout::OpenCode => remove_generated_opencode_plugin(hook)?,
                 },
                 None => {}
             }
-            if hook.exists() {
+            if hook.exists() && !matches!(record.method, ConnectionMethod::OpenCodeHook) {
                 fs::remove_file(hook).map_err(|error| error.to_string())?;
             }
         }
@@ -1038,6 +1092,14 @@ fn preview_notes(method: ConnectionMethod) -> Vec<String> {
             native_notify_note().to_owned(),
         ],
         ConnectionMethod::Wrapper | ConnectionMethod::GrokHook => Vec::new(),
+        ConnectionMethod::OpenCodeHook => vec![
+            orbcue_core::pick(
+                "已经打开的 OpenCode 要重新启动后才会加载",
+                "OpenCode that is already running loads this after a restart",
+            )
+            .to_owned(),
+            native_notify_note().to_owned(),
+        ],
     }
 }
 
@@ -1276,6 +1338,7 @@ enum HookLayout {
     Nested { backup: &'static str },
     GrokFile,
     Cursor,
+    OpenCode,
 }
 
 #[derive(Clone, Copy)]
@@ -1292,6 +1355,7 @@ impl HookAgent {
             ConnectionMethod::GrokHook => grok_hook_specs(),
             ConnectionMethod::CodexHook => codex_hook_specs(),
             ConnectionMethod::CursorHook => cursor_hook_specs(),
+            ConnectionMethod::OpenCodeHook => &[],
             ConnectionMethod::Wrapper => &[],
         }
     }
@@ -1300,7 +1364,7 @@ impl HookAgent {
         match self.layout {
             HookLayout::Nested { backup } => Some(backup),
             HookLayout::Cursor => Some("hooks.json.orbcue.bak"),
-            HookLayout::GrokFile => None,
+            HookLayout::GrokFile | HookLayout::OpenCode => None,
         }
     }
 
@@ -1310,6 +1374,7 @@ impl HookAgent {
             "grok" => "Grok",
             "codex" => "Codex",
             "cursor" => "Cursor",
+            "opencode" => "OpenCode",
             other => other,
         }
     }
@@ -1340,6 +1405,11 @@ const HOOK_AGENTS: &[HookAgent] = &[
         method: ConnectionMethod::CursorHook,
         layout: HookLayout::Cursor,
     },
+    HookAgent {
+        name: "opencode",
+        method: ConnectionMethod::OpenCodeHook,
+        layout: HookLayout::OpenCode,
+    },
 ];
 
 fn hook_agent(method: ConnectionMethod) -> Option<&'static HookAgent> {
@@ -1352,8 +1422,8 @@ fn hook_agent_named(name: &str) -> Option<&'static HookAgent> {
 
 fn unsupported_connect_name(name: &str) -> String {
     orbcue_core::t!(
-        "OrbCue 只连接 Claude、Grok、Codex 和 Cursor（{name} 不行）。其他工具请用 `orb start` / `orb complete` 接入",
-        "OrbCue only connects Claude, Grok, Codex, and Cursor ({name} is not one of them). Other tools can use `orb start` / `orb complete`."
+        "OrbCue 只连接 Claude、Grok、Codex、Cursor 和 OpenCode（{name} 不行）。其他工具请用 `orb start` / `orb complete` 接入",
+        "OrbCue only connects Claude, Grok, Codex, Cursor, and OpenCode ({name} is not one of them). Other tools can use `orb start` / `orb complete`."
     )
 }
 
@@ -1368,9 +1438,164 @@ fn hook_path(config_dir: &Path, name: &str) -> PathBuf {
     }
 }
 
-fn current_hook_script(config_dir: &Path, method: ConnectionMethod) -> Option<PathBuf> {
-    hook_agent(method).map(|agent| hook_path(config_dir, agent.name))
+impl ConnectionManager {
+    fn current_hook_script(&self, method: ConnectionMethod) -> Option<PathBuf> {
+        let agent = hook_agent(method)?;
+        if matches!(agent.layout, HookLayout::OpenCode) {
+            return Some(self.opencode_plugin_path());
+        }
+        Some(hook_path(&self.config_dir, agent.name))
+    }
 }
+
+const OPENCODE_PLUGIN_MARKER: &str = "// OrbCue generated OpenCode plugin.";
+
+fn opencode_config_dir(home: &Path) -> PathBuf {
+    if let Some(dir) = env::var_os("OPENCODE_CONFIG_DIR") {
+        let dir = PathBuf::from(dir);
+        if !dir.as_os_str().is_empty() {
+            return dir;
+        }
+    }
+    if let Some(xdg) = env::var_os("XDG_CONFIG_HOME") {
+        let xdg = PathBuf::from(xdg);
+        if !xdg.as_os_str().is_empty() {
+            return xdg.join("opencode");
+        }
+    }
+    home.join(".config").join("opencode")
+}
+
+fn opencode_plugin_events() -> Vec<String> {
+    [
+        "session.created",
+        "session.status",
+        "session.idle",
+        "session.error",
+        "session.deleted",
+        "permission.asked",
+        "permission.replied",
+        "question.asked",
+        "question.replied",
+        "question.rejected",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+fn opencode_plugin_is_current(path: &Path, orb: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    text.contains(OPENCODE_PLUGIN_MARKER) && text.contains(&opencode_plugin_orb_literal(orb))
+}
+
+fn opencode_plugin_orb_literal(orb: &Path) -> String {
+    serde_json::to_string(orb.to_string_lossy().as_ref()).unwrap_or_else(|_| "\"orb\"".to_owned())
+}
+
+fn remove_generated_opencode_plugin(path: &Path) -> Result<(), String> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Ok(());
+    };
+    if text.contains(OPENCODE_PLUGIN_MARKER) {
+        fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn opencode_plugin_source(orb: &Path) -> String {
+    OPENCODE_PLUGIN_TEMPLATE.replace("__ORB_JSON__", &opencode_plugin_orb_literal(orb))
+}
+
+const OPENCODE_PLUGIN_TEMPLATE: &str = r#"// OrbCue generated OpenCode plugin.
+// Forwards lifecycle only. It does not send prompts, questions, commands, or file contents.
+import { spawn } from "node:child_process"
+
+const ORB = __ORB_JSON__
+
+const PARENTS = new Map()
+
+const ROOT_EVENTS = new Set([
+  "session.created",
+  "session.status",
+  "session.idle",
+  "session.error",
+  "session.deleted",
+  "permission.asked",
+  "permission.replied",
+  "question.asked",
+  "question.replied",
+  "question.rejected",
+])
+
+const CHILD_EVENTS = new Set([
+  "permission.asked",
+  "permission.replied",
+  "question.asked",
+  "question.replied",
+  "question.rejected",
+])
+
+function text(value) {
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  return trimmed ? trimmed : undefined
+}
+
+function remember(sessionID, parentID) {
+  if (sessionID && parentID && sessionID !== parentID) PARENTS.set(sessionID, parentID)
+}
+
+export const OrbCue = async () => ({
+  event: async ({ event }) => {
+    try {
+      forward(event)
+    } catch {
+      // Observer only. A delivery failure must not break OpenCode.
+    }
+  },
+})
+
+function forward(event) {
+  if (!event || !ROOT_EVENTS.has(event.type)) return
+  const properties = event.properties || {}
+  const info = properties.info || {}
+  const sessionID = text(properties.sessionID) || text(info.id)
+  if (!sessionID) return
+  const parentID = text(properties.parentID) || text(info.parentID) || PARENTS.get(sessionID)
+  remember(sessionID, parentID)
+  if (parentID && !CHILD_EVENTS.has(event.type)) return
+  const payload = { type: event.type, sessionID: parentID || sessionID }
+  const cwd = text(info.directory)
+  if (cwd && cwd.length <= 256) payload.cwd = cwd
+  const status = properties.status && text(properties.status.type)
+  if (status === "idle" || status === "busy" || status === "retry") payload.status = status
+  const errorName = properties.error && text(properties.error.name)
+  if (errorName && /^[A-Za-z]{1,64}$/.test(errorName)) payload.errorName = errorName
+  send(payload)
+}
+
+function send(payload) {
+  let child
+  try {
+    child = spawn(ORB, ["hook", "opencode"], {
+      stdio: ["pipe", "ignore", "ignore"],
+      windowsHide: true,
+    })
+  } catch {
+    return
+  }
+  child.on("error", () => {})
+  child.unref()
+  try {
+    child.stdin.end(JSON.stringify(payload))
+  } catch {
+    // ignore
+  }
+}
+"#;
 
 fn hook_script(dock_binary: &Path, provider: &str) -> String {
     #[cfg(windows)]
