@@ -1478,6 +1478,13 @@ fn opencode_plugin_events() -> Vec<String> {
         "question.asked",
         "question.replied",
         "question.rejected",
+        "form.created",
+        "form.replied",
+        "form.cancelled",
+        "session.execution.started",
+        "session.execution.succeeded",
+        "session.execution.failed",
+        "session.execution.interrupted",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -1488,7 +1495,13 @@ fn opencode_plugin_is_current(path: &Path, orb: &Path) -> bool {
     let Ok(text) = fs::read_to_string(path) else {
         return false;
     };
-    text.contains(OPENCODE_PLUGIN_MARKER) && text.contains(&opencode_plugin_orb_literal(orb))
+    text.contains(OPENCODE_PLUGIN_MARKER)
+        && text.contains(&opencode_plugin_orb_literal(orb))
+        && text.contains("export default")
+        && text.contains("setup(ctx)")
+        && text.contains("form.created")
+        && text.contains("DIRS")
+        && text.contains("session.get")
 }
 
 fn opencode_plugin_orb_literal(orb: &Path) -> String {
@@ -1516,19 +1529,7 @@ import { spawn } from "node:child_process"
 const ORB = __ORB_JSON__
 
 const PARENTS = new Map()
-
-const ROOT_EVENTS = new Set([
-  "session.created",
-  "session.status",
-  "session.idle",
-  "session.error",
-  "session.deleted",
-  "permission.asked",
-  "permission.replied",
-  "question.asked",
-  "question.replied",
-  "question.rejected",
-])
+const DIRS = new Map()
 
 const CHILD_EVENTS = new Set([
   "permission.asked",
@@ -1548,33 +1549,139 @@ function remember(sessionID, parentID) {
   if (sessionID && parentID && sessionID !== parentID) PARENTS.set(sessionID, parentID)
 }
 
-export const OrbCue = async () => ({
-  event: async ({ event }) => {
-    try {
-      forward(event)
-    } catch {
-      // Observer only. A delivery failure must not break OpenCode.
+// OpenCode 2 loads a default object that has an id and setup. A named export is rejected.
+// server() remains for OpenCode 1, which calls that function instead of setup.
+export default {
+  id: "orbcue",
+  setup(ctx) {
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          try {
+            await forward(ctx, event)
+          } catch {
+            // Observer only. A delivery failure must not break OpenCode.
+          }
+        }
+      } catch {
+        // subscribe ending is normal when OpenCode stops the plugin.
+      }
+    })()
+    return () => controller.abort()
+  },
+  async server() {
+    return {
+      event: async ({ event }) => {
+        try {
+          await forward(null, event)
+        } catch {
+          // Observer only. A delivery failure must not break OpenCode.
+        }
+      },
     }
   },
-})
+}
 
-function forward(event) {
-  if (!event || !ROOT_EVENTS.has(event.type)) return
-  const properties = event.properties || {}
-  const info = properties.info || {}
-  const sessionID = text(properties.sessionID) || text(info.id)
-  if (!sessionID) return
-  const parentID = text(properties.parentID) || text(info.parentID) || PARENTS.get(sessionID)
+async function forward(ctx, event) {
+  const mapped = mapEvent(event)
+  if (!mapped) return
+  const sessionID = mapped.sessionID
+  if (!sessionID || sessionID === "global") return
+  const parentID = mapped.parentID || PARENTS.get(sessionID)
   remember(sessionID, parentID)
-  if (parentID && !CHILD_EVENTS.has(event.type)) return
-  const payload = { type: event.type, sessionID: parentID || sessionID }
-  const cwd = text(info.directory)
+  // data.location is the session directory. The event envelope location is
+  // whichever OpenCode instance published the event, so it is not a project path.
+  if (mapped.type === "session.moved") {
+    if (!parentID && mapped.cwd) DIRS.set(sessionID, mapped.cwd)
+    return
+  }
+  if (parentID && !CHILD_EVENTS.has(mapped.type)) return
+  if (!parentID && mapped.cwd) DIRS.set(sessionID, mapped.cwd)
+  const owner = parentID || sessionID
+  let cwd = DIRS.get(owner)
+  if (!cwd) cwd = await directoryOf(ctx, owner)
+  const payload = { type: mapped.type, sessionID: owner }
   if (cwd && cwd.length <= 256) payload.cwd = cwd
-  const status = properties.status && text(properties.status.type)
-  if (status === "idle" || status === "busy" || status === "retry") payload.status = status
-  const errorName = properties.error && text(properties.error.name)
-  if (errorName && /^[A-Za-z]{1,64}$/.test(errorName)) payload.errorName = errorName
+  if (mapped.status) payload.status = mapped.status
+  if (mapped.errorName) payload.errorName = mapped.errorName
   send(payload)
+}
+
+async function directoryOf(ctx, sessionID) {
+  const known = DIRS.get(sessionID)
+  if (known) return known
+  const get = ctx && ctx.session && ctx.session.get
+  if (typeof get !== "function") return
+  try {
+    const info = await get({ sessionID })
+    const location = info && info.location
+    const directory = text(location && location.directory)
+    if (directory) DIRS.set(sessionID, directory)
+    return directory
+  } catch {
+    return
+  }
+}
+
+function mapEvent(event) {
+  if (!event || typeof event.type !== "string") return
+  const data = event.data && typeof event.data === "object" ? event.data : event.properties || {}
+  const info = data.info && typeof data.info === "object" ? data.info : {}
+  const form = data.form && typeof data.form === "object" ? data.form : {}
+  const sessionID = text(data.sessionID) || text(info.id) || text(form.sessionID)
+  const parentID = text(data.parentID) || text(info.parentID)
+  // Session directory only. The envelope location belongs to the publisher.
+  const cwd = (data.location && text(data.location.directory)) || text(info.directory)
+  const status = statusOf(data.status)
+  const base = { sessionID, parentID, cwd }
+  switch (event.type) {
+    case "session.created":
+      return { type: "session.created", ...base }
+    case "session.moved":
+      return { type: "session.moved", ...base }
+    case "session.deleted":
+      return { type: "session.deleted", ...base }
+    case "session.idle":
+    case "session.execution.succeeded":
+      return { type: "session.idle", ...base }
+    case "session.status":
+      return status ? { type: "session.status", ...base, status } : undefined
+    case "session.execution.started":
+      return { type: "session.status", ...base, status: "busy" }
+    case "session.error":
+    case "session.execution.failed":
+      return { type: "session.error", ...base, errorName: errorNameOf(data) }
+    case "session.execution.interrupted":
+      if (data.reason !== "user") return
+      return { type: "session.error", ...base, errorName: "MessageAbortedError" }
+    case "permission.asked":
+      return { type: "permission.asked", ...base }
+    case "permission.replied":
+      return { type: "permission.replied", ...base }
+    case "question.asked":
+    case "form.created":
+      return { type: "question.asked", ...base }
+    case "question.replied":
+    case "form.replied":
+      return { type: "question.replied", ...base }
+    case "question.rejected":
+    case "form.cancelled":
+      return { type: "question.rejected", ...base }
+    default:
+      return
+  }
+}
+
+function statusOf(status) {
+  const value = text(status && status.type) || text(status)
+  if (value === "idle" || value === "busy" || value === "retry") return value
+}
+
+function errorNameOf(data) {
+  const error = data.error && typeof data.error === "object" ? data.error : {}
+  const name = text(error.name) || text(error.type) || text(data.errorName)
+  if (name && /^[A-Za-z]{1,64}$/.test(name)) return name
 }
 
 function send(payload) {

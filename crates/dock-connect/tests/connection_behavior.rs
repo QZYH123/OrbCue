@@ -1236,6 +1236,13 @@ fn opencode_connect_writes_a_local_plugin_and_refuses_a_foreign_file() {
     manager.connect("opencode", &original).unwrap();
     let text = fs::read_to_string(&plugin).unwrap();
     assert!(text.contains("OrbCue generated OpenCode plugin."));
+    assert!(text.contains("export default"));
+    assert!(text.contains("setup(ctx)"));
+    assert!(text.contains("form.created"));
+    assert!(text.contains("DIRS"));
+    assert!(text.contains("session.get"));
+    assert!(text.contains("session.moved"));
+    assert!(!text.contains("event.location"));
     assert!(text.contains("\"hook\", \"opencode\""));
     assert!(text.contains("parentID || sessionID"));
     assert!(text.contains(&orb.to_string_lossy().to_string()));
