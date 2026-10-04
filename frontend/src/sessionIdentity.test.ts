@@ -31,6 +31,7 @@ describe('displayAgent', () => {
     expect(displayAgent('GROK')).toBe('Grok');
     expect(displayAgent('cursor')).toBe('Cursor');
     expect(displayAgent('opencode')).toBe('OpenCode');
+    expect(displayAgent('pi')).toBe('Pi');
     expect(displayAgent('my-bot')).toBe('My-bot');
     expect(displayAgent('')).toBe('Agent');
   });

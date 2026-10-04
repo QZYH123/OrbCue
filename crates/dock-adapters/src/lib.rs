@@ -80,6 +80,37 @@ pub fn opencode_hook(payload: &Value) -> Option<DockEvent> {
     Some(event)
 }
 
+/// Pi extension events. The extension forwards lifecycle fields only.
+/// `session.started` is idle and `agent.started` is working. `agent.settled`
+/// uses the outcome remembered earlier: `aborted` is cancelled, `error` is
+/// failed, and anything else is completed. A confirm dialog asks for
+/// permission. Other prompts wait for input. `session.closed` is quit only.
+/// Terminal id stays unset, so one Pi process keeps one row and a later
+/// session on that terminal replaces it.
+pub fn pi_hook(payload: &Value) -> Option<DockEvent> {
+    let event_type = json_str(payload, &["type"])?;
+    let session_id = json_str(payload, &["sessionID", "session_id", "sessionId"])?;
+    let kind = match event_type {
+        "session.started" => EventKind::Idle,
+        "agent.started" => EventKind::Working,
+        "agent.settled" => match json_str(payload, &["outcome"]).unwrap_or("completed") {
+            "aborted" => EventKind::Cancelled,
+            "error" => EventKind::Failed,
+            _ => EventKind::Completed,
+        },
+        "permission.asked" => EventKind::PermissionRequested,
+        "question.asked" => EventKind::WaitingInput,
+        "session.closed" => EventKind::Closed,
+        _ => return None,
+    };
+    let mut event = attentive_event("pi", session_id, kind, payload);
+    if event.event_id.len() > orbcue_core::MAX_EVENT_ID_LEN {
+        let tail = event.event_id.len().saturating_sub(32);
+        event.event_id = format!("pi-{}-{}", kind_name(kind), &event.event_id[tail..]);
+    }
+    Some(event)
+}
+
 fn opencode_terminal_id(session_id: &str) -> String {
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in session_id.as_bytes() {

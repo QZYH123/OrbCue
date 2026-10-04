@@ -15,7 +15,7 @@
   <a href="https://github.com/QZYH123/OrbCue/releases/latest"><img src="https://img.shields.io/github/v/release/QZYH123/OrbCue?label=latest" alt="Latest"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/QZYH123/OrbCue" alt="License: MIT"></a>
   <a href="#系统要求"><img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D6?logo=windows&logoColor=white" alt="Windows 10 / 11"></a>
-  <a href="#支持的工具"><img src="https://img.shields.io/badge/CLI-Claude%20%7C%20Codex%20%7C%20Cursor%20%7C%20Grok%20%7C%20OpenCode-555" alt="CLI: Claude, Codex, Cursor, Grok, OpenCode"></a>
+  <a href="#支持的工具"><img src="https://img.shields.io/badge/CLI-Claude%20%7C%20Codex%20%7C%20Cursor%20%7C%20Grok%20%7C%20OpenCode%20%7C%20Pi-555" alt="CLI: Claude, Codex, Cursor, Grok, OpenCode, Pi"></a>
 </p>
 
 [English](README.en.md) · [**下载安装**](https://github.com/QZYH123/OrbCue/releases/latest) · [快速开始](#快速开始) · [界面](#界面) · [隐私与数据](#隐私与数据) · [常见问题](#常见问题)
@@ -52,6 +52,7 @@ OrbCue 把「盯着」这件事交给一颗小球。orb 是它的样子，cue �
 | Codex | `codex` | 开始、等待、完成、关闭（打断和报错看不到） |
 | Cursor Agent | `agent` / `cursor-agent` | 开始、完成、失败、关闭（选择题不会标成「等待」） |
 | OpenCode | `opencode` | 开始、等待、授权、完成、失败、关闭（点回去回到它所在的终端） |
+| Pi | `pi` | 开始、等待、授权、完成、失败、关闭（自带工具的执行不会标成等待授权） |
 
 以上均指命令行（CLI）版本，不包含 Cursor 编辑器本身。编辑器（含 WSL Remote）与 CLI 共用用户级 `~/.cursor/hooks.json`，但 OrbCue 只认 `cursor-agent` 进程，编辑器里的 Agent / 子代理不会出现在小球上。无论是安装在 Windows 还是 WSL 里的工具都能接入，并在同一个小球上显示。其他工具也可以通过命令[自行接入](#给其他工具接入)。
 
@@ -172,6 +173,7 @@ OrbCue 把「盯着」这件事交给一颗小球。orb 是它的样子，cue �
 - 连接前先列出将要修改的文件，经确认后才动手写入
 - 首次修改 Claude Code / Codex / Cursor 的配置前，会自动保留一份备份（例如 `settings.json.orbcue.bak`）
 - OpenCode 不改它的配置文件，只在插件目录写入 `orbcue.js`。已经开着的 OpenCode 要重新启动后才会开始上报
+- Pi 不改它的配置文件，只在扩展目录写入 `orbcue.js`。已经开着的 Pi 要重新启动后才会开始上报
 - 断开连接时，仅移除 OrbCue 自身写入的内容
 - 即使连接失败，也不会下载或重装任何东西
 
@@ -181,6 +183,7 @@ OrbCue 把「盯着」这件事交给一颗小球。orb 是它的样子，cue �
 - **Codex**：使用 Esc 或 Ctrl+C 打断当前回复时不会通知 OrbCue，任务会停在「工作中」；对话报错也不会显示为失败。在动态页点击「清除」即可，退出 Codex 后任务也会从列表中消失
 - **Claude Code / Codex**：在授权提示框中点击拒绝时不会通知 OrbCue，小球会停留在「等待授权」，直到工具继续执行或该轮对话结束；也可以在动态页点击「清除」。Grok Build 点击拒绝后会立刻回到工作中
 - **OpenCode**：点回去会回到它所在的终端，不会定位到里面的某一段对话。子代理不单独占一行，它的授权和选择题记在主会话上
+- **Pi**：点回去会回到它所在的终端。自带工具不会单独报授权，只有扩展弹出的确认框算授权，其它提问算等待
 
 ## 隐私与数据
 

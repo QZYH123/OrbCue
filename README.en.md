@@ -15,7 +15,7 @@ While they are busy, it only counts. It speaks when it is your turn.
   <a href="https://github.com/QZYH123/OrbCue/releases/latest"><img src="https://img.shields.io/github/v/release/QZYH123/OrbCue?label=latest" alt="Latest"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/QZYH123/OrbCue" alt="License: MIT"></a>
   <a href="#requirements"><img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D6?logo=windows&logoColor=white" alt="Windows 10 / 11"></a>
-  <a href="#supported-tools"><img src="https://img.shields.io/badge/CLI-Claude%20%7C%20Codex%20%7C%20Cursor%20%7C%20Grok%20%7C%20OpenCode-555" alt="CLI: Claude, Codex, Cursor, Grok, OpenCode"></a>
+  <a href="#supported-tools"><img src="https://img.shields.io/badge/CLI-Claude%20%7C%20Codex%20%7C%20Cursor%20%7C%20Grok%20%7C%20OpenCode%20%7C%20Pi-555" alt="CLI: Claude, Codex, Cursor, Grok, OpenCode, Pi"></a>
 </p>
 
 [中文](README.md) · [**Download**](https://github.com/QZYH123/OrbCue/releases/latest) · [Quick start](#quick-start) · [The interface](#the-interface) · [Privacy and data](#privacy-and-data) · [FAQ](#faq)
@@ -52,6 +52,7 @@ OrbCue does the watching. The orb is what you see. The cue is its job: one alert
 | Codex | `codex` | start, waiting, done, closed (an interrupt and a chat error are not visible) |
 | Cursor Agent | `agent` / `cursor-agent` | start, done, failed, closed (a multiple-choice prompt is not marked as waiting) |
 | OpenCode | `opencode` | start, waiting, approval, done, failed, closed (jump back returns to its terminal) |
+| Pi | `pi` | start, waiting, approval, done, failed, closed (a built-in tool run is not marked as waiting for approval) |
 
 These are the command-line (CLI) tools, not the Cursor editor. While the editor (including WSL Remote) and the CLI share the user-level `~/.cursor/hooks.json`, OrbCue only recognizes the `cursor-agent` process. Agents and subagents inside the editor do not appear on the orb. Tools installed on Windows or in WSL can both be connected, and both show on the same orb. Other tools can [connect on their own](#connect-another-tool).
 
@@ -172,6 +173,7 @@ Each tool connects through the hook it already has. OrbCue registers that hook i
 - Before it writes, it lists the files that would change. It writes only after you confirm.
 - The first time it edits the config for Claude Code, Codex, or Cursor, it keeps a backup, for example `settings.json.orbcue.bak`.
 - OpenCode's config file is left alone. OrbCue writes `orbcue.js` into the plugin directory. OpenCode that is already running starts reporting after a restart.
+- Pi's config file is left alone. OrbCue writes `orbcue.js` into the extension directory. Pi that is already running starts reporting after a restart.
 - Disconnect removes only what OrbCue itself wrote.
 - If connecting fails, nothing is downloaded or reinstalled.
 
@@ -181,6 +183,7 @@ Known limits. The matching row on Connect notes these too:
 - **Codex.** Esc or Ctrl+C while it is replying does not notify OrbCue, so the task stays on Working. A chat error is not shown as Failed. Click Clear on Activity. After you quit Codex, the task also leaves the list.
 - **Claude Code and Codex.** Deny in an approval prompt does not notify OrbCue. The orb stays on Needs approval until the tool continues or that turn ends. You can also click Clear on Activity. Grok Build returns to Working as soon as you deny.
 - **OpenCode.** Jump back focuses the terminal running OpenCode, not one conversation inside it. A subagent does not get its own row. Its approval and questions are shown on the main session.
+- **Pi.** Jump back focuses the terminal running Pi. Built-in tools are not marked as waiting for approval. Only a confirm dialog from an extension is. Other prompts count as waiting.
 
 ## Privacy and data
 

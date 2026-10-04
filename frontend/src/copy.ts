@@ -175,7 +175,7 @@ const zh: Copy = {
   checkingTools: '正在检测本机工具',
   noTools: '没有检测到支持的工具',
   noToolsOnboarding: '可点「从文件夹添加」，或先跳过、稍后在连接页再接。',
-  noToolsConnect: '目前支持 Claude、Grok、Codex、Cursor 和 OpenCode。可点「从文件夹添加」。没有 WSL 也可以只连 Windows 上的工具',
+  noToolsConnect: '目前支持 Claude、Grok、Codex、Cursor、OpenCode 和 Pi。可点「从文件夹添加」。没有 WSL 也可以只连 Windows 上的工具',
   checkingAgents: '正在检测本机 Agent',
   auditIntro: '完成、失败、等待和关闭。',
   auditEmpty: '还没有审计记录',
@@ -299,7 +299,7 @@ const en: Copy = {
   noTools: 'No supported tools found',
   noToolsOnboarding: 'Use Add folder, or skip and connect later.',
   noToolsConnect:
-    'Claude, Grok, Codex, Cursor, and OpenCode are supported. Use Add folder. Without WSL you can still connect Windows tools.',
+    'Claude, Grok, Codex, Cursor, OpenCode, and Pi are supported. Use Add folder. Without WSL you can still connect Windows tools.',
   checkingAgents: 'Checking this machine',
   auditIntro: 'Completions, failures, waits, and closes.',
   auditEmpty: 'No audit entries yet',

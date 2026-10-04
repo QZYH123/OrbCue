@@ -1,5 +1,5 @@
 use orbcue_adapters::{
-    claude_hook, codex_hook, codex_notification, cursor_hook, grok_hook, opencode_hook,
+    claude_hook, codex_hook, codex_notification, cursor_hook, grok_hook, opencode_hook, pi_hook,
 };
 use orbcue_core::{DockEvent, DockState, EventKind, SessionState};
 
@@ -1026,4 +1026,162 @@ fn opencode_adapter_follows_the_plugin_lifecycle() {
         opencode_hook(&serde_json::json!({"type": "session.diff", "sessionID": "ses_other"}))
             .is_none()
     );
+}
+
+#[test]
+fn pi_adapter_follows_the_extension_lifecycle() {
+    let mut state = DockState::new();
+    let opened = pi_hook(&serde_json::json!({
+        "type": "session.started",
+        "sessionID": "pi-session",
+        "cwd": "/tmp/orbcue-pi",
+        "event_id": "pi-1",
+        "title": "do not keep",
+        "prompt": "secret prompt"
+    }))
+    .unwrap();
+    assert_eq!(opened.kind, EventKind::Idle);
+    assert_eq!(opened.source, "pi");
+    assert_eq!(opened.cwd.as_deref(), Some("/tmp/orbcue-pi"));
+    assert!(opened.terminal_id.is_none());
+    assert!(opened.metadata.is_empty());
+    assert!(state.apply(opened).accepted);
+
+    let busy = pi_hook(&serde_json::json!({
+        "type": "agent.started",
+        "sessionID": "pi-session",
+        "event_id": "pi-2"
+    }))
+    .unwrap();
+    assert_eq!(busy.kind, EventKind::Working);
+    assert!(state.apply(busy).accepted);
+
+    let permission = pi_hook(&serde_json::json!({
+        "type": "permission.asked",
+        "sessionID": "pi-session",
+        "event_id": "pi-3",
+        "title": "Run this command?"
+    }))
+    .unwrap();
+    assert_eq!(permission.kind, EventKind::PermissionRequested);
+    assert!(permission.metadata.is_empty());
+    let waiting = state.apply(permission);
+    assert_eq!(
+        waiting.snapshot.sessions[0].attention_reason.as_deref(),
+        Some("permission")
+    );
+
+    let resumed = pi_hook(&serde_json::json!({
+        "type": "agent.started",
+        "sessionID": "pi-session",
+        "event_id": "pi-4"
+    }))
+    .unwrap();
+    assert_eq!(
+        state.apply(resumed).snapshot.sessions[0].state,
+        SessionState::Working
+    );
+
+    let question = pi_hook(&serde_json::json!({
+        "type": "question.asked",
+        "sessionID": "pi-session",
+        "event_id": "pi-5",
+        "title": "Pick one"
+    }))
+    .unwrap();
+    assert_eq!(question.kind, EventKind::WaitingInput);
+    assert!(question.metadata.is_empty());
+    assert_eq!(
+        state.apply(question).snapshot.sessions[0]
+            .attention_reason
+            .as_deref(),
+        Some("input")
+    );
+
+    let idle_again = pi_hook(&serde_json::json!({
+        "type": "session.started",
+        "sessionID": "pi-session",
+        "event_id": "pi-6"
+    }))
+    .unwrap();
+    assert_eq!(idle_again.kind, EventKind::Idle);
+    assert_eq!(
+        state.apply(idle_again).snapshot.sessions[0].state,
+        SessionState::Idle
+    );
+
+    let done = pi_hook(&serde_json::json!({
+        "type": "agent.settled",
+        "sessionID": "pi-session",
+        "outcome": "completed",
+        "event_id": "pi-7"
+    }))
+    .unwrap();
+    assert_eq!(done.kind, EventKind::Completed);
+    assert!(state.apply(done).attention.is_some());
+    let again = pi_hook(&serde_json::json!({
+        "type": "agent.settled",
+        "sessionID": "pi-session",
+        "event_id": "pi-8"
+    }))
+    .unwrap();
+    assert_eq!(again.kind, EventKind::Completed);
+    assert!(state.apply(again).attention.is_none());
+
+    let aborted = pi_hook(&serde_json::json!({
+        "type": "agent.settled",
+        "sessionID": "pi-session",
+        "outcome": "aborted",
+        "event_id": "pi-9"
+    }))
+    .unwrap();
+    assert_eq!(aborted.kind, EventKind::Cancelled);
+    let failed = pi_hook(&serde_json::json!({
+        "type": "agent.settled",
+        "sessionID": "pi-session",
+        "outcome": "error",
+        "event_id": "pi-10"
+    }))
+    .unwrap();
+    assert_eq!(failed.kind, EventKind::Failed);
+    assert_eq!(
+        state.apply(failed).snapshot.sessions[0].state,
+        SessionState::Failed
+    );
+
+    let mut replaced = pi_hook(&serde_json::json!({
+        "type": "session.started",
+        "sessionID": "pi-next",
+        "cwd": "/tmp/orbcue-pi",
+        "event_id": "pi-11"
+    }))
+    .unwrap();
+    replaced.terminal_id = Some("pts-pi".to_owned());
+    state.apply(
+        pi_hook(&serde_json::json!({
+            "type": "session.started",
+            "sessionID": "pi-session",
+            "event_id": "pi-12"
+        }))
+        .unwrap()
+        .with_terminal_id("pts-pi"),
+    );
+    let replaced = state.apply(replaced);
+    assert_eq!(replaced.snapshot.tracked_count, 1);
+    assert_eq!(replaced.snapshot.sessions[0].session_id, "pi-next");
+
+    let closed = pi_hook(&serde_json::json!({
+        "type": "session.closed",
+        "sessionID": "pi-next",
+        "event_id": "pi-13"
+    }))
+    .unwrap();
+    assert_eq!(closed.kind, EventKind::Closed);
+    assert!(state.apply(closed).accepted);
+    assert_eq!(state.snapshot().tracked_count, 0);
+
+    assert!(
+        pi_hook(&serde_json::json!({"type": "session.shutdown", "sessionID": "pi-next"})).is_none()
+    );
+    assert!(pi_hook(&serde_json::json!({"type": "tool_call", "sessionID": "pi-next"})).is_none());
 }

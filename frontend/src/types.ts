@@ -72,7 +72,8 @@ export type ConnectionMethod =
   | 'GrokHook'
   | 'CodexHook'
   | 'CursorHook'
-  | 'OpenCodeHook';
+  | 'OpenCodeHook'
+  | 'PiHook';
 
 export interface ConnectionRecord {
   name: string;

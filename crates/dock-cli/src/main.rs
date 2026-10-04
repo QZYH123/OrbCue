@@ -24,7 +24,7 @@ use liveness::{linux_process_cmdline, should_skip_linux_liveness_parent_with_cmd
 use liveness::{windows_process_tree, WindowsProcess};
 use orbcue_adapters::{
     claude_hook, codex_hook, cursor_hook, grok_hook, is_cursor_unsubscribed_tool_event,
-    opencode_hook,
+    opencode_hook, pi_hook,
 };
 use orbcue_connect::{ConnectionManager, ConnectionMethod, ConnectionPreview, PreviewAction};
 use orbcue_core::{
@@ -168,13 +168,15 @@ enum HookProvider {
     Grok,
     #[value(name = "opencode")]
     OpenCode,
+    #[value(name = "pi")]
+    Pi,
 }
 
 #[derive(Debug, clap::Args)]
 struct EventArgs {
     /// Stable session identifier from the Agent integration.
     session_id: String,
-    /// Source integration name, such as claude, grok, codex, cursor, or opencode.
+    /// Source integration name, such as claude, grok, codex, cursor, opencode, or pi.
     #[arg(long, default_value = "manual")]
     source: String,
     #[arg(long)]
@@ -608,6 +610,7 @@ fn run_hook(provider: HookProvider, endpoint: &Path, json_output: bool) {
         HookProvider::Cursor => cursor_hook(&payload),
         HookProvider::Grok => grok_hook(&payload),
         HookProvider::OpenCode => opencode_hook(&payload),
+        HookProvider::Pi => pi_hook(&payload),
     };
     let Some(mut event) = event else {
         if json_output {
@@ -692,6 +695,7 @@ fn hook_provider_arg(provider: HookProvider) -> &'static str {
         HookProvider::Cursor => "cursor",
         HookProvider::Grok => "grok",
         HookProvider::OpenCode => "opencode",
+        HookProvider::Pi => "pi",
     }
 }
 
@@ -1591,7 +1595,8 @@ fn connect_method_label(method: ConnectionMethod) -> &'static str {
         | ConnectionMethod::GrokHook
         | ConnectionMethod::CodexHook
         | ConnectionMethod::CursorHook
-        | ConnectionMethod::OpenCodeHook => "native hook",
+        | ConnectionMethod::OpenCodeHook
+        | ConnectionMethod::PiHook => "native hook",
     }
 }
 

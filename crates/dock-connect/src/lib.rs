@@ -1,6 +1,6 @@
 //! Revocable, zero-reinstall Agent connections.
 //!
-//! Discovers Claude, Grok, Codex, Cursor, and OpenCode already on PATH or in
+//! Discovers Claude, Grok, Codex, Cursor, OpenCode, and Pi already on PATH or in
 //! folders the user adds, then writes native hooks. It never replaces an Agent
 //! executable.
 //! Other tools emit events with `orb start` / `orb complete`; leftover wrapper
@@ -67,7 +67,8 @@ const LEGACY_PATH_START: &str = "# >>> agent-activity-dock PATH >>>";
 const LEGACY_PATH_END: &str = "# <<< agent-activity-dock PATH <<<";
 
 /// Agents the connections page can attach through native hooks.
-pub(crate) const FIRST_PARTY_AGENTS: &[&str] = &["claude", "codex", "cursor", "grok", "opencode"];
+pub(crate) const FIRST_PARTY_AGENTS: &[&str] =
+    &["claude", "codex", "cursor", "grok", "opencode", "pi"];
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ConnectionMethod {
@@ -78,6 +79,7 @@ pub enum ConnectionMethod {
     CodexHook,
     CursorHook,
     OpenCodeHook,
+    PiHook,
 }
 
 impl ConnectionMethod {
@@ -100,6 +102,10 @@ impl ConnectionMethod {
             Self::OpenCodeHook => orbcue_core::pick(
                 "点回去会回到 OpenCode 所在的终端，不会定位到里面的某一段对话",
                 "Jump back focuses the terminal running OpenCode, not one conversation inside it.",
+            ),
+            Self::PiHook => orbcue_core::pick(
+                "点回去回到 Pi 所在的终端。自带工具不会标成等待授权，只有扩展弹出的确认框才会",
+                "Jump back focuses the terminal running Pi. Built-in tools are not marked as waiting for approval. Only an extension confirm dialog is.",
             ),
         }
     }
@@ -281,8 +287,8 @@ impl ConnectionManager {
         let found = discover::agents_in_dir(dir);
         if found.is_empty() {
             return Err(orbcue_core::t!(
-                "这个文件夹里没有支持的工具（Claude、Grok、Codex、Cursor 或 OpenCode）",
-                "This folder has no supported tool (Claude, Grok, Codex, Cursor, or OpenCode)."
+                "这个文件夹里没有支持的工具（Claude、Grok、Codex、Cursor、OpenCode 或 Pi）",
+                "This folder has no supported tool (Claude, Grok, Codex, Cursor, OpenCode, or Pi)."
             ));
         }
         let mut file = self.load();
@@ -459,6 +465,17 @@ impl ConnectionManager {
                 self.preview_connections_file(),
             ];
         }
+        if matches!(agent.layout, HookLayout::Pi) {
+            let extension = self.pi_extension_path();
+            return vec![
+                PreviewFile {
+                    path: extension.clone(),
+                    action: preview_action(&extension),
+                    entries: pi_extension_events(),
+                },
+                self.preview_connections_file(),
+            ];
+        }
         let hook = hook_path(&self.config_dir, agent.name);
         let config = self.hooks_config_path(agent);
         let events = hook_spec_labels(agent.specs());
@@ -522,6 +539,9 @@ impl ConnectionManager {
         if method == ConnectionMethod::OpenCodeHook {
             return opencode_plugin_is_current(hook, &self.dock_binary);
         }
+        if method == ConnectionMethod::PiHook {
+            return pi_extension_is_current(hook, &self.dock_binary);
+        }
         if !hook.is_file() || !hook_script_forwards_args(hook) {
             return false;
         }
@@ -577,6 +597,7 @@ impl ConnectionManager {
             "codex" => self.codex_hooks_file(),
             "cursor" => self.cursor_hooks_file(),
             "opencode" => self.opencode_plugin_path(),
+            "pi" => self.pi_extension_path(),
             _ => unreachable!("unknown hook agent {}", agent.name),
         }
     }
@@ -608,9 +629,39 @@ impl ConnectionManager {
         Ok(path)
     }
 
+    fn pi_extension_path(&self) -> PathBuf {
+        pi_agent_dir(&self.home)
+            .join("extensions")
+            .join("orbcue.js")
+    }
+
+    fn write_pi_extension(&self) -> Result<PathBuf, String> {
+        let path = self.pi_extension_path();
+        if let Ok(existing) = fs::read_to_string(&path) {
+            if !existing.contains(PI_EXTENSION_MARKER) {
+                return Err(format!(
+                    "refusing to overwrite non-OrbCue file {}",
+                    path.display()
+                ));
+            }
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        atomic_write(
+            &path,
+            pi_extension_source(&self.dock_binary).as_bytes(),
+            0o644,
+        )?;
+        Ok(path)
+    }
+
     fn install_hook(&self, agent: &HookAgent) -> Result<PathBuf, String> {
         if matches!(agent.layout, HookLayout::OpenCode) {
             return self.write_opencode_plugin();
+        }
+        if matches!(agent.layout, HookLayout::Pi) {
+            return self.write_pi_extension();
         }
         let dest = hook_path(&self.config_dir, agent.name);
         let existed = dest.is_file();
@@ -625,6 +676,7 @@ impl ConnectionManager {
             HookLayout::GrokFile => install_grok_hooks(&self.grok_hooks_file(), &hook),
             HookLayout::Cursor => install_cursor_hooks_at(&self.cursor_hooks_file(), &hook),
             HookLayout::OpenCode => unreachable!("OpenCode plugin is written above"),
+            HookLayout::Pi => unreachable!("Pi extension is written above"),
         };
         match result {
             Ok(()) => Ok(hook),
@@ -671,10 +723,16 @@ impl ConnectionManager {
                         uninstall_cursor_hooks_at(&self.cursor_hooks_file(), hook)?
                     }
                     HookLayout::OpenCode => remove_generated_opencode_plugin(hook)?,
+                    HookLayout::Pi => remove_generated_pi_extension(hook)?,
                 },
                 None => {}
             }
-            if hook.exists() && !matches!(record.method, ConnectionMethod::OpenCodeHook) {
+            if hook.exists()
+                && !matches!(
+                    record.method,
+                    ConnectionMethod::OpenCodeHook | ConnectionMethod::PiHook
+                )
+            {
                 fs::remove_file(hook).map_err(|error| error.to_string())?;
             }
         }
@@ -1100,6 +1158,15 @@ fn preview_notes(method: ConnectionMethod) -> Vec<String> {
             .to_owned(),
             native_notify_note().to_owned(),
         ],
+        ConnectionMethod::PiHook => vec![
+            orbcue_core::pick(
+                "已经打开的 Pi 要重新启动后才会加载",
+                "Pi that is already running loads this after a restart",
+            )
+            .to_owned(),
+            ConnectionMethod::PiHook.limitation().to_owned(),
+            native_notify_note().to_owned(),
+        ],
     }
 }
 
@@ -1339,6 +1406,7 @@ enum HookLayout {
     GrokFile,
     Cursor,
     OpenCode,
+    Pi,
 }
 
 #[derive(Clone, Copy)]
@@ -1355,7 +1423,7 @@ impl HookAgent {
             ConnectionMethod::GrokHook => grok_hook_specs(),
             ConnectionMethod::CodexHook => codex_hook_specs(),
             ConnectionMethod::CursorHook => cursor_hook_specs(),
-            ConnectionMethod::OpenCodeHook => &[],
+            ConnectionMethod::OpenCodeHook | ConnectionMethod::PiHook => &[],
             ConnectionMethod::Wrapper => &[],
         }
     }
@@ -1364,7 +1432,7 @@ impl HookAgent {
         match self.layout {
             HookLayout::Nested { backup } => Some(backup),
             HookLayout::Cursor => Some("hooks.json.orbcue.bak"),
-            HookLayout::GrokFile | HookLayout::OpenCode => None,
+            HookLayout::GrokFile | HookLayout::OpenCode | HookLayout::Pi => None,
         }
     }
 
@@ -1375,6 +1443,7 @@ impl HookAgent {
             "codex" => "Codex",
             "cursor" => "Cursor",
             "opencode" => "OpenCode",
+            "pi" => "Pi",
             other => other,
         }
     }
@@ -1410,6 +1479,11 @@ const HOOK_AGENTS: &[HookAgent] = &[
         method: ConnectionMethod::OpenCodeHook,
         layout: HookLayout::OpenCode,
     },
+    HookAgent {
+        name: "pi",
+        method: ConnectionMethod::PiHook,
+        layout: HookLayout::Pi,
+    },
 ];
 
 fn hook_agent(method: ConnectionMethod) -> Option<&'static HookAgent> {
@@ -1422,8 +1496,8 @@ fn hook_agent_named(name: &str) -> Option<&'static HookAgent> {
 
 fn unsupported_connect_name(name: &str) -> String {
     orbcue_core::t!(
-        "OrbCue 只连接 Claude、Grok、Codex、Cursor 和 OpenCode（{name} 不行）。其他工具请用 `orb start` / `orb complete` 接入",
-        "OrbCue only connects Claude, Grok, Codex, Cursor, and OpenCode ({name} is not one of them). Other tools can use `orb start` / `orb complete`."
+        "OrbCue 只连接 Claude、Grok、Codex、Cursor、OpenCode 和 Pi（{name} 不行）。其他工具请用 `orb start` / `orb complete` 接入",
+        "OrbCue only connects Claude, Grok, Codex, Cursor, OpenCode, and Pi ({name} is not one of them). Other tools can use `orb start` / `orb complete`."
     )
 }
 
@@ -1443,6 +1517,9 @@ impl ConnectionManager {
         let agent = hook_agent(method)?;
         if matches!(agent.layout, HookLayout::OpenCode) {
             return Some(self.opencode_plugin_path());
+        }
+        if matches!(agent.layout, HookLayout::Pi) {
+            return Some(self.pi_extension_path());
         }
         Some(hook_path(&self.config_dir, agent.name))
     }
@@ -1701,6 +1778,160 @@ function send(payload) {
   } catch {
     // ignore
   }
+}
+"#;
+
+const PI_EXTENSION_MARKER: &str = "// OrbCue generated Pi extension.";
+
+fn pi_agent_dir(home: &Path) -> PathBuf {
+    if let Some(dir) = env::var_os("PI_CODING_AGENT_DIR") {
+        let dir = PathBuf::from(dir);
+        if !dir.as_os_str().is_empty() {
+            return dir;
+        }
+    }
+    home.join(".pi").join("agent")
+}
+
+fn pi_extension_events() -> Vec<String> {
+    [
+        "session_start",
+        "agent_start",
+        "agent_before_settle",
+        "agent_settled",
+        "ui_prompt_start",
+        "ui_prompt_end",
+        "session_shutdown",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+fn pi_extension_is_current(path: &Path, orb: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    text.contains(PI_EXTENSION_MARKER)
+        && text.contains(&pi_extension_orb_literal(orb))
+        && text.contains("export default function")
+        && text.contains("agent_before_settle")
+        && text.contains("agent_settled")
+        && text.contains("ui_prompt_start")
+        && text.contains("getSessionId")
+        && text.contains("getCwd")
+}
+
+fn pi_extension_orb_literal(orb: &Path) -> String {
+    serde_json::to_string(orb.to_string_lossy().as_ref()).unwrap_or_else(|_| "\"orb\"".to_owned())
+}
+
+fn remove_generated_pi_extension(path: &Path) -> Result<(), String> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Ok(());
+    };
+    if text.contains(PI_EXTENSION_MARKER) {
+        fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn pi_extension_source(orb: &Path) -> String {
+    PI_EXTENSION_TEMPLATE.replace("__ORB_JSON__", &pi_extension_orb_literal(orb))
+}
+
+const PI_EXTENSION_TEMPLATE: &str = r#"// OrbCue generated Pi extension.
+// Forwards lifecycle only. It does not send prompts, questions, commands, or file contents.
+import { spawn } from "node:child_process"
+
+const ORB = __ORB_JSON__
+let outcome = "completed"
+let running = false
+
+export default function (pi) {
+  pi.on("session_start", (_event, ctx) => {
+    outcome = "completed"
+    running = false
+    send(ctx, "session.started")
+  })
+  pi.on("agent_start", (_event, ctx) => {
+    running = true
+    send(ctx, "agent.started")
+  })
+  pi.on("agent_before_settle", (event) => {
+    const value = event && event.outcome
+    if (value === "completed" || value === "aborted" || value === "error") outcome = value
+  })
+  pi.on("agent_settled", (_event, ctx) => {
+    const settled = outcome
+    outcome = "completed"
+    running = false
+    send(ctx, "agent.settled", settled)
+  })
+  pi.on("ui_prompt_start", (event, ctx) => {
+    const kind = event && event.kind
+    if (kind === "confirm") send(ctx, "permission.asked")
+    else if (kind === "select" || kind === "input" || kind === "editor" || kind === "custom") {
+      send(ctx, "question.asked")
+    }
+  })
+  pi.on("ui_prompt_end", (_event, ctx) => {
+    send(ctx, running ? "agent.started" : "session.started")
+  })
+  pi.on("session_shutdown", (event, ctx) => {
+    if (event && event.reason === "quit") send(ctx, "session.closed")
+  })
+}
+
+function send(ctx, type, outcomeValue) {
+  try {
+    const sessionID = sessionIdOf(ctx)
+    if (!sessionID) return
+    const payload = { type, sessionID }
+    const cwd = cwdOf(ctx)
+    if (cwd && cwd.length <= 256) payload.cwd = cwd
+    if (outcomeValue) payload.outcome = outcomeValue
+    const child = spawn(ORB, ["hook", "pi"], {
+      stdio: ["pipe", "ignore", "ignore"],
+      windowsHide: true,
+    })
+    child.on("error", () => {})
+    child.unref()
+    child.stdin.end(JSON.stringify(payload))
+  } catch {
+    // Observer only. A delivery failure must not break Pi.
+  }
+}
+
+function sessionIdOf(ctx) {
+  const manager = ctx && ctx.sessionManager
+  const get = manager && manager.getSessionId
+  if (typeof get !== "function") return
+  try {
+    const id = get.call(manager)
+    if (typeof id !== "string") return
+    const trimmed = id.trim()
+    return trimmed ? trimmed : undefined
+  } catch {
+    return
+  }
+}
+
+function cwdOf(ctx) {
+  const manager = ctx && ctx.sessionManager
+  const get = manager && manager.getCwd
+  if (typeof get === "function") {
+    try {
+      const value = get.call(manager)
+      if (typeof value === "string" && value.trim()) return value.trim()
+    } catch {
+      // Fall through to the context directory.
+    }
+  }
+  const cwd = ctx && ctx.cwd
+  if (typeof cwd !== "string") return
+  const trimmed = cwd.trim()
+  return trimmed ? trimmed : undefined
 }
 "#;
 

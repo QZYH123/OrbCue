@@ -29,6 +29,7 @@ const AGENT_NAMES: Record<string, string> = {
   cursor: 'Cursor',
   'cursor-agent': 'Cursor',
   opencode: 'OpenCode',
+  pi: 'Pi',
 };
 
 export function folderName(path: string | null | undefined): string | null {

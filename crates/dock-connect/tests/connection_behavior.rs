@@ -1270,3 +1270,69 @@ fn opencode_connect_writes_a_local_plugin_and_refuses_a_foreign_file() {
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn pi_connect_writes_a_local_extension_and_refuses_a_foreign_file() {
+    let root = temp_root();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let agent_dir = root.join("pi-agent");
+    let original = root.join("pi");
+    executable(&original, "#!/bin/sh\nexit 0\n");
+    let orb = root.join("bin").join("orb");
+    fs::create_dir_all(orb.parent().unwrap()).unwrap();
+    executable(&orb, "#!/bin/sh\nexit 0\n");
+    let manager = ConnectionManager::new(home, root.join("config"), root.join("data"), orb.clone());
+    let _guard = lock_env();
+    let previous = std::env::var_os("PI_CODING_AGENT_DIR");
+    std::env::set_var("PI_CODING_AGENT_DIR", &agent_dir);
+
+    let preview = manager.preview("pi", &original).unwrap();
+    assert_eq!(preview.method, ConnectionMethod::PiHook);
+    let extension = agent_dir.join("extensions").join("orbcue.js");
+    assert!(preview.files.iter().any(|file| file.path == extension));
+    assert!(preview.notes.iter().any(|note| note.contains("重新启动")));
+    assert!(preview
+        .files
+        .iter()
+        .any(|file| file.entries.iter().any(|entry| entry == "agent_settled")));
+    manager.connect("pi", &original).unwrap();
+    let text = fs::read_to_string(&extension).unwrap();
+    assert!(text.contains("OrbCue generated Pi extension."));
+    assert!(text.contains("export default function"));
+    assert!(text.contains("agent_before_settle"));
+    assert!(text.contains("agent_settled"));
+    assert!(text.contains("ui_prompt_start"));
+    assert!(text.contains("getSessionId"));
+    assert!(text.contains("getCwd"));
+    assert!(text.contains("\"hook\", \"pi\""));
+    assert!(text.contains("reason === \"quit\""));
+    assert!(text.contains(&orb.to_string_lossy().to_string()));
+    assert!(!text.contains("tool_call"));
+    assert!(!text.contains("settings.json"));
+    assert!(!agent_dir.join("settings.json").exists());
+    assert!(!agent_dir.join("auth.json").exists());
+
+    fs::remove_file(&extension).unwrap();
+    let records = manager.records();
+    assert_eq!(records[0].method, ConnectionMethod::PiHook);
+    assert!(extension.is_file(), "repair must recreate the extension");
+
+    let foreign = "export default function mine() {}\n";
+    fs::write(&extension, foreign).unwrap();
+    let records = manager.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(fs::read_to_string(&extension).unwrap(), foreign);
+    assert!(manager.disconnect("pi").unwrap());
+    assert_eq!(fs::read_to_string(&extension).unwrap(), foreign);
+
+    let error = manager.connect("pi", &original).unwrap_err();
+    assert!(error.contains("refusing"), "{error}");
+    assert_eq!(fs::read_to_string(&extension).unwrap(), foreign);
+
+    match previous {
+        Some(value) => std::env::set_var("PI_CODING_AGENT_DIR", value),
+        None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+    }
+    fs::remove_dir_all(root).unwrap();
+}

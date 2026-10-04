@@ -500,11 +500,15 @@ mod tests {
         std::fs::write(bin.join("dsh.bat"), b"").unwrap();
         std::fs::write(bin.join("grok.cmd"), b"").unwrap();
         std::fs::write(bin.join("opencode.exe"), b"").unwrap();
+        std::fs::write(bin.join("pi.exe"), b"").unwrap();
         let path = std::env::join_paths([&bin]).unwrap();
         let discovered = super::discover_agents_with_extras(&path, &[], None);
         let mut names: Vec<_> = discovered.iter().map(|agent| agent.name.as_str()).collect();
         names.sort_unstable();
-        assert_eq!(names, ["claude", "codex", "cursor", "grok", "opencode"]);
+        assert_eq!(
+            names,
+            ["claude", "codex", "cursor", "grok", "opencode", "pi"]
+        );
         assert!(discovered.iter().all(|agent| agent.name != "dsh"));
         assert!(discovered.iter().any(|agent| agent
             .path
