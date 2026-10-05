@@ -477,6 +477,16 @@ impl DockState {
             return self.rejected(reason);
         }
         if self.seen_event_ids.contains(&event.event_id) {
+            // The reaper reuses one id per pid. A later status event can put
+            // the row back after the first close; the next check must remove
+            // it again. A repeated id never removes a different resume.
+            if matches!(event.kind, EventKind::Closed) {
+                let key = self.resolve_session_key(&event, false);
+                if self.sessions.contains_key(&key) {
+                    self.apply_closed(&key, event);
+                    return self.accepted(None);
+                }
+            }
             return self.accepted(None);
         }
 

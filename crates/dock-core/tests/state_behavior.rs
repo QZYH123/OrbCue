@@ -1112,6 +1112,55 @@ fn old_state_files_without_liveness_still_load() {
 }
 
 #[test]
+fn repeated_liveness_close_drops_a_session_that_came_back() {
+    use orbcue_core::liveness_closed_event_id;
+    let mut state = DockState::new();
+    let mut started = DockEvent::new("e1", EventKind::Working, "opencode", "ses");
+    attach_liveness(&mut started, 33354, 22300796);
+    state.apply(started.with_terminal_id("oc:abc"));
+
+    let event_id = liveness_closed_event_id("opencode", "ses", 33354, 22300796);
+    let mut closed = DockEvent::new(&event_id, EventKind::Closed, "opencode", "ses");
+    attach_liveness(&mut closed, 33354, 22300796);
+    assert_eq!(state.apply(closed.clone()).snapshot.tracked_count, 0);
+
+    let mut again = DockEvent::new("e2", EventKind::Idle, "opencode", "ses");
+    attach_liveness(&mut again, 33354, 22300796);
+    state.apply(again.with_terminal_id("oc:abc"));
+    assert_eq!(state.snapshot().tracked_count, 1);
+
+    let result = state.apply(closed);
+    assert_eq!(result.snapshot.tracked_count, 0);
+}
+
+#[test]
+fn repeated_liveness_close_does_not_drop_a_different_resume() {
+    use orbcue_core::liveness_closed_event_id;
+    let mut state = DockState::new();
+    let mut gone = DockEvent::new("e1", EventKind::Working, "opencode", "ses");
+    attach_liveness(&mut gone, 11, 100);
+    state.apply(gone.with_terminal_id("oc:one"));
+    let mut live = DockEvent::new("e2", EventKind::Working, "opencode", "ses");
+    attach_liveness(&mut live, 22, 200);
+    state.apply(live.with_terminal_id("oc:two"));
+
+    let event_id = liveness_closed_event_id("opencode", "ses", 11, 100);
+    let mut closed = DockEvent::new(&event_id, EventKind::Closed, "opencode", "ses");
+    attach_liveness(&mut closed, 11, 100);
+    assert_eq!(state.apply(closed.clone()).snapshot.tracked_count, 1);
+
+    let mut returned = DockEvent::new("e3", EventKind::Idle, "opencode", "ses");
+    attach_liveness(&mut returned, 11, 100);
+    state.apply(returned.with_terminal_id("oc:one"));
+    let result = state.apply(closed);
+    assert_eq!(result.snapshot.tracked_count, 1);
+    assert_eq!(
+        result.snapshot.sessions[0].terminal_id.as_deref(),
+        Some("oc:two")
+    );
+}
+
+#[test]
 fn hashed_liveness_event_id_fits_a_256_byte_session_id() {
     use orbcue_core::{liveness_closed_event_id, MAX_EVENT_ID_LEN};
     let session_id = "s".repeat(256);

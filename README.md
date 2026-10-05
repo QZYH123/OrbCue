@@ -172,7 +172,7 @@ OrbCue 把「盯着」这件事交给一颗小球。orb 是它的样子，cue �
 
 - 连接前先列出将要修改的文件，经确认后才动手写入
 - 首次修改 Claude Code / Codex / Cursor 的配置前，会自动保留一份备份（例如 `settings.json.orbcue.bak`）
-- OpenCode 不改它的配置文件，只在插件目录写入 `orbcue.js`。已经开着的 OpenCode 要重新启动后才会开始上报
+- OpenCode 不改它的配置文件，只在插件目录写入 `plugins/orbcue/index.js`（服务端）和 `plugins/orbcue/tui.js`（终端）。已经开着的终端客户端会热重载终端插件；服务进程要重新启动后才加载服务端插件
 - Pi 不改它的配置文件，只在扩展目录写入 `orbcue.js`。已经开着的 Pi 要重新启动后才会开始上报
 - 断开连接时，仅移除 OrbCue 自身写入的内容
 - 即使连接失败，也不会下载或重装任何东西

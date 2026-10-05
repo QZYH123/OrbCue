@@ -609,7 +609,7 @@ fn run_hook(provider: HookProvider, endpoint: &Path, json_output: bool) {
         HookProvider::Codex => codex_hook(&payload),
         HookProvider::Cursor => cursor_hook(&payload),
         HookProvider::Grok => grok_hook(&payload),
-        HookProvider::OpenCode => opencode_hook(&payload),
+        HookProvider::OpenCode => map_opencode_payload(&payload),
         HookProvider::Pi => pi_hook(&payload),
     };
     let Some(mut event) = event else {
@@ -679,6 +679,71 @@ fn run_hook(provider: HookProvider, endpoint: &Path, json_output: bool) {
             eprintln!("orb hook: cannot reach Dock: {error}");
             acknowledge_cursor_hook(cursor_ack);
         }
+    }
+}
+
+fn map_opencode_payload(payload: &Value) -> Option<DockEvent> {
+    if payload.get("type").and_then(Value::as_str) == Some("client.exited") {
+        return map_opencode_client_exit(payload);
+    }
+    opencode_hook(payload)
+}
+
+fn map_opencode_client_exit(payload: &Value) -> Option<DockEvent> {
+    #[cfg(unix)]
+    {
+        let owned = liveness::linux_liveness_index();
+        let processes: Vec<(i32, i32, &str, &str, u64)> = owned
+            .iter()
+            .map(|(pid, ppid, comm, cmdline, starttime)| {
+                (*pid, *ppid, comm.as_str(), cmdline.as_str(), *starttime)
+            })
+            .collect();
+        return map_opencode_client_exit_with(payload, &processes);
+    }
+    #[cfg(not(unix))]
+    {
+        map_opencode_client_exit_with(payload, &[])
+    }
+}
+
+/// `client.exited` closes the session only when no other OpenCode client
+/// remains. One hook still carries one session. Windows has no client scan.
+fn map_opencode_client_exit_with(
+    payload: &Value,
+    processes: &[(i32, i32, &str, &str, u64)],
+) -> Option<DockEvent> {
+    #[cfg(not(unix))]
+    {
+        let _ = (payload, processes);
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        let session_id = payload
+            .get("sessionID")
+            .or_else(|| payload.get("session_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())?;
+        let client_pid = payload.get("clientPid").and_then(Value::as_u64)?;
+        if client_pid == 0 || client_pid > u64::from(u32::MAX) {
+            return None;
+        }
+        if liveness::other_opencode_client_alive(client_pid as u32, processes) {
+            return None;
+        }
+        let mut rewritten = serde_json::json!({
+            "type": "session.deleted",
+            "sessionID": session_id,
+        });
+        if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
+            let cwd = cwd.trim();
+            if !cwd.is_empty() && cwd.len() <= 256 {
+                rewritten["cwd"] = Value::String(cwd.to_owned());
+            }
+        }
+        opencode_hook(&rewritten)
     }
 }
 
@@ -2087,6 +2152,137 @@ mod tests {
             super::liveness::resolve_linux_liveness_pid(10, &grok_tree),
             Some((9, 70))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opencode_serve_stays_while_its_client_is_open_and_clears_when_the_tab_is_gone() {
+        let serve = "/home/u/.opencode/bin/opencode serve --service";
+        let tui = "/home/u/.local/bin/opencode";
+        let with_tab = [
+            (33354, 1, "opencode\n", serve, 10u64),
+            (
+                50069,
+                1,
+                "bash\n",
+                "/bin/bash -l /run/user/1000/orbcue-orb-3979f7.sh",
+                11,
+            ),
+            (50078, 50069, "opencode\n", tui, 12),
+        ];
+        assert!(
+            !super::liveness::opencode_serve_without_client(33354, &with_tab),
+            "an open OpenCode tab must keep the row"
+        );
+        assert!(!super::liveness::opencode_serve_without_client(
+            50078, &with_tab
+        ));
+
+        let tab_closed = [(33354, 1, "opencode\n", serve, 10u64)];
+        assert!(
+            super::liveness::opencode_serve_without_client(33354, &tab_closed),
+            "closing the terminal tab leaves serve up; that pid must still count as gone"
+        );
+
+        let other_agent = [(9, 1, "grok\n", "/home/u/.grok/bin/grok", 70u64)];
+        assert!(!super::liveness::opencode_serve_without_client(
+            9,
+            &other_agent
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opencode_tab_list_close_ignores_titles_and_keeps_open_ids() {
+        let parsed = serde_json::json!({
+            "global": {"tabs": []},
+            "cwd": {"/tmp/p": {"tabs": [
+                {"sessionID": "ses_open", "title": "secret title"},
+                {"sessionID": "  ", "title": "blank"}
+            ]}}
+        });
+        let ids = super::liveness::session_ids_in_tab_value(&parsed);
+        assert!(ids.contains("ses_open"));
+        assert!(!ids.iter().any(|id| id.contains("secret")));
+        assert!(!super::liveness::opencode_tab_is_closed(
+            "ses_open",
+            Some(&ids)
+        ));
+        assert!(super::liveness::opencode_tab_is_closed(
+            "ses_closed",
+            Some(&ids)
+        ));
+        assert!(!super::liveness::opencode_tab_is_closed("ses_closed", None));
+        let empty = super::liveness::session_ids_in_tab_value(&serde_json::json!({
+            "global": {"tabs": []},
+            "cwd": {}
+        }));
+        assert!(super::liveness::opencode_tab_is_closed(
+            "ses_open",
+            Some(&empty)
+        ));
+
+        let root = std::env::temp_dir().join(format!("orbcue-tabs-{}", std::process::id()));
+        let dir = root.join("latest").join("tui");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("tabs.json"),
+            r#"{"cwd":{"/tmp/p":{"tabs":[{"sessionID":"ses_open","title":"secret title"}]}}}"#,
+        )
+        .unwrap();
+        let read = super::liveness::opencode_tab_session_ids(std::slice::from_ref(&root)).unwrap();
+        assert!(read.contains("ses_open"));
+        assert!(!read.iter().any(|id| id.contains("secret")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opencode_client_exit_closes_only_when_no_other_client_remains() {
+        let serve = "/home/u/.opencode/bin/opencode serve --service";
+        let tui = "/home/u/.local/bin/opencode";
+        let exiting = 50078u64;
+        let payload = serde_json::json!({
+            "type": "client.exited",
+            "sessionID": "ses_last",
+            "clientPid": exiting,
+            "cwd": "/tmp/proj",
+            "title": "secret title",
+        });
+        let only_serve = [(33354, 1, "opencode\n", serve, 10u64)];
+        let event = super::map_opencode_client_exit_with(&payload, &only_serve).unwrap();
+        assert_eq!(event.kind, orbcue_core::EventKind::Closed);
+        assert_eq!(event.source, "opencode");
+        assert_eq!(event.session_id, "ses_last");
+        assert_eq!(event.cwd.as_deref(), Some("/tmp/proj"));
+        assert!(event.terminal_id.as_deref().unwrap().starts_with("oc:"));
+        assert!(event
+            .metadata
+            .values()
+            .all(|value| !value.contains("secret")));
+        assert!(!event.metadata.contains_key("title"));
+
+        let self_still_listed = [
+            (33354, 1, "opencode\n", serve, 10u64),
+            (exiting as i32, 1, "opencode\n", tui, 12u64),
+        ];
+        assert!(super::map_opencode_client_exit_with(&payload, &self_still_listed).is_some());
+
+        let other_client = [
+            (33354, 1, "opencode\n", serve, 10u64),
+            (exiting as i32, 1, "opencode\n", tui, 12u64),
+            (50090, 1, "opencode\n", tui, 13u64),
+        ];
+        assert!(super::map_opencode_client_exit_with(&payload, &other_client).is_none());
+
+        let too_long = serde_json::json!({
+            "type": "client.exited",
+            "sessionID": "ses_last",
+            "clientPid": exiting,
+            "cwd": "x".repeat(257),
+        });
+        let dropped = super::map_opencode_client_exit_with(&too_long, &only_serve).unwrap();
+        assert!(dropped.cwd.is_none());
     }
 
     #[test]

@@ -23,7 +23,7 @@
 - 不替换 Agent 可执行文件，不要求用户重新安装 Agent。设置里的「原命令启动」只在交互式 shell 里加别名（Windows 另加 OrbCue 目录下的 `.cmd`），不改、不移动这个文件；`command grok` 仍跑原来的程序；
 - 不把声音、窗口和 Agent adapter 的失败传播回事件发送方；
 - 不把摘要或原始 payload 写入默认持久化；
-- 修改 Claude `settings.json`、Codex `~/.codex/hooks.json`、Cursor `~/.cursor/hooks.json` 前保留一次用户可恢复的备份，断开时只清理 Dock 自己的 Hook。OpenCode 不改 `opencode.json`，只写 `~/.config/opencode/plugins/orbcue.js`（`OPENCODE_CONFIG_DIR` 或 `XDG_CONFIG_HOME` 优先）；这份文件若不是 OrbCue 写的，不覆盖，断开时也不删。Pi 不改 `settings.json`，只写 `~/.pi/agent/extensions/orbcue.js`（`PI_CODING_AGENT_DIR` 优先）；这份文件若不是 OrbCue 写的，不覆盖，断开时也不删；
+- 修改 Claude `settings.json`、Codex `~/.codex/hooks.json`、Cursor `~/.cursor/hooks.json` 前保留一次用户可恢复的备份，断开时只清理 Dock 自己的 Hook。OpenCode 不改 `opencode.json`，只写 `plugins/orbcue/index.js` 和 `plugins/orbcue/tui.js`（目录是 `OPENCODE_CONFIG_DIR`，否则 `XDG_CONFIG_HOME/opencode`，否则 `~/.config/opencode`）。这两份文件若不是 OrbCue 写的，不覆盖，断开时也不删。旧的 `plugins/orbcue.js` 若是 OrbCue 写的，连接时删掉。Pi 不改 `settings.json`，只写 `~/.pi/agent/extensions/orbcue.js`（`PI_CODING_AGENT_DIR` 优先）；这份文件若不是 OrbCue 写的，不覆盖，断开时也不删；
 - 不让两个 `orbd` 同时服务同一用户。Presenter 在 GUI OS 上 `attach_or_listen`；没有 WSL 时也是这条路径。仅当 Agent 跑在另一 OS（WSL）时由该 OS 的 `orb` trampoline 把事件送到这个 daemon。`ORBCUE_BACKEND=wsl` 已删除，设置了也当没看见。
 
 旧 spec / ticket 在 `.scratch/agent-activity-dock/`，frozen，不要当现行需求。

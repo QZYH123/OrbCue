@@ -455,12 +455,18 @@ impl ConnectionManager {
             unreachable!("new connections are hook-only: {name}");
         };
         if matches!(agent.layout, HookLayout::OpenCode) {
-            let plugin = self.opencode_plugin_path();
+            let server = self.opencode_plugin_path();
+            let tui = self.opencode_tui_plugin_path();
             return vec![
                 PreviewFile {
-                    path: plugin.clone(),
-                    action: preview_action(&plugin),
+                    path: server.clone(),
+                    action: preview_action(&server),
                     entries: opencode_plugin_events(),
+                },
+                PreviewFile {
+                    path: tui.clone(),
+                    action: preview_action(&tui),
+                    entries: opencode_tui_events(),
                 },
                 self.preview_connections_file(),
             ];
@@ -602,31 +608,46 @@ impl ConnectionManager {
         }
     }
 
+    fn opencode_plugin_dir(&self) -> PathBuf {
+        opencode_config_dir(&self.home)
+            .join("plugins")
+            .join("orbcue")
+    }
+
     fn opencode_plugin_path(&self) -> PathBuf {
+        self.opencode_plugin_dir().join("index.js")
+    }
+
+    fn opencode_tui_plugin_path(&self) -> PathBuf {
+        self.opencode_plugin_dir().join("tui.js")
+    }
+
+    fn opencode_legacy_plugin_path(&self) -> PathBuf {
         opencode_config_dir(&self.home)
             .join("plugins")
             .join("orbcue.js")
     }
 
     fn write_opencode_plugin(&self) -> Result<PathBuf, String> {
-        let path = self.opencode_plugin_path();
-        if let Ok(existing) = fs::read_to_string(&path) {
-            if !existing.contains(OPENCODE_PLUGIN_MARKER) {
-                return Err(format!(
-                    "refusing to overwrite non-OrbCue file {}",
-                    path.display()
-                ));
-            }
-        }
-        if let Some(parent) = path.parent() {
+        let index = self.opencode_plugin_path();
+        let tui = self.opencode_tui_plugin_path();
+        refuse_foreign_opencode_file(&index)?;
+        refuse_foreign_opencode_file(&tui)?;
+        if let Some(parent) = index.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
         atomic_write(
-            &path,
+            &index,
             opencode_plugin_source(&self.dock_binary).as_bytes(),
             0o644,
         )?;
-        Ok(path)
+        atomic_write(
+            &tui,
+            opencode_tui_plugin_source(&self.dock_binary).as_bytes(),
+            0o644,
+        )?;
+        remove_generated_opencode_file(&self.opencode_legacy_plugin_path())?;
+        Ok(index)
     }
 
     fn pi_extension_path(&self) -> PathBuf {
@@ -1152,8 +1173,8 @@ fn preview_notes(method: ConnectionMethod) -> Vec<String> {
         ConnectionMethod::Wrapper | ConnectionMethod::GrokHook => Vec::new(),
         ConnectionMethod::OpenCodeHook => vec![
             orbcue_core::pick(
-                "已经打开的 OpenCode 要重新启动后才会加载",
-                "OpenCode that is already running loads this after a restart",
+                "已经开着的终端客户端会热重载终端插件。服务进程要重新启动后才加载服务端插件",
+                "An open terminal client hot-reloads the terminal plugin. The server process loads the server plugin after a restart",
             )
             .to_owned(),
             native_notify_note().to_owned(),
@@ -1577,7 +1598,21 @@ fn opencode_plugin_events() -> Vec<String> {
     .collect()
 }
 
+fn opencode_tui_events() -> Vec<String> {
+    ["session.deleted", "client.exited"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
 fn opencode_plugin_is_current(path: &Path, orb: &Path) -> bool {
+    let Some(tui) = path.parent().map(|dir| dir.join("tui.js")) else {
+        return false;
+    };
+    opencode_server_text_is_current(path, orb) && opencode_tui_text_is_current(&tui, orb)
+}
+
+fn opencode_server_text_is_current(path: &Path, orb: &Path) -> bool {
     let Ok(text) = fs::read_to_string(path) else {
         return false;
     };
@@ -1588,18 +1623,77 @@ fn opencode_plugin_is_current(path: &Path, orb: &Path) -> bool {
         && text.contains("form.created")
         && text.contains("DIRS")
         && text.contains("session.get")
+        && !text.contains("watchTabs")
+        && !text.contains("tabs.json")
+}
+
+fn opencode_tui_text_is_current(path: &Path, orb: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    text.contains(OPENCODE_PLUGIN_MARKER)
+        && text.contains(&opencode_plugin_orb_literal(orb))
+        && text.contains("client.exited")
+        && text.contains("tabs.list")
+        && text.contains("session.deleted")
+        && text.contains("spawnSync")
+        && text.contains("sessionsLeft")
+        && text.contains("sessionIDsFromTabs")
 }
 
 fn opencode_plugin_orb_literal(orb: &Path) -> String {
     serde_json::to_string(orb.to_string_lossy().as_ref()).unwrap_or_else(|_| "\"orb\"".to_owned())
 }
 
-fn remove_generated_opencode_plugin(path: &Path) -> Result<(), String> {
+fn refuse_foreign_opencode_file(path: &Path) -> Result<(), String> {
+    if let Ok(existing) = fs::read_to_string(path) {
+        if !existing.contains(OPENCODE_PLUGIN_MARKER) {
+            return Err(format!(
+                "refusing to overwrite non-OrbCue file {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn remove_generated_opencode_file(path: &Path) -> Result<(), String> {
     let Ok(text) = fs::read_to_string(path) else {
         return Ok(());
     };
     if text.contains(OPENCODE_PLUGIN_MARKER) {
         fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn remove_generated_opencode_plugin(path: &Path) -> Result<(), String> {
+    let mut paths = vec![path.to_path_buf()];
+    if path.file_name().and_then(|name| name.to_str()) == Some("index.js") {
+        if let Some(dir) = path.parent() {
+            paths.push(dir.join("tui.js"));
+            if let Some(plugins) = dir.parent() {
+                paths.push(plugins.join("orbcue.js"));
+            }
+        }
+    } else if path.file_name().and_then(|name| name.to_str()) == Some("orbcue.js") {
+        if let Some(plugins) = path.parent() {
+            let dir = plugins.join("orbcue");
+            paths.push(dir.join("index.js"));
+            paths.push(dir.join("tui.js"));
+        }
+    }
+    let mut plugin_dir = None;
+    for candidate in &paths {
+        if candidate.file_name().and_then(|name| name.to_str()) == Some("index.js") {
+            plugin_dir = candidate.parent().map(Path::to_path_buf);
+        }
+    }
+    for candidate in paths {
+        remove_generated_opencode_file(&candidate)?;
+    }
+    if let Some(dir) = plugin_dir {
+        let _ = fs::remove_dir(dir);
     }
     Ok(())
 }
@@ -1610,6 +1704,7 @@ fn opencode_plugin_source(orb: &Path) -> String {
 
 const OPENCODE_PLUGIN_TEMPLATE: &str = r#"// OrbCue generated OpenCode plugin.
 // Forwards lifecycle only. It does not send prompts, questions, commands, or file contents.
+// Tab closes and client exit are tui.js. This process outlives the terminal.
 import { spawn } from "node:child_process"
 
 const ORB = __ORB_JSON__
@@ -1654,7 +1749,9 @@ export default {
         // subscribe ending is normal when OpenCode stops the plugin.
       }
     })()
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+    }
   },
   async server() {
     return {
@@ -1787,6 +1884,198 @@ function send(payload) {
   } catch {
     // ignore
   }
+}
+"#;
+
+fn opencode_tui_plugin_source(orb: &Path) -> String {
+    OPENCODE_TUI_PLUGIN_TEMPLATE.replace("__ORB_JSON__", &opencode_plugin_orb_literal(orb))
+}
+
+const OPENCODE_TUI_PLUGIN_TEMPLATE: &str = r#"// OrbCue generated OpenCode plugin.
+// Terminal client only. Forwards tab closes and client exit. It does not send titles.
+import { spawn, spawnSync } from "node:child_process"
+
+const ORB = __ORB_JSON__
+
+// Hot reload calls cleanup, then loads a new instance in the same process.
+// The exit hook is registered once and reads whichever instance is current.
+function exitSlot() {
+  const root = globalThis
+  const key = Symbol.for("orbcue.opencode.exit")
+  if (root[key]) return root[key]
+  const slot = { current: null }
+  root[key] = slot
+  process.on("exit", () => {
+    const live = slot.current
+    if (!live || live.delivered) return
+    live.delivered = true
+    deliverExit(live)
+  })
+  return slot
+}
+
+export function sessionIDsFromTabs(list) {
+  const ids = new Map()
+  if (!Array.isArray(list)) return ids
+  for (const tab of list) {
+    const id = text(tab && tab.sessionID)
+    if (!id) continue
+    ids.set(id, directoryFromTab(tab))
+  }
+  return ids
+}
+
+export function sessionIDsFromRouter(route) {
+  const ids = new Map()
+  const id = text(route && route.sessionID)
+  if (id) ids.set(id, undefined)
+  return ids
+}
+
+export function sessionsLeft(previous, next) {
+  const left = []
+  const keys = previous && previous.keys ? previous.keys() : []
+  for (const id of keys) {
+    if (!next || !next.has || !next.has(id)) left.push(id)
+  }
+  return left
+}
+
+function text(value) {
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  return trimmed ? trimmed : undefined
+}
+
+function directoryFromTab(tab) {
+  if (!tab || typeof tab !== "object") return undefined
+  const direct = text(tab.cwd) || text(tab.directory)
+  if (direct) return direct
+  const location = tab.location
+  return text(location && location.directory)
+}
+
+function readOpen(ui) {
+  const tabs = ui && ui.tabs
+  if (
+    tabs &&
+    typeof tabs.enabled === "function" &&
+    tabs.enabled() &&
+    typeof tabs.list === "function"
+  ) {
+    return sessionIDsFromTabs(tabs.list())
+  }
+  const router = ui && ui.router
+  const route = router && typeof router.current === "function" ? router.current() : undefined
+  return sessionIDsFromRouter(route)
+}
+
+function rememberDirs(context, state, next) {
+  const session = context && context.client && context.client.session
+  const get = session && session.get
+  for (const [id, cwd] of next) {
+    if (cwd && cwd.length <= 256) state.dirs.set(id, cwd)
+    if (state.dirs.has(id) || typeof get !== "function") continue
+    void Promise.resolve()
+      .then(() => get({ sessionID: id }))
+      .then((info) => {
+        const data = info && (info.data ?? info)
+        const location = data && data.location
+        const directory = text(location && location.directory)
+        if (directory && directory.length <= 256) state.dirs.set(id, directory)
+      })
+      .catch(() => {})
+  }
+}
+
+function observe(context, state) {
+  const next = readOpen(context && context.ui)
+  rememberDirs(context, state, next)
+  if (!state.baseline) {
+    state.open = next
+    state.baseline = true
+    return
+  }
+  for (const id of sessionsLeft(state.open, next)) {
+    const payload = { type: "session.deleted", sessionID: id }
+    const cwd = state.dirs.get(id)
+    if (cwd && cwd.length <= 256) payload.cwd = cwd
+    send(payload)
+  }
+  state.open = next
+}
+
+function deliverExit(state) {
+  if (process.platform === "win32") return
+  const clientPid = process.pid
+  for (const id of state.open.keys()) {
+    const payload = { type: "client.exited", sessionID: id, clientPid }
+    const cwd = state.dirs.get(id)
+    if (cwd && cwd.length <= 256) payload.cwd = cwd
+    sendSync(payload)
+  }
+}
+
+export default {
+  id: "orbcue",
+  setup(context) {
+    const state = { open: new Map(), dirs: new Map(), baseline: false, delivered: false }
+    const slot = exitSlot()
+    slot.current = state
+    try {
+      observe(context, state)
+    } catch {
+      // A bad first read must not close sessions. The next poll retries the baseline.
+    }
+    const timer = setInterval(() => {
+      try {
+        observe(context, state)
+      } catch {
+        // A bad read must not close every session or break OpenCode.
+      }
+    }, 500)
+    if (typeof timer.unref === "function") timer.unref()
+    return () => {
+      clearInterval(timer)
+    }
+  },
+}
+
+function send(payload) {
+  let child
+  try {
+    child = spawn(ORB, ["hook", "opencode"], spawnOptions(false))
+  } catch {
+    return
+  }
+  child.on("error", () => {})
+  child.unref()
+  try {
+    child.stdin.end(JSON.stringify(payload))
+  } catch {
+    // ignore
+  }
+}
+
+function sendSync(payload) {
+  try {
+    spawnSync(ORB, ["hook", "opencode"], {
+      ...spawnOptions(true),
+      input: JSON.stringify(payload),
+    })
+  } catch {
+    // The exit hook must not throw.
+  }
+}
+
+function spawnOptions(sync) {
+  const options = {
+    stdio: ["pipe", "ignore", "ignore"],
+    windowsHide: true,
+  }
+  if (process.platform !== "win32") options.detached = true
+  if (sync) options.timeout = 1500
+  return options
 }
 "#;
 

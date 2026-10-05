@@ -1214,6 +1214,40 @@ fn cursor_and_grok_preview_warn_when_grok_compat_hooks_are_on() {
     fs::remove_dir_all(root).unwrap();
 }
 
+fn assert_opencode_tab_list_close(plugin_dir: &std::path::Path) {
+    fs::write(plugin_dir.join("package.json"), br#"{"type":"module"}"#).unwrap();
+    let script = r#"
+import { sessionIDsFromTabs, sessionIDsFromRouter, sessionsLeft } from "./tui.js"
+const tabs = [
+  { sessionID: "ses_keep", title: "secret title", location: { directory: "/tmp/keep" } },
+  { sessionID: "ses_closed", title: "secret title" }
+]
+const ids = sessionIDsFromTabs(tabs)
+if (!ids.has("ses_keep") || !ids.has("ses_closed")) process.exit(2)
+const left = sessionsLeft(ids, sessionIDsFromTabs([{ sessionID: "ses_keep", title: "secret title" }]))
+if (left.length !== 1 || left[0] !== "ses_closed") process.exit(3)
+if ([...ids.keys(), ...left].some((id) => String(id).includes("secret"))) process.exit(4)
+if (sessionIDsFromTabs([{ title: "secret title" }]).size !== 0) process.exit(5)
+if (ids.get("ses_keep") !== "/tmp/keep") process.exit(6)
+const route = sessionIDsFromRouter({ type: "session", sessionID: "ses_route", title: "secret title" })
+if (!route.has("ses_route") || route.get("ses_route") !== undefined) process.exit(7)
+if (sessionIDsFromRouter({ type: "home" }).size !== 0) process.exit(8)
+"#;
+    let output = std::process::Command::new("node")
+        .arg("--input-type=module")
+        .arg("-e")
+        .arg(script)
+        .current_dir(plugin_dir)
+        .output()
+        .expect("node is required to check the OpenCode tab list");
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn opencode_connect_writes_a_local_plugin_and_refuses_a_foreign_file() {
     let root = temp_root();
@@ -1232,15 +1266,33 @@ fn opencode_connect_writes_a_local_plugin_and_refuses_a_foreign_file() {
 
     let preview = manager.preview("opencode", &original).unwrap();
     assert_eq!(preview.method, ConnectionMethod::OpenCodeHook);
-    let plugin = config_dir.join("plugins").join("orbcue.js");
-    assert!(preview.files.iter().any(|file| file.path == plugin));
+    let plugin_dir = config_dir.join("plugins").join("orbcue");
+    let index = plugin_dir.join("index.js");
+    let tui = plugin_dir.join("tui.js");
+    let legacy = config_dir.join("plugins").join("orbcue.js");
+    assert!(preview.files.iter().any(|file| file.path == index));
+    assert!(preview.files.iter().any(|file| file.path == tui));
     assert!(preview.notes.iter().any(|note| note.contains("重新启动")));
     assert!(preview
         .files
         .iter()
         .any(|file| file.entries.iter().any(|entry| entry == "question.asked")));
+    assert!(preview
+        .files
+        .iter()
+        .any(|file| file.entries.iter().any(|entry| entry == "client.exited")));
+    fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    fs::write(
+        &legacy,
+        "// OrbCue generated OpenCode plugin.\nexport default {}\n",
+    )
+    .unwrap();
     manager.connect("opencode", &original).unwrap();
-    let text = fs::read_to_string(&plugin).unwrap();
+    assert!(
+        !legacy.exists(),
+        "a generated legacy plugin file is removed"
+    );
+    let text = fs::read_to_string(&index).unwrap();
     assert!(text.contains("OrbCue generated OpenCode plugin."));
     assert!(text.contains("export default"));
     assert!(text.contains("setup(ctx)"));
@@ -1252,23 +1304,70 @@ fn opencode_connect_writes_a_local_plugin_and_refuses_a_foreign_file() {
     assert!(text.contains("\"hook\", \"opencode\""));
     assert!(text.contains("parentID || sessionID"));
     assert!(text.contains(&orb.to_string_lossy().to_string()));
+    assert!(!text.contains("tabs.json"));
+    assert!(!text.contains("watchTabs"));
     assert!(!text.contains("properties.questions"));
+    let tui_text = fs::read_to_string(&tui).unwrap();
+    assert!(tui_text.contains("OrbCue generated OpenCode plugin."));
+    assert!(tui_text.contains("client.exited"));
+    assert!(tui_text.contains("tabs.list"));
+    assert!(tui_text.contains("spawnSync"));
+    assert!(tui_text.contains("sessionIDsFromTabs"));
+    assert!(tui_text.contains(&orb.to_string_lossy().to_string()));
+    assert_eq!(
+        manager.records()[0].hook_script.as_deref(),
+        Some(index.as_path())
+    );
+    assert_opencode_tab_list_close(&plugin_dir);
     assert!(!config_dir.join("opencode.json").exists());
 
-    fs::remove_file(&plugin).unwrap();
+    fs::write(
+        &index,
+        "// OrbCue generated OpenCode plugin.\nexport default {}\n",
+    )
+    .unwrap();
+    let _ = fs::remove_file(&tui);
     let records = manager.records();
     assert_eq!(records[0].method, ConnectionMethod::OpenCodeHook);
-    assert!(plugin.is_file(), "repair must recreate the plugin");
+    assert!(
+        fs::read_to_string(&index).unwrap().contains("form.created"),
+        "repair must rewrite a stale server plugin"
+    );
+    assert!(
+        fs::read_to_string(&tui).unwrap().contains("client.exited"),
+        "repair must rewrite a missing terminal plugin"
+    );
 
     assert!(manager.disconnect("opencode").unwrap());
-    assert!(!plugin.exists());
+    assert!(!index.exists());
+    assert!(!tui.exists());
 
-    fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+    fs::create_dir_all(index.parent().unwrap()).unwrap();
     let foreign = "export const Mine = async () => ({})\n";
-    fs::write(&plugin, foreign).unwrap();
+    fs::write(&index, foreign).unwrap();
     let error = manager.connect("opencode", &original).unwrap_err();
     assert!(error.contains("refusing"), "{error}");
-    assert_eq!(fs::read_to_string(&plugin).unwrap(), foreign);
+    assert_eq!(fs::read_to_string(&index).unwrap(), foreign);
+
+    fs::remove_file(&index).unwrap();
+    fs::write(&tui, foreign).unwrap();
+    let error = manager.connect("opencode", &original).unwrap_err();
+    assert!(error.contains("refusing"), "{error}");
+    assert_eq!(fs::read_to_string(&tui).unwrap(), foreign);
+    assert!(
+        !index.exists(),
+        "a foreign terminal plugin blocks the server file too"
+    );
+
+    fs::remove_file(&tui).unwrap();
+    let foreign_legacy = "export const TheirPlugin = 1\n";
+    fs::write(&legacy, foreign_legacy).unwrap();
+    manager.connect("opencode", &original).unwrap();
+    assert_eq!(fs::read_to_string(&legacy).unwrap(), foreign_legacy);
+    assert!(manager.disconnect("opencode").unwrap());
+    assert_eq!(fs::read_to_string(&legacy).unwrap(), foreign_legacy);
+    assert!(!index.exists());
+    assert!(!tui.exists());
 
     match previous {
         Some(value) => std::env::set_var("OPENCODE_CONFIG_DIR", value),

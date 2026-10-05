@@ -172,7 +172,7 @@ Each tool connects through the hook it already has. OrbCue registers that hook i
 
 - Before it writes, it lists the files that would change. It writes only after you confirm.
 - The first time it edits the config for Claude Code, Codex, or Cursor, it keeps a backup, for example `settings.json.orbcue.bak`.
-- OpenCode's config file is left alone. OrbCue writes `orbcue.js` into the plugin directory. OpenCode that is already running starts reporting after a restart.
+- OpenCode's config file is left alone. OrbCue writes `plugins/orbcue/index.js` (server) and `plugins/orbcue/tui.js` (terminal). An open terminal client hot-reloads the terminal plugin. The server process loads the server plugin after a restart.
 - Pi's config file is left alone. OrbCue writes `orbcue.js` into the extension directory. Pi that is already running starts reporting after a restart.
 - Disconnect removes only what OrbCue itself wrote.
 - If connecting fails, nothing is downloaded or reinstalled.
