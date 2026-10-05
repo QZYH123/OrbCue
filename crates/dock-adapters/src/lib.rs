@@ -18,8 +18,10 @@ pub fn cursor_hook(payload: &Value) -> Option<DockEvent> {
         return None;
     }
     if let Some(event_name) = extract_hook_event(payload) {
-        if event_name == "subagent_start" || event_name == "subagent_stop" {
-            return cursor_subagent_hook(payload, &event_name);
+        match event_name.as_str() {
+            "subagent_start" => return cursor_subagent_hook(payload, "start"),
+            "subagent_stop" => return cursor_subagent_hook(payload, "stop"),
+            _ => {}
         }
     }
     map_cli_hook("cursor", payload)
@@ -28,12 +30,7 @@ pub fn cursor_hook(payload: &Value) -> Option<DockEvent> {
 /// Cursor fires `stop` when the parent generation ends, even if a background
 /// subagent is still running. These two hooks count that work on the parent
 /// row. Task text stays out of the event.
-fn cursor_subagent_hook(payload: &Value, event_name: &str) -> Option<DockEvent> {
-    let phase = if event_name == "subagent_start" {
-        "start"
-    } else {
-        "stop"
-    };
+fn cursor_subagent_hook(payload: &Value, phase: &str) -> Option<DockEvent> {
     let session_id =
         extract_parent(payload).or_else(|| extract_session_id(payload).map(str::to_owned))?;
     let mut event = attentive_event("cursor", &session_id, EventKind::Working, payload);
@@ -41,27 +38,15 @@ fn cursor_subagent_hook(payload: &Value, event_name: &str) -> Option<DockEvent> 
     event.metadata.clear();
     event
         .metadata
-        .insert("subagent_phase".to_owned(), phase.to_owned());
+        .insert(orbcue_core::SUBAGENT_PHASE_KEY.to_owned(), phase.to_owned());
     let token = json_str(
         payload,
         &["subagent_id", "subagentId", "generation_id", "generationId"],
     )
     .unwrap_or("event");
-    event.event_id = cursor_subagent_event_id(&session_id, phase, token);
-    Some(event)
-}
-
-fn cursor_subagent_event_id(session_id: &str, phase: &str, token: &str) -> String {
     let id = format!("cursor-{session_id}-subagent-{phase}-{token}");
-    if id.len() <= orbcue_core::MAX_EVENT_ID_LEN {
-        return id;
-    }
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in session_id.as_bytes().iter().chain(token.as_bytes()) {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("cursor-subagent-{phase}-{hash:016x}")
+    event.event_id = fit_event_id("cursor-subagent", phase, &id);
+    Some(event)
 }
 
 /// Cursor's own hooks.json does not subscribe to Pre/Post tool. Cursor CLI
@@ -86,15 +71,16 @@ pub fn is_cursor_unsubscribed_tool_event(payload: &Value) -> bool {
 /// completed event does not cue again. `permission.replied` returns to
 /// working for allow and reject. `question.asked` waits for input.
 /// `MessageAbortedError` is cancelled; any other `session.error` is failed.
-/// `session.deleted` closes the row. A main session gets its own `oc:` terminal
-/// id so parallel conversations in one TUI do not retire each other.
+/// `session.deleted` and `client.exited` close the row. A main session gets
+/// its own `oc:` terminal id so parallel conversations in one TUI do not
+/// retire each other. A cwd longer than 256 bytes is dropped.
 pub fn opencode_hook(payload: &Value) -> Option<DockEvent> {
     let event_type = json_str(payload, &["type"])?;
     let session_id = json_str(payload, &["sessionID", "session_id", "sessionId"])?;
     let kind = match event_type {
         "session.created" => EventKind::Idle,
         "session.idle" => EventKind::Completed,
-        "session.deleted" => EventKind::Closed,
+        "session.deleted" | "client.exited" => EventKind::Closed,
         "session.status" => match json_str(payload, &["status"])? {
             "busy" | "retry" => EventKind::Working,
             "idle" => EventKind::Completed,
@@ -111,16 +97,13 @@ pub fn opencode_hook(payload: &Value) -> Option<DockEvent> {
         _ => return None,
     };
     let mut event = attentive_event("opencode", session_id, kind, payload);
+    if event.cwd.as_ref().is_some_and(|cwd| cwd.len() > 256) {
+        event.cwd = None;
+    }
     if event.parent_session_id.is_none() {
         event.terminal_id = Some(opencode_terminal_id(session_id));
     }
-    if event.event_id.len() > orbcue_core::MAX_EVENT_ID_LEN {
-        event.event_id = format!(
-            "opencode-{}-{}",
-            kind_name(kind),
-            opencode_terminal_id(session_id)
-        );
-    }
+    event.event_id = fit_event_id("opencode", kind_name(kind), &event.event_id);
     Some(event)
 }
 
@@ -148,20 +131,28 @@ pub fn pi_hook(payload: &Value) -> Option<DockEvent> {
         _ => return None,
     };
     let mut event = attentive_event("pi", session_id, kind, payload);
-    if event.event_id.len() > orbcue_core::MAX_EVENT_ID_LEN {
-        let tail = event.event_id.len().saturating_sub(32);
-        event.event_id = format!("pi-{}-{}", kind_name(kind), &event.event_id[tail..]);
-    }
+    event.event_id = fit_event_id("pi", kind_name(kind), &event.event_id);
     Some(event)
 }
 
-fn opencode_terminal_id(session_id: &str) -> String {
+fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in session_id.as_bytes() {
+    for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    format!("oc:{hash:016x}")
+    hash
+}
+
+fn fit_event_id(source: &str, kind: &str, id: &str) -> String {
+    if id.len() <= orbcue_core::MAX_EVENT_ID_LEN {
+        return id.to_owned();
+    }
+    format!("{source}-{kind}-{:016x}", fnv1a64(id.as_bytes()))
+}
+
+fn opencode_terminal_id(session_id: &str) -> String {
+    format!("oc:{:016x}", fnv1a64(session_id.as_bytes()))
 }
 
 pub fn grok_hook(payload: &Value) -> Option<DockEvent> {

@@ -67,6 +67,18 @@ pub(crate) fn attach_liveness(event: &mut DockEvent) {
     }
 }
 
+pub(crate) type ProcessRow<'a> = (i32, i32, &'a str, &'a str, u64);
+pub(crate) type OwnedProcessRow = (i32, i32, String, String, u64);
+
+pub(crate) fn borrow_process_rows(owned: &[OwnedProcessRow]) -> Vec<ProcessRow<'_>> {
+    owned
+        .iter()
+        .map(|(pid, ppid, comm, cmdline, starttime)| {
+            (*pid, *ppid, comm.as_str(), cmdline.as_str(), *starttime)
+        })
+        .collect()
+}
+
 fn current_agent_os() -> &'static str {
     if cfg!(windows) {
         "windows"
@@ -236,12 +248,7 @@ pub(crate) fn run_liveness_check() -> i32 {
     #[cfg(unix)]
     let owned = linux_liveness_index();
     #[cfg(unix)]
-    let processes: Vec<(i32, i32, &str, &str, u64)> = owned
-        .iter()
-        .map(|(pid, ppid, comm, cmdline, starttime)| {
-            (*pid, *ppid, comm.as_str(), cmdline.as_str(), *starttime)
-        })
-        .collect();
+    let processes = borrow_process_rows(&owned);
     #[cfg(unix)]
     let open_opencode_tabs = opencode_tab_session_ids(&opencode_state_roots());
     for query in queries {
@@ -255,30 +262,24 @@ pub(crate) fn run_liveness_check() -> i32 {
         let Some(starttime) = query.get("starttime").and_then(Value::as_u64) else {
             continue;
         };
-        #[cfg(unix)]
-        let mut gone = orbcue_ipc::linux_pid_is_dead(pid, starttime) == Some(true);
-        #[cfg(not(unix))]
-        let gone = orbcue_ipc::linux_pid_is_dead(pid, starttime) == Some(true);
+        let dead_pid = orbcue_ipc::linux_pid_is_dead(pid, starttime) == Some(true);
         // OpenCode's plugin runs inside `opencode serve`, which outlives the
         // terminal tab. No client left means that tab is gone. A client that
         // is still up drops one conversation when its id leaves tabs.json.
         // Titles in that file are ignored.
         #[cfg(unix)]
-        if !gone && opencode_serve_without_client(pid, &processes) {
-            gone = true;
-        }
-        #[cfg(unix)]
-        if !gone && opencode_serve_pid(pid, &processes) {
-            if opencode_tab_is_closed(
+        let gone = dead_pid
+            || opencode_row_is_gone(
+                pid,
                 query
                     .get("session_id")
                     .and_then(Value::as_str)
                     .unwrap_or(""),
+                &processes,
                 open_opencode_tabs.as_ref(),
-            ) {
-                gone = true;
-            }
-        }
+            );
+        #[cfg(not(unix))]
+        let gone = dead_pid;
         if !gone {
             continue;
         }
@@ -305,28 +306,30 @@ fn linux_agent_liveness() -> Option<(u32, u64)> {
         if current <= 1 {
             break;
         }
-        let stat = match std::fs::read_to_string(format!("/proc/{current}/stat")) {
-            Ok(stat) => stat,
-            Err(_) => break,
-        };
-        let Some((ppid, _, starttime)) = orbcue_ipc::parse_proc_stat(&stat) else {
+        let Some(row) = read_linux_process(current) else {
             break;
         };
-        let comm = std::fs::read_to_string(format!("/proc/{current}/comm")).unwrap_or_default();
-        let cmdline = linux_process_cmdline(current);
-        nodes.push((current, ppid, comm, cmdline, starttime));
+        let ppid = row.1;
+        nodes.push(row);
         if ppid <= 1 || ppid == current {
             break;
         }
         current = ppid;
     }
-    let indexed: Vec<(i32, i32, &str, &str, u64)> = nodes
-        .iter()
-        .map(|(pid, ppid, comm, cmdline, starttime)| {
-            (*pid, *ppid, comm.as_str(), cmdline.as_str(), *starttime)
-        })
-        .collect();
+    let indexed = borrow_process_rows(&nodes);
     resolve_linux_liveness_pid(pid, &indexed)
+}
+
+#[cfg(unix)]
+fn read_linux_process(pid: i32) -> Option<OwnedProcessRow> {
+    if pid <= 0 {
+        return None;
+    }
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (ppid, _, starttime) = orbcue_ipc::parse_proc_stat(&stat)?;
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+    let cmdline = linux_process_cmdline(pid);
+    Some((pid, ppid, comm, cmdline, starttime))
 }
 
 /// Walk from the hook's parent toward the agent. Cursor CLI wraps hooks in a
@@ -335,7 +338,7 @@ fn linux_agent_liveness() -> Option<(u32, u64)> {
 #[cfg(unix)]
 pub(crate) fn resolve_linux_liveness_pid(
     start_pid: i32,
-    processes: &[(i32, i32, &str, &str, u64)],
+    processes: &[ProcessRow<'_>],
 ) -> Option<(u32, u64)> {
     let mut by_pid = HashMap::with_capacity(processes.len());
     for (pid, ppid, comm, cmdline, starttime) in processes {
@@ -430,10 +433,7 @@ pub(crate) fn is_opencode_client(comm: &str, cmdline: &str) -> bool {
 /// `spawnSync`, so that pid is not another client. `getppid` is not used:
 /// `orb` may run only after that client is already gone.
 #[cfg(unix)]
-pub(crate) fn other_opencode_client_alive(
-    exclude_pid: u32,
-    processes: &[(i32, i32, &str, &str, u64)],
-) -> bool {
+pub(crate) fn other_opencode_client_alive(exclude_pid: u32, processes: &[ProcessRow<'_>]) -> bool {
     processes.iter().any(|(pid, _, comm, cmdline, _)| {
         let pid = *pid as u32;
         pid != 0 && pid != exclude_pid && is_opencode_client(comm, cmdline)
@@ -460,30 +460,23 @@ fn cmdline_has_arg(cmdline: &str, arg: &str) -> bool {
     cmdline.split([' ', '\0']).any(|part| part == arg)
 }
 
-/// True when this pid is `opencode serve` and no OpenCode client process is
-/// left. One client keeps every serve-stamped row, so two terminals that
-/// share one daemon clear only after both are gone.
+/// `opencode serve` is gone when no other client remains, or this session's
+/// tab has closed. One client keeps every serve-stamped row until both are gone
+/// or that session id leaves the tab list. `open_tabs` of `None` is not a close.
 #[cfg(unix)]
-pub(crate) fn opencode_serve_without_client(
+pub(crate) fn opencode_row_is_gone(
     pid: u32,
-    processes: &[(i32, i32, &str, &str, u64)],
+    session_id: &str,
+    processes: &[ProcessRow<'_>],
+    open_tabs: Option<&BTreeSet<String>>,
 ) -> bool {
-    let Some((_, _, comm, cmdline, _)) = processes
-        .iter()
-        .find(|(candidate, ..)| *candidate as u32 == pid)
-    else {
-        return false;
-    };
-    if !is_opencode_serve(comm, cmdline) {
-        return false;
-    }
-    !processes.iter().any(|(candidate, _, comm, cmdline, _)| {
-        *candidate as u32 != pid && is_opencode_client(comm, cmdline)
-    })
+    opencode_serve_pid(pid, processes)
+        && (!other_opencode_client_alive(pid, processes)
+            || opencode_tab_is_closed(session_id, open_tabs))
 }
 
 #[cfg(unix)]
-pub(crate) fn opencode_serve_pid(pid: u32, processes: &[(i32, i32, &str, &str, u64)]) -> bool {
+pub(crate) fn opencode_serve_pid(pid: u32, processes: &[ProcessRow<'_>]) -> bool {
     processes.iter().any(|(candidate, _, comm, cmdline, _)| {
         *candidate as u32 == pid && is_opencode_serve(comm, cmdline)
     })
@@ -580,7 +573,7 @@ pub(crate) fn opencode_tab_session_ids(roots: &[PathBuf]) -> Option<BTreeSet<Str
 }
 
 #[cfg(unix)]
-pub(crate) fn linux_liveness_index() -> Vec<(i32, i32, String, String, u64)> {
+pub(crate) fn linux_liveness_index() -> Vec<OwnedProcessRow> {
     let mut rows = Vec::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return rows;
@@ -589,18 +582,9 @@ pub(crate) fn linux_liveness_index() -> Vec<(i32, i32, String, String, u64)> {
         let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
             continue;
         };
-        if pid <= 0 {
-            continue;
+        if let Some(row) = read_linux_process(pid) {
+            rows.push(row);
         }
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            continue;
-        };
-        let Some((ppid, _, starttime)) = orbcue_ipc::parse_proc_stat(&stat) else {
-            continue;
-        };
-        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
-        let cmdline = linux_process_cmdline(pid);
-        rows.push((pid, ppid, comm, cmdline, starttime));
     }
     rows
 }

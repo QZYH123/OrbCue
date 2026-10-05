@@ -1,7 +1,10 @@
 use orbcue_adapters::{
     claude_hook, codex_hook, codex_notification, cursor_hook, grok_hook, opencode_hook, pi_hook,
 };
-use orbcue_core::{ApplyResult, DockEvent, DockState, EventKind, SessionState};
+use orbcue_core::{
+    ApplyResult, DockEvent, DockSnapshot, DockState, EventKind, SessionSnapshot, SessionState,
+    MAX_EVENT_ID_LEN,
+};
 
 #[test]
 fn claude_adapter_uses_only_hook_metadata() {
@@ -860,6 +863,14 @@ fn apply_cursor(state: &mut DockState, payload: serde_json::Value) -> ApplyResul
     state.apply(cursor_hook(&payload).unwrap())
 }
 
+fn opencode_session<'a>(snapshot: &'a DockSnapshot, session_id: &str) -> &'a SessionSnapshot {
+    snapshot
+        .sessions
+        .iter()
+        .find(|session| session.session_id == session_id)
+        .unwrap()
+}
+
 #[test]
 fn cursor_subagent_hooks_stay_on_the_parent_and_defer_completion() {
     let started = cursor_hook(&serde_json::json!({
@@ -1248,12 +1259,7 @@ fn opencode_adapter_follows_the_plugin_lifecycle() {
     assert_eq!(permission.kind, EventKind::PermissionRequested);
     assert!(permission.metadata.is_empty());
     let waiting = state.apply(permission);
-    let parent = waiting
-        .snapshot
-        .sessions
-        .iter()
-        .find(|session| session.session_id == "ses_parent")
-        .unwrap();
+    let parent = opencode_session(&waiting.snapshot, "ses_parent");
     assert_eq!(parent.attention_reason.as_deref(), Some("permission"));
 
     let replied = opencode_hook(&serde_json::json!({
@@ -1264,12 +1270,7 @@ fn opencode_adapter_follows_the_plugin_lifecycle() {
     .unwrap();
     assert_eq!(replied.kind, EventKind::Working);
     let resumed = state.apply(replied);
-    let parent = resumed
-        .snapshot
-        .sessions
-        .iter()
-        .find(|session| session.session_id == "ses_parent")
-        .unwrap();
+    let parent = opencode_session(&resumed.snapshot, "ses_parent");
     assert_eq!(parent.state, SessionState::Working);
 
     let question = opencode_hook(&serde_json::json!({
@@ -1280,12 +1281,7 @@ fn opencode_adapter_follows_the_plugin_lifecycle() {
     .unwrap();
     assert_eq!(question.kind, EventKind::WaitingInput);
     let asked = state.apply(question);
-    let parent = asked
-        .snapshot
-        .sessions
-        .iter()
-        .find(|session| session.session_id == "ses_parent")
-        .unwrap();
+    let parent = opencode_session(&asked.snapshot, "ses_parent");
     assert_eq!(parent.attention_reason.as_deref(), Some("input"));
     let answered = opencode_hook(&serde_json::json!({
         "type": "question.replied",
@@ -1294,12 +1290,7 @@ fn opencode_adapter_follows_the_plugin_lifecycle() {
     }))
     .unwrap();
     let answered = state.apply(answered);
-    let parent = answered
-        .snapshot
-        .sessions
-        .iter()
-        .find(|session| session.session_id == "ses_parent")
-        .unwrap();
+    let parent = opencode_session(&answered.snapshot, "ses_parent");
     assert_eq!(parent.state, SessionState::Working);
 
     let idle = opencode_hook(&serde_json::json!({
@@ -1338,12 +1329,7 @@ fn opencode_adapter_follows_the_plugin_lifecycle() {
     .unwrap();
     assert_eq!(failed.kind, EventKind::Failed);
     let failed = state.apply(failed);
-    let parent = failed
-        .snapshot
-        .sessions
-        .iter()
-        .find(|session| session.session_id == "ses_parent")
-        .unwrap();
+    let parent = opencode_session(&failed.snapshot, "ses_parent");
     assert_eq!(parent.state, SessionState::Failed);
 
     let closed = opencode_hook(&serde_json::json!({
@@ -1523,4 +1509,46 @@ fn pi_adapter_follows_the_extension_lifecycle() {
         pi_hook(&serde_json::json!({"type": "session.shutdown", "sessionID": "pi-next"})).is_none()
     );
     assert!(pi_hook(&serde_json::json!({"type": "tool_call", "sessionID": "pi-next"})).is_none());
+}
+
+#[test]
+fn opencode_client_exit_is_closed() {
+    let event = opencode_hook(&serde_json::json!({
+        "type": "client.exited",
+        "sessionID": "ses_exit",
+        "clientPid": 42,
+        "cwd": "/tmp/proj",
+        "title": "secret title"
+    }))
+    .unwrap();
+    assert_eq!(event.kind, EventKind::Closed);
+    assert_eq!(event.source, "opencode");
+    assert_eq!(event.session_id, "ses_exit");
+    assert_eq!(event.cwd.as_deref(), Some("/tmp/proj"));
+    assert!(event.terminal_id.as_deref().unwrap().starts_with("oc:"));
+    assert!(!event.metadata.contains_key("title"));
+}
+
+#[test]
+fn long_opencode_working_events_keep_distinct_ids() {
+    let session_id = "s".repeat(200);
+    let first = opencode_hook(&serde_json::json!({
+        "type": "session.status",
+        "status": "busy",
+        "sessionID": session_id,
+        "event_id": format!("evt-a-{}", "a".repeat(200))
+    }))
+    .unwrap();
+    let second = opencode_hook(&serde_json::json!({
+        "type": "session.status",
+        "status": "busy",
+        "sessionID": session_id,
+        "event_id": format!("evt-b-{}", "b".repeat(200))
+    }))
+    .unwrap();
+    assert_eq!(first.kind, EventKind::Working);
+    assert_eq!(second.kind, EventKind::Working);
+    assert_ne!(first.event_id, second.event_id);
+    assert!(first.event_id.len() <= MAX_EVENT_ID_LEN);
+    assert!(second.event_id.len() <= MAX_EVENT_ID_LEN);
 }

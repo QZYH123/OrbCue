@@ -454,33 +454,17 @@ impl ConnectionManager {
         let Some(agent) = hook_agent(method) else {
             unreachable!("new connections are hook-only: {name}");
         };
-        if matches!(agent.layout, HookLayout::OpenCode) {
-            let server = self.opencode_plugin_path();
-            let tui = self.opencode_tui_plugin_path();
-            return vec![
-                PreviewFile {
-                    path: server.clone(),
-                    action: preview_action(&server),
-                    entries: opencode_plugin_events(),
-                },
-                PreviewFile {
-                    path: tui.clone(),
-                    action: preview_action(&tui),
-                    entries: opencode_tui_events(),
-                },
-                self.preview_connections_file(),
-            ];
-        }
-        if matches!(agent.layout, HookLayout::Pi) {
-            let extension = self.pi_extension_path();
-            return vec![
-                PreviewFile {
-                    path: extension.clone(),
-                    action: preview_action(&extension),
-                    entries: pi_extension_events(),
-                },
-                self.preview_connections_file(),
-            ];
+        if let Some(files) = self.plugin_files(agent.layout) {
+            let mut preview: Vec<_> = files
+                .into_iter()
+                .map(|file| PreviewFile {
+                    action: preview_action(&file.path),
+                    path: file.path,
+                    entries: file.entries,
+                })
+                .collect();
+            preview.push(self.preview_connections_file());
+            return preview;
         }
         let hook = hook_path(&self.config_dir, agent.name);
         let config = self.hooks_config_path(agent);
@@ -542,11 +526,12 @@ impl ConnectionManager {
     }
 
     fn hook_install_is_current(&self, method: ConnectionMethod, hook: &Path) -> bool {
-        if method == ConnectionMethod::OpenCodeHook {
-            return opencode_plugin_is_current(hook, &self.dock_binary);
-        }
-        if method == ConnectionMethod::PiHook {
-            return pi_extension_is_current(hook, &self.dock_binary);
+        if let Some(agent) = hook_agent(method) {
+            if let Some(files) = self.plugin_files(agent.layout) {
+                return files
+                    .iter()
+                    .all(|file| generated_file_matches(&file.path, &file.contents));
+            }
         }
         if !hook.is_file() || !hook_script_forwards_args(hook) {
             return false;
@@ -602,8 +587,6 @@ impl ConnectionManager {
             "grok" => self.grok_hooks_file(),
             "codex" => self.codex_hooks_file(),
             "cursor" => self.cursor_hooks_file(),
-            "opencode" => self.opencode_plugin_path(),
-            "pi" => self.pi_extension_path(),
             _ => unreachable!("unknown hook agent {}", agent.name),
         }
     }
@@ -628,61 +611,15 @@ impl ConnectionManager {
             .join("orbcue.js")
     }
 
-    fn write_opencode_plugin(&self) -> Result<PathBuf, String> {
-        let index = self.opencode_plugin_path();
-        let tui = self.opencode_tui_plugin_path();
-        refuse_foreign_opencode_file(&index)?;
-        refuse_foreign_opencode_file(&tui)?;
-        if let Some(parent) = index.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        atomic_write(
-            &index,
-            opencode_plugin_source(&self.dock_binary).as_bytes(),
-            0o644,
-        )?;
-        atomic_write(
-            &tui,
-            opencode_tui_plugin_source(&self.dock_binary).as_bytes(),
-            0o644,
-        )?;
-        remove_generated_opencode_file(&self.opencode_legacy_plugin_path())?;
-        Ok(index)
-    }
-
     fn pi_extension_path(&self) -> PathBuf {
         pi_agent_dir(&self.home)
             .join("extensions")
             .join("orbcue.js")
     }
 
-    fn write_pi_extension(&self) -> Result<PathBuf, String> {
-        let path = self.pi_extension_path();
-        if let Ok(existing) = fs::read_to_string(&path) {
-            if !existing.contains(PI_EXTENSION_MARKER) {
-                return Err(format!(
-                    "refusing to overwrite non-OrbCue file {}",
-                    path.display()
-                ));
-            }
-        }
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        atomic_write(
-            &path,
-            pi_extension_source(&self.dock_binary).as_bytes(),
-            0o644,
-        )?;
-        Ok(path)
-    }
-
     fn install_hook(&self, agent: &HookAgent) -> Result<PathBuf, String> {
-        if matches!(agent.layout, HookLayout::OpenCode) {
-            return self.write_opencode_plugin();
-        }
-        if matches!(agent.layout, HookLayout::Pi) {
-            return self.write_pi_extension();
+        if let Some(files) = self.plugin_files(agent.layout) {
+            return self.write_plugin_files(agent.layout, &files);
         }
         let dest = hook_path(&self.config_dir, agent.name);
         let existed = dest.is_file();
@@ -696,8 +633,7 @@ impl ConnectionManager {
             ),
             HookLayout::GrokFile => install_grok_hooks(&self.grok_hooks_file(), &hook),
             HookLayout::Cursor => install_cursor_hooks_at(&self.cursor_hooks_file(), &hook),
-            HookLayout::OpenCode => unreachable!("OpenCode plugin is written above"),
-            HookLayout::Pi => unreachable!("Pi extension is written above"),
+            HookLayout::OpenCode | HookLayout::Pi => unreachable!(),
         };
         match result {
             Ok(()) => Ok(hook),
@@ -729,8 +665,8 @@ impl ConnectionManager {
             }
         }
         if let Some(hook) = &record.hook_script {
-            match hook_agent(record.method) {
-                Some(agent) => match agent.layout {
+            if let Some(agent) = hook_agent(record.method) {
+                match agent.layout {
                     HookLayout::GrokFile => {
                         let grok_hooks = self.grok_hooks_file();
                         if grok_hooks.exists() {
@@ -743,17 +679,13 @@ impl ConnectionManager {
                     HookLayout::Cursor => {
                         uninstall_cursor_hooks_at(&self.cursor_hooks_file(), hook)?
                     }
-                    HookLayout::OpenCode => remove_generated_opencode_plugin(hook)?,
-                    HookLayout::Pi => remove_generated_pi_extension(hook)?,
-                },
-                None => {}
-            }
-            if hook.exists()
-                && !matches!(
-                    record.method,
-                    ConnectionMethod::OpenCodeHook | ConnectionMethod::PiHook
-                )
-            {
+                    HookLayout::OpenCode => self.remove_opencode_plugin(hook)?,
+                    HookLayout::Pi => self.remove_pi_extension(hook)?,
+                }
+                if hook.exists() && !matches!(agent.layout, HookLayout::OpenCode | HookLayout::Pi) {
+                    fs::remove_file(hook).map_err(|error| error.to_string())?;
+                }
+            } else if hook.exists() {
                 fs::remove_file(hook).map_err(|error| error.to_string())?;
             }
         }
@@ -1545,14 +1477,96 @@ fn hook_path(config_dir: &Path, name: &str) -> PathBuf {
 impl ConnectionManager {
     fn current_hook_script(&self, method: ConnectionMethod) -> Option<PathBuf> {
         let agent = hook_agent(method)?;
-        if matches!(agent.layout, HookLayout::OpenCode) {
-            return Some(self.opencode_plugin_path());
-        }
-        if matches!(agent.layout, HookLayout::Pi) {
-            return Some(self.pi_extension_path());
+        if let Some(files) = self.plugin_files(agent.layout) {
+            return files.into_iter().next().map(|file| file.path);
         }
         Some(hook_path(&self.config_dir, agent.name))
     }
+
+    fn plugin_files(&self, layout: HookLayout) -> Option<Vec<PluginFile>> {
+        let orb = &self.dock_binary;
+        match layout {
+            HookLayout::OpenCode => Some(vec![
+                PluginFile {
+                    path: self.opencode_plugin_path(),
+                    contents: render_template(OPENCODE_PLUGIN_TEMPLATE, orb),
+                    entries: opencode_plugin_events(),
+                    marker: OPENCODE_PLUGIN_MARKER,
+                },
+                PluginFile {
+                    path: self.opencode_tui_plugin_path(),
+                    contents: render_template(OPENCODE_TUI_PLUGIN_TEMPLATE, orb),
+                    entries: opencode_tui_events(),
+                    marker: OPENCODE_PLUGIN_MARKER,
+                },
+            ]),
+            HookLayout::Pi => Some(vec![PluginFile {
+                path: self.pi_extension_path(),
+                contents: render_template(PI_EXTENSION_TEMPLATE, orb),
+                entries: pi_extension_events(),
+                marker: PI_EXTENSION_MARKER,
+            }]),
+            HookLayout::Nested { .. } | HookLayout::GrokFile | HookLayout::Cursor => None,
+        }
+    }
+
+    fn write_plugin_files(
+        &self,
+        layout: HookLayout,
+        files: &[PluginFile],
+    ) -> Result<PathBuf, String> {
+        for file in files {
+            refuse_foreign_file(&file.path, file.marker)?;
+        }
+        for file in files {
+            if let Some(parent) = file.path.parent() {
+                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            atomic_write(&file.path, file.contents.as_bytes(), 0o644)?;
+        }
+        if matches!(layout, HookLayout::OpenCode) {
+            remove_marked_file(&self.opencode_legacy_plugin_path(), OPENCODE_PLUGIN_MARKER)?;
+        }
+        files
+            .first()
+            .map(|file| file.path.clone())
+            .ok_or_else(|| "plugin layout has no files".to_owned())
+    }
+
+    fn remove_opencode_plugin(&self, recorded: &Path) -> Result<(), String> {
+        let mut paths = vec![
+            self.opencode_plugin_path(),
+            self.opencode_tui_plugin_path(),
+            self.opencode_legacy_plugin_path(),
+            recorded.to_path_buf(),
+        ];
+        let mut dirs = vec![self.opencode_plugin_dir()];
+        if recorded.file_name().and_then(|name| name.to_str()) == Some("index.js") {
+            if let Some(dir) = recorded.parent() {
+                paths.push(dir.join("tui.js"));
+                dirs.push(dir.to_path_buf());
+            }
+        }
+        for path in paths {
+            remove_marked_file(&path, OPENCODE_PLUGIN_MARKER)?;
+        }
+        for dir in dirs {
+            let _ = fs::remove_dir(dir);
+        }
+        Ok(())
+    }
+
+    fn remove_pi_extension(&self, recorded: &Path) -> Result<(), String> {
+        remove_marked_file(&self.pi_extension_path(), PI_EXTENSION_MARKER)?;
+        remove_marked_file(recorded, PI_EXTENSION_MARKER)
+    }
+}
+
+struct PluginFile {
+    path: PathBuf,
+    contents: String,
+    entries: Vec<String>,
+    marker: &'static str,
 }
 
 const OPENCODE_PLUGIN_MARKER: &str = "// OrbCue generated OpenCode plugin.";
@@ -1605,49 +1619,21 @@ fn opencode_tui_events() -> Vec<String> {
         .collect()
 }
 
-fn opencode_plugin_is_current(path: &Path, orb: &Path) -> bool {
-    let Some(tui) = path.parent().map(|dir| dir.join("tui.js")) else {
-        return false;
-    };
-    opencode_server_text_is_current(path, orb) && opencode_tui_text_is_current(&tui, orb)
-}
-
-fn opencode_server_text_is_current(path: &Path, orb: &Path) -> bool {
-    let Ok(text) = fs::read_to_string(path) else {
-        return false;
-    };
-    text.contains(OPENCODE_PLUGIN_MARKER)
-        && text.contains(&opencode_plugin_orb_literal(orb))
-        && text.contains("export default")
-        && text.contains("setup(ctx)")
-        && text.contains("form.created")
-        && text.contains("DIRS")
-        && text.contains("session.get")
-        && !text.contains("watchTabs")
-        && !text.contains("tabs.json")
-}
-
-fn opencode_tui_text_is_current(path: &Path, orb: &Path) -> bool {
-    let Ok(text) = fs::read_to_string(path) else {
-        return false;
-    };
-    text.contains(OPENCODE_PLUGIN_MARKER)
-        && text.contains(&opencode_plugin_orb_literal(orb))
-        && text.contains("client.exited")
-        && text.contains("tabs.list")
-        && text.contains("session.deleted")
-        && text.contains("spawnSync")
-        && text.contains("sessionsLeft")
-        && text.contains("sessionIDsFromTabs")
-}
-
-fn opencode_plugin_orb_literal(orb: &Path) -> String {
+fn js_string_literal(orb: &Path) -> String {
     serde_json::to_string(orb.to_string_lossy().as_ref()).unwrap_or_else(|_| "\"orb\"".to_owned())
 }
 
-fn refuse_foreign_opencode_file(path: &Path) -> Result<(), String> {
+fn render_template(template: &str, orb: &Path) -> String {
+    template.replace("__ORB_JSON__", &js_string_literal(orb))
+}
+
+fn generated_file_matches(path: &Path, expected: &str) -> bool {
+    fs::read(path).is_ok_and(|bytes| bytes == expected.as_bytes())
+}
+
+fn refuse_foreign_file(path: &Path, marker: &str) -> Result<(), String> {
     if let Ok(existing) = fs::read_to_string(path) {
-        if !existing.contains(OPENCODE_PLUGIN_MARKER) {
+        if !existing.contains(marker) {
             return Err(format!(
                 "refusing to overwrite non-OrbCue file {}",
                 path.display()
@@ -1657,49 +1643,14 @@ fn refuse_foreign_opencode_file(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn remove_generated_opencode_file(path: &Path) -> Result<(), String> {
+fn remove_marked_file(path: &Path, marker: &str) -> Result<(), String> {
     let Ok(text) = fs::read_to_string(path) else {
         return Ok(());
     };
-    if text.contains(OPENCODE_PLUGIN_MARKER) {
+    if text.contains(marker) {
         fs::remove_file(path).map_err(|error| error.to_string())?;
     }
     Ok(())
-}
-
-fn remove_generated_opencode_plugin(path: &Path) -> Result<(), String> {
-    let mut paths = vec![path.to_path_buf()];
-    if path.file_name().and_then(|name| name.to_str()) == Some("index.js") {
-        if let Some(dir) = path.parent() {
-            paths.push(dir.join("tui.js"));
-            if let Some(plugins) = dir.parent() {
-                paths.push(plugins.join("orbcue.js"));
-            }
-        }
-    } else if path.file_name().and_then(|name| name.to_str()) == Some("orbcue.js") {
-        if let Some(plugins) = path.parent() {
-            let dir = plugins.join("orbcue");
-            paths.push(dir.join("index.js"));
-            paths.push(dir.join("tui.js"));
-        }
-    }
-    let mut plugin_dir = None;
-    for candidate in &paths {
-        if candidate.file_name().and_then(|name| name.to_str()) == Some("index.js") {
-            plugin_dir = candidate.parent().map(Path::to_path_buf);
-        }
-    }
-    for candidate in paths {
-        remove_generated_opencode_file(&candidate)?;
-    }
-    if let Some(dir) = plugin_dir {
-        let _ = fs::remove_dir(dir);
-    }
-    Ok(())
-}
-
-fn opencode_plugin_source(orb: &Path) -> String {
-    OPENCODE_PLUGIN_TEMPLATE.replace("__ORB_JSON__", &opencode_plugin_orb_literal(orb))
 }
 
 const OPENCODE_PLUGIN_TEMPLATE: &str = r#"// OrbCue generated OpenCode plugin.
@@ -1724,6 +1675,11 @@ function text(value) {
   if (typeof value !== "string") return undefined
   const trimmed = value.trim()
   return trimmed ? trimmed : undefined
+}
+
+function fitPath(value) {
+  const path = text(value)
+  if (path && path.length <= 256) return path
 }
 
 function remember(sessionID, parentID) {
@@ -1776,19 +1732,24 @@ async function forward(ctx, event) {
   // data.location is the session directory. The event envelope location is
   // whichever OpenCode instance published the event, so it is not a project path.
   if (mapped.type === "session.moved") {
-    if (!parentID && mapped.cwd) DIRS.set(sessionID, mapped.cwd)
+    if (!parentID) rememberDir(sessionID, mapped.cwd)
     return
   }
   if (parentID && !CHILD_EVENTS.has(mapped.type)) return
-  if (!parentID && mapped.cwd) DIRS.set(sessionID, mapped.cwd)
+  if (!parentID) rememberDir(sessionID, mapped.cwd)
   const owner = parentID || sessionID
   let cwd = DIRS.get(owner)
   if (!cwd) cwd = await directoryOf(ctx, owner)
   const payload = { type: mapped.type, sessionID: owner }
-  if (cwd && cwd.length <= 256) payload.cwd = cwd
+  if (cwd) payload.cwd = cwd
   if (mapped.status) payload.status = mapped.status
   if (mapped.errorName) payload.errorName = mapped.errorName
   send(payload)
+}
+
+function rememberDir(sessionID, cwd) {
+  const path = fitPath(cwd)
+  if (path) DIRS.set(sessionID, path)
 }
 
 async function directoryOf(ctx, sessionID) {
@@ -1799,7 +1760,7 @@ async function directoryOf(ctx, sessionID) {
   try {
     const info = await get({ sessionID })
     const location = info && info.location
-    const directory = text(location && location.directory)
+    const directory = fitPath(location && location.directory)
     if (directory) DIRS.set(sessionID, directory)
     return directory
   } catch {
@@ -1887,10 +1848,6 @@ function send(payload) {
 }
 "#;
 
-fn opencode_tui_plugin_source(orb: &Path) -> String {
-    OPENCODE_TUI_PLUGIN_TEMPLATE.replace("__ORB_JSON__", &opencode_plugin_orb_literal(orb))
-}
-
 const OPENCODE_TUI_PLUGIN_TEMPLATE: &str = r#"// OrbCue generated OpenCode plugin.
 // Terminal client only. Forwards tab closes and client exit. It does not send titles.
 import { spawn, spawnSync } from "node:child_process"
@@ -1947,6 +1904,11 @@ function text(value) {
   return trimmed ? trimmed : undefined
 }
 
+function fitPath(value) {
+  const path = text(value)
+  if (path && path.length <= 256) return path
+}
+
 function directoryFromTab(tab) {
   if (!tab || typeof tab !== "object") return undefined
   const direct = text(tab.cwd) || text(tab.directory)
@@ -1974,15 +1936,16 @@ function rememberDirs(context, state, next) {
   const session = context && context.client && context.client.session
   const get = session && session.get
   for (const [id, cwd] of next) {
-    if (cwd && cwd.length <= 256) state.dirs.set(id, cwd)
+    const fitted = fitPath(cwd)
+    if (fitted) state.dirs.set(id, fitted)
     if (state.dirs.has(id) || typeof get !== "function") continue
     void Promise.resolve()
       .then(() => get({ sessionID: id }))
       .then((info) => {
         const data = info && (info.data ?? info)
         const location = data && data.location
-        const directory = text(location && location.directory)
-        if (directory && directory.length <= 256) state.dirs.set(id, directory)
+        const directory = fitPath(location && location.directory)
+        if (directory) state.dirs.set(id, directory)
       })
       .catch(() => {})
   }
@@ -1999,7 +1962,7 @@ function observe(context, state) {
   for (const id of sessionsLeft(state.open, next)) {
     const payload = { type: "session.deleted", sessionID: id }
     const cwd = state.dirs.get(id)
-    if (cwd && cwd.length <= 256) payload.cwd = cwd
+    if (cwd) payload.cwd = cwd
     send(payload)
   }
   state.open = next
@@ -2011,7 +1974,7 @@ function deliverExit(state) {
   for (const id of state.open.keys()) {
     const payload = { type: "client.exited", sessionID: id, clientPid }
     const cwd = state.dirs.get(id)
-    if (cwd && cwd.length <= 256) payload.cwd = cwd
+    if (cwd) payload.cwd = cwd
     sendSync(payload)
   }
 }
@@ -2106,41 +2069,6 @@ fn pi_extension_events() -> Vec<String> {
     .collect()
 }
 
-fn pi_extension_is_current(path: &Path, orb: &Path) -> bool {
-    let Ok(text) = fs::read_to_string(path) else {
-        return false;
-    };
-    text.contains(PI_EXTENSION_MARKER)
-        && text.contains(&pi_extension_orb_literal(orb))
-        && text.contains("export default function")
-        && text.contains("agent_before_settle")
-        && text.contains("agent_settled")
-        && text.contains("ui_prompt_start")
-        && text.contains("getSessionId")
-        && text.contains("getCwd")
-        && text.contains("sendQuit")
-        && text.contains("sendQuitSync")
-        && text.contains("detached")
-}
-
-fn pi_extension_orb_literal(orb: &Path) -> String {
-    serde_json::to_string(orb.to_string_lossy().as_ref()).unwrap_or_else(|_| "\"orb\"".to_owned())
-}
-
-fn remove_generated_pi_extension(path: &Path) -> Result<(), String> {
-    let Ok(text) = fs::read_to_string(path) else {
-        return Ok(());
-    };
-    if text.contains(PI_EXTENSION_MARKER) {
-        fs::remove_file(path).map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
-fn pi_extension_source(orb: &Path) -> String {
-    PI_EXTENSION_TEMPLATE.replace("__ORB_JSON__", &pi_extension_orb_literal(orb))
-}
-
 const PI_EXTENSION_TEMPLATE: &str = r#"// OrbCue generated Pi extension.
 // Forwards lifecycle only. It does not send prompts, questions, commands, or file contents.
 import { spawn, spawnSync } from "node:child_process"
@@ -2162,19 +2090,44 @@ function exitSlot() {
     const active = slot.active
     if (!active || !active.sessionID) return
     slot.closed = true
-    sendQuitSync(active.sessionID, active.cwd)
+    sendQuitSync(active)
   })
   return slot
 }
 
-function remember(ctx) {
+function fitPath(value) {
+  if (typeof value !== "string") return
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > 256) return
+  return trimmed
+}
+
+function targetOf(ctx) {
   const sessionID = sessionIdOf(ctx)
   if (!sessionID) return
-  const cwd = cwdOf(ctx)
-  exitSlot().active = {
-    sessionID,
-    cwd: cwd && cwd.length <= 256 ? cwd : undefined,
+  return { sessionID, cwd: fitPath(cwdOf(ctx)) }
+}
+
+function remember(target) {
+  if (!target) return
+  exitSlot().active = target
+}
+
+function payloadOf(target, type, outcomeValue) {
+  const payload = { type, sessionID: target.sessionID }
+  if (target.cwd) payload.cwd = target.cwd
+  if (outcomeValue) payload.outcome = outcomeValue
+  return payload
+}
+
+function spawnOptions(quit, sync) {
+  const options = {
+    stdio: ["pipe", "ignore", "ignore"],
+    windowsHide: true,
   }
+  if (quit && process.platform !== "win32") options.detached = true
+  if (sync) options.timeout = 1500
+  return options
 }
 
 export default function (pi) {
@@ -2226,44 +2179,30 @@ function sendQuit(ctx) {
     }
     const timer = setTimeout(finish, 1500)
     try {
-      const sessionID = sessionIdOf(ctx)
-      if (!sessionID) {
+      const target = targetOf(ctx)
+      if (!target) {
         finish()
         return
       }
-      const payload = { type: "session.closed", sessionID }
-      const cwd = cwdOf(ctx)
-      if (cwd && cwd.length <= 256) payload.cwd = cwd
-      const options = {
-        stdio: ["pipe", "ignore", "ignore"],
-        windowsHide: true,
-      }
-      if (process.platform !== "win32") options.detached = true
-      remember(ctx)
-      child = spawn(ORB, ["hook", "pi"], options)
+      remember(target)
+      child = spawn(ORB, ["hook", "pi"], spawnOptions(true, false))
       child.on("error", finish)
       child.on("exit", (code) => {
         if (code === 0) exitSlot().closed = true
         finish()
       })
-      child.stdin.end(JSON.stringify(payload))
+      child.stdin.end(JSON.stringify(payloadOf(target, "session.closed")))
     } catch {
       finish()
     }
   })
 }
 
-function sendQuitSync(sessionID, cwd) {
+function sendQuitSync(target) {
   try {
-    const payload = { type: "session.closed", sessionID }
-    if (cwd && cwd.length <= 256) payload.cwd = cwd
-    const options = {
-      input: JSON.stringify(payload),
-      stdio: ["pipe", "ignore", "ignore"],
-      windowsHide: true,
-      timeout: 1500,
-    }
-    if (process.platform !== "win32") options.detached = true
+    if (!target || !target.sessionID) return
+    const options = spawnOptions(true, true)
+    options.input = JSON.stringify(payloadOf(target, "session.closed"))
     spawnSync(ORB, ["hook", "pi"], options)
   } catch {
     // The exit hook must not throw.
@@ -2272,20 +2211,13 @@ function sendQuitSync(sessionID, cwd) {
 
 function send(ctx, type, outcomeValue) {
   try {
-    remember(ctx)
-    const sessionID = sessionIdOf(ctx)
-    if (!sessionID) return
-    const payload = { type, sessionID }
-    const cwd = cwdOf(ctx)
-    if (cwd && cwd.length <= 256) payload.cwd = cwd
-    if (outcomeValue) payload.outcome = outcomeValue
-    const child = spawn(ORB, ["hook", "pi"], {
-      stdio: ["pipe", "ignore", "ignore"],
-      windowsHide: true,
-    })
+    const target = targetOf(ctx)
+    remember(target)
+    if (!target) return
+    const child = spawn(ORB, ["hook", "pi"], spawnOptions(false, false))
     child.on("error", () => {})
     child.unref()
-    child.stdin.end(JSON.stringify(payload))
+    child.stdin.end(JSON.stringify(payloadOf(target, type, outcomeValue)))
   } catch {
     // Observer only. A delivery failure must not break Pi.
   }

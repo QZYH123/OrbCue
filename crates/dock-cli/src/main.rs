@@ -693,58 +693,31 @@ fn map_opencode_client_exit(payload: &Value) -> Option<DockEvent> {
     #[cfg(unix)]
     {
         let owned = liveness::linux_liveness_index();
-        let processes: Vec<(i32, i32, &str, &str, u64)> = owned
-            .iter()
-            .map(|(pid, ppid, comm, cmdline, starttime)| {
-                (*pid, *ppid, comm.as_str(), cmdline.as_str(), *starttime)
-            })
-            .collect();
-        return map_opencode_client_exit_with(payload, &processes);
+        let processes = liveness::borrow_process_rows(&owned);
+        map_opencode_client_exit_with(payload, &processes)
     }
     #[cfg(not(unix))]
     {
-        map_opencode_client_exit_with(payload, &[])
+        let _ = payload;
+        None
     }
 }
 
 /// `client.exited` closes the session only when no other OpenCode client
 /// remains. One hook still carries one session. Windows has no client scan.
+#[cfg(unix)]
 fn map_opencode_client_exit_with(
     payload: &Value,
-    processes: &[(i32, i32, &str, &str, u64)],
+    processes: &[liveness::ProcessRow<'_>],
 ) -> Option<DockEvent> {
-    #[cfg(not(unix))]
-    {
-        let _ = (payload, processes);
+    let client_pid = payload.get("clientPid").and_then(Value::as_u64)?;
+    if client_pid == 0 || client_pid > u64::from(u32::MAX) {
         return None;
     }
-    #[cfg(unix)]
-    {
-        let session_id = payload
-            .get("sessionID")
-            .or_else(|| payload.get("session_id"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|id| !id.is_empty())?;
-        let client_pid = payload.get("clientPid").and_then(Value::as_u64)?;
-        if client_pid == 0 || client_pid > u64::from(u32::MAX) {
-            return None;
-        }
-        if liveness::other_opencode_client_alive(client_pid as u32, processes) {
-            return None;
-        }
-        let mut rewritten = serde_json::json!({
-            "type": "session.deleted",
-            "sessionID": session_id,
-        });
-        if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
-            let cwd = cwd.trim();
-            if !cwd.is_empty() && cwd.len() <= 256 {
-                rewritten["cwd"] = Value::String(cwd.to_owned());
-            }
-        }
-        opencode_hook(&rewritten)
+    if liveness::other_opencode_client_alive(client_pid as u32, processes) {
+        return None;
     }
+    opencode_hook(payload)
 }
 
 fn acknowledge_cursor_hook(cursor_ack: bool) {
@@ -2171,23 +2144,25 @@ mod tests {
             (50078, 50069, "opencode\n", tui, 12),
         ];
         assert!(
-            !super::liveness::opencode_serve_without_client(33354, &with_tab),
+            !super::liveness::opencode_row_is_gone(33354, "ses_open", &with_tab, None),
             "an open OpenCode tab must keep the row"
         );
-        assert!(!super::liveness::opencode_serve_without_client(
-            50078, &with_tab
+        assert!(!super::liveness::opencode_row_is_gone(
+            50078, "ses_open", &with_tab, None
         ));
 
         let tab_closed = [(33354, 1, "opencode\n", serve, 10u64)];
         assert!(
-            super::liveness::opencode_serve_without_client(33354, &tab_closed),
+            super::liveness::opencode_row_is_gone(33354, "ses_open", &tab_closed, None),
             "closing the terminal tab leaves serve up; that pid must still count as gone"
         );
 
         let other_agent = [(9, 1, "grok\n", "/home/u/.grok/bin/grok", 70u64)];
-        assert!(!super::liveness::opencode_serve_without_client(
+        assert!(!super::liveness::opencode_row_is_gone(
             9,
-            &other_agent
+            "ses_open",
+            &other_agent,
+            None
         ));
     }
 
