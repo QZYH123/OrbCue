@@ -17,7 +17,51 @@ pub fn cursor_hook(payload: &Value) -> Option<DockEvent> {
     if is_cursor_unsubscribed_tool_event(payload) {
         return None;
     }
+    if let Some(event_name) = extract_hook_event(payload) {
+        if event_name == "subagent_start" || event_name == "subagent_stop" {
+            return cursor_subagent_hook(payload, &event_name);
+        }
+    }
     map_cli_hook("cursor", payload)
+}
+
+/// Cursor fires `stop` when the parent generation ends, even if a background
+/// subagent is still running. These two hooks count that work on the parent
+/// row. Task text stays out of the event.
+fn cursor_subagent_hook(payload: &Value, event_name: &str) -> Option<DockEvent> {
+    let phase = if event_name == "subagent_start" {
+        "start"
+    } else {
+        "stop"
+    };
+    let session_id =
+        extract_parent(payload).or_else(|| extract_session_id(payload).map(str::to_owned))?;
+    let mut event = attentive_event("cursor", &session_id, EventKind::Working, payload);
+    event.parent_session_id = None;
+    event.metadata.clear();
+    event
+        .metadata
+        .insert("subagent_phase".to_owned(), phase.to_owned());
+    let token = json_str(
+        payload,
+        &["subagent_id", "subagentId", "generation_id", "generationId"],
+    )
+    .unwrap_or("event");
+    event.event_id = cursor_subagent_event_id(&session_id, phase, token);
+    Some(event)
+}
+
+fn cursor_subagent_event_id(session_id: &str, phase: &str, token: &str) -> String {
+    let id = format!("cursor-{session_id}-subagent-{phase}-{token}");
+    if id.len() <= orbcue_core::MAX_EVENT_ID_LEN {
+        return id;
+    }
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in session_id.as_bytes().iter().chain(token.as_bytes()) {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("cursor-subagent-{phase}-{hash:016x}")
 }
 
 /// Cursor's own hooks.json does not subscribe to Pre/Post tool. Cursor CLI

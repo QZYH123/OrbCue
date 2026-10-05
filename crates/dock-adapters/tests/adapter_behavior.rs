@@ -1,7 +1,7 @@
 use orbcue_adapters::{
     claude_hook, codex_hook, codex_notification, cursor_hook, grok_hook, opencode_hook, pi_hook,
 };
-use orbcue_core::{DockEvent, DockState, EventKind, SessionState};
+use orbcue_core::{ApplyResult, DockEvent, DockState, EventKind, SessionState};
 
 #[test]
 fn claude_adapter_uses_only_hook_metadata() {
@@ -854,6 +854,345 @@ fn cursor_hook_drops_claude_compat_tool_events() {
         .kind,
         EventKind::Working
     );
+}
+
+fn apply_cursor(state: &mut DockState, payload: serde_json::Value) -> ApplyResult {
+    state.apply(cursor_hook(&payload).unwrap())
+}
+
+#[test]
+fn cursor_subagent_hooks_stay_on_the_parent_and_defer_completion() {
+    let started = cursor_hook(&serde_json::json!({
+        "hook_event_name": "subagentStart",
+        "conversation_id": "child-1",
+        "parent_conversation_id": "parent-1",
+        "subagent_id": "sub-1",
+        "generation_id": "gen-1",
+        "task": "secret task",
+        "workspace_roots": ["/tmp/proj"]
+    }))
+    .unwrap();
+    assert_eq!(started.kind, EventKind::Working);
+    assert_eq!(started.session_id, "parent-1");
+    assert!(started.parent_session_id.is_none());
+    assert_eq!(started.metadata.len(), 1);
+    assert_eq!(
+        started.metadata.get("subagent_phase").map(String::as_str),
+        Some("start")
+    );
+    assert!(!started.event_id.contains("secret"));
+
+    let stopped = cursor_hook(&serde_json::json!({
+        "hook_event_name": "subagentStop",
+        "conversation_id": "child-1",
+        "parent_conversation_id": "parent-1",
+        "subagent_id": "sub-1",
+        "generation_id": "gen-1",
+        "summary": "secret summary",
+        "description": "secret description",
+        "task": "secret task"
+    }))
+    .unwrap();
+    assert_eq!(stopped.session_id, "parent-1");
+    assert!(stopped.parent_session_id.is_none());
+    assert_ne!(started.event_id, stopped.event_id);
+    assert_eq!(
+        stopped.metadata.get("subagent_phase").map(String::as_str),
+        Some("stop")
+    );
+    assert!(stopped
+        .metadata
+        .values()
+        .all(|value| !value.contains("secret")));
+
+    let mut state = DockState::new();
+    assert!(
+        apply_cursor(
+            &mut state,
+            serde_json::json!({
+                "hook_event_name": "sessionStart",
+                "conversation_id": "parent-1",
+                "event_id": "parent-1-open",
+                "workspace_roots": ["/tmp/proj"]
+            })
+        )
+        .accepted
+    );
+    assert!(
+        apply_cursor(
+            &mut state,
+            serde_json::json!({
+                "hook_event_name": "beforeSubmitPrompt",
+                "conversation_id": "parent-1",
+                "event_id": "parent-1-prompt"
+            })
+        )
+        .accepted
+    );
+    assert!(state.apply(started).accepted);
+    let held = apply_cursor(
+        &mut state,
+        serde_json::json!({
+            "hook_event_name": "stop",
+            "conversation_id": "parent-1",
+            "status": "completed",
+            "generation_id": "parent-gen",
+            "event_id": "parent-1-stop"
+        }),
+    );
+    assert!(held.attention.is_none());
+    assert_eq!(held.snapshot.tracked_count, 1);
+    assert_eq!(held.snapshot.sessions[0].state, SessionState::Working);
+    assert_eq!(held.snapshot.sessions[0].session_id, "parent-1");
+
+    assert!(
+        apply_cursor(
+            &mut state,
+            serde_json::json!({
+                "hook_event_name": "subagentStart",
+                "parent_conversation_id": "parent-1",
+                "conversation_id": "child-2",
+                "subagent_id": "sub-2",
+                "task": "also secret"
+            })
+        )
+        .accepted
+    );
+    let first_done = state.apply(stopped);
+    assert!(first_done.attention.is_none());
+    assert_eq!(first_done.snapshot.sessions[0].state, SessionState::Working);
+
+    let released = apply_cursor(
+        &mut state,
+        serde_json::json!({
+            "hook_event_name": "subagentStop",
+            "parent_conversation_id": "parent-1",
+            "subagent_id": "sub-2",
+            "summary": "secret done"
+        }),
+    );
+    assert_eq!(released.snapshot.tracked_count, 1);
+    assert_eq!(released.snapshot.sessions[0].state, SessionState::Completed);
+    assert!(released.attention.is_some());
+
+    let mut finished_first = DockState::new();
+    assert!(
+        apply_cursor(
+            &mut finished_first,
+            serde_json::json!({
+                "hook_event_name": "beforeSubmitPrompt",
+                "conversation_id": "parent-2",
+                "event_id": "parent-2-prompt"
+            })
+        )
+        .accepted
+    );
+    assert!(
+        apply_cursor(
+            &mut finished_first,
+            serde_json::json!({
+                "hook_event_name": "subagentStart",
+                "parent_conversation_id": "parent-2",
+                "subagent_id": "sub-a"
+            })
+        )
+        .accepted
+    );
+    assert!(
+        apply_cursor(
+            &mut finished_first,
+            serde_json::json!({
+                "hook_event_name": "subagentStop",
+                "parent_conversation_id": "parent-2",
+                "subagent_id": "sub-a"
+            })
+        )
+        .accepted
+    );
+    assert_eq!(
+        finished_first.snapshot().sessions[0].state,
+        SessionState::Working
+    );
+    let done = apply_cursor(
+        &mut finished_first,
+        serde_json::json!({
+            "hook_event_name": "stop",
+            "conversation_id": "parent-2",
+            "status": "completed",
+            "event_id": "parent-2-stop"
+        }),
+    );
+    assert_eq!(done.snapshot.sessions[0].state, SessionState::Completed);
+    assert!(done.attention.is_some());
+
+    let mut continued = DockState::new();
+    assert!(
+        apply_cursor(
+            &mut continued,
+            serde_json::json!({
+                "hook_event_name": "beforeSubmitPrompt",
+                "conversation_id": "parent-3",
+                "event_id": "parent-3-prompt"
+            })
+        )
+        .accepted
+    );
+    assert!(
+        apply_cursor(
+            &mut continued,
+            serde_json::json!({
+                "hook_event_name": "subagentStart",
+                "parent_conversation_id": "parent-3",
+                "subagent_id": "sub-b"
+            })
+        )
+        .accepted
+    );
+    let held_again = apply_cursor(
+        &mut continued,
+        serde_json::json!({
+            "hook_event_name": "stop",
+            "conversation_id": "parent-3",
+            "status": "completed",
+            "event_id": "parent-3-stop"
+        }),
+    );
+    assert!(held_again.attention.is_none());
+    assert_eq!(held_again.snapshot.sessions[0].state, SessionState::Working);
+    assert!(
+        apply_cursor(
+            &mut continued,
+            serde_json::json!({
+                "hook_event_name": "beforeSubmitPrompt",
+                "conversation_id": "parent-3",
+                "event_id": "parent-3-prompt-2"
+            })
+        )
+        .accepted
+    );
+    let still_working = apply_cursor(
+        &mut continued,
+        serde_json::json!({
+            "hook_event_name": "subagentStop",
+            "parent_conversation_id": "parent-3",
+            "subagent_id": "sub-b"
+        }),
+    );
+    assert!(still_working.attention.is_none());
+    assert_eq!(
+        still_working.snapshot.sessions[0].state,
+        SessionState::Working
+    );
+
+    let mut failed = DockState::new();
+    assert!(
+        apply_cursor(
+            &mut failed,
+            serde_json::json!({
+                "hook_event_name": "beforeSubmitPrompt",
+                "conversation_id": "parent-4",
+                "event_id": "parent-4-prompt"
+            })
+        )
+        .accepted
+    );
+    assert!(
+        apply_cursor(
+            &mut failed,
+            serde_json::json!({
+                "hook_event_name": "subagentStart",
+                "parent_conversation_id": "parent-4",
+                "subagent_id": "sub-c"
+            })
+        )
+        .accepted
+    );
+    let errored = apply_cursor(
+        &mut failed,
+        serde_json::json!({
+            "hook_event_name": "stop",
+            "conversation_id": "parent-4",
+            "status": "error",
+            "event_id": "parent-4-stop"
+        }),
+    );
+    assert_eq!(errored.snapshot.sessions[0].state, SessionState::Failed);
+    assert!(errored.attention.is_some());
+    let after_error = apply_cursor(
+        &mut failed,
+        serde_json::json!({
+            "hook_event_name": "subagentStop",
+            "parent_conversation_id": "parent-4",
+            "subagent_id": "sub-c"
+        }),
+    );
+    assert_eq!(after_error.snapshot.sessions[0].state, SessionState::Failed);
+    assert!(after_error.attention.is_none());
+
+    let mut closed = DockState::new();
+    assert!(
+        apply_cursor(
+            &mut closed,
+            serde_json::json!({
+                "hook_event_name": "sessionStart",
+                "conversation_id": "parent-5",
+                "event_id": "parent-5-open"
+            })
+        )
+        .accepted
+    );
+    assert!(
+        apply_cursor(
+            &mut closed,
+            serde_json::json!({
+                "hook_event_name": "subagentStart",
+                "parent_conversation_id": "parent-5",
+                "subagent_id": "sub-d"
+            })
+        )
+        .accepted
+    );
+    assert!(
+        apply_cursor(
+            &mut closed,
+            serde_json::json!({
+                "hook_event_name": "sessionEnd",
+                "conversation_id": "parent-5",
+                "reason": "completed",
+                "final_status": "completed",
+                "event_id": "parent-5-end"
+            })
+        )
+        .accepted
+    );
+    assert_eq!(closed.snapshot().tracked_count, 0);
+    assert!(
+        apply_cursor(
+            &mut closed,
+            serde_json::json!({
+                "hook_event_name": "subagentStop",
+                "parent_conversation_id": "parent-5",
+                "subagent_id": "sub-d"
+            })
+        )
+        .accepted
+    );
+    assert_eq!(closed.snapshot().tracked_count, 0);
+
+    let mut absent = DockState::new();
+    assert!(
+        apply_cursor(
+            &mut absent,
+            serde_json::json!({
+                "hook_event_name": "subagentStart",
+                "parent_conversation_id": "missing-parent",
+                "subagent_id": "sub-e",
+                "task": "secret task"
+            })
+        )
+        .accepted
+    );
+    assert_eq!(absent.snapshot().tracked_count, 0);
 }
 
 #[test]

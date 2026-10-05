@@ -730,6 +730,8 @@ fn cursor_connect_writes_camelcase_hooks_and_keeps_other_hooks() {
     assert!(!connected.contains("AskQuestion"));
     assert!(connected.contains("afterAgentResponse"));
     assert!(connected.contains("\"stop\""));
+    assert!(connected.contains("subagentStart"));
+    assert!(connected.contains("subagentStop"));
     assert!(connected.contains("sessionEnd"));
     assert!(connected.contains("loop_limit"));
     assert!(connected.contains("user-hook"));
@@ -807,6 +809,8 @@ fn torn_cursor_connection_is_repaired_from_records() {
         "beforeSubmitPrompt",
         "afterAgentResponse",
         "stop",
+        "subagentStart",
+        "subagentStop",
         "sessionEnd",
     ] {
         let entries = connected["hooks"][event]
@@ -948,6 +952,8 @@ fn cursor_reconnect_cleans_legacy_own_registration() {
         "beforeSubmitPrompt",
         "afterAgentResponse",
         "stop",
+        "subagentStart",
+        "subagentStop",
         "sessionEnd",
     ] {
         let entries = connected["hooks"][event]

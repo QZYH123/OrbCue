@@ -285,6 +285,10 @@ struct SessionRecord {
     occurred_at: String,
     terminal_id: Option<String>,
     liveness: Option<AgentLiveness>,
+    /// Cursor background subagents still running on this row. Not persisted.
+    open_subagents: u32,
+    /// Parent turn already finished while `open_subagents` was non-zero.
+    deferred_completion: bool,
 }
 
 /// Deterministic in-memory session registry.
@@ -349,6 +353,8 @@ impl DockState {
                     occurred_at: item.occurred_at,
                     terminal_id,
                     liveness,
+                    open_subagents: 0,
+                    deferred_completion: false,
                 },
             );
         }
@@ -497,31 +503,39 @@ impl DockState {
         let previous_state = self.sessions.get(&key).map(|record| record.state);
         let attention = match kind {
             EventKind::Idle => self.apply_idle(&key, event),
-            EventKind::Started | EventKind::Working => self.apply_working(&key, event),
+            EventKind::Started | EventKind::Working => {
+                if event.metadata.contains_key("subagent_phase") {
+                    self.apply_subagent_phase(&key, event)
+                } else {
+                    self.clear_deferred_completion(&key);
+                    self.apply_working(&key, event)
+                }
+            }
             EventKind::WaitingInput => {
                 self.apply_attention(&key, event, "input", Severity::Attention)
             }
             EventKind::PermissionRequested => {
                 self.apply_attention(&key, event, "permission", Severity::Attention)
             }
-            EventKind::Completed => self.apply_terminal(
-                &key,
-                event,
-                SessionState::Completed,
-                "completed",
-                Severity::Info,
-            ),
+            EventKind::Completed => self.apply_completed(&key, event),
             EventKind::Failed => {
+                self.clear_subagent_bookkeeping(&key);
                 self.apply_terminal(&key, event, SessionState::Failed, "failed", Severity::Error)
             }
-            EventKind::Cancelled => self.apply_terminal(
-                &key,
-                event,
-                SessionState::Cancelled,
-                "cancelled",
-                Severity::Info,
-            ),
-            EventKind::Closed => self.apply_closed(&key, event),
+            EventKind::Cancelled => {
+                self.clear_subagent_bookkeeping(&key);
+                self.apply_terminal(
+                    &key,
+                    event,
+                    SessionState::Cancelled,
+                    "cancelled",
+                    Severity::Info,
+                )
+            }
+            EventKind::Closed => {
+                self.clear_subagent_bookkeeping(&key);
+                self.apply_closed(&key, event)
+            }
         };
         self.finish_transition(&event_id, kind, &key, previous_state, attention)
     }
@@ -573,6 +587,91 @@ impl DockState {
 
     fn apply_working(&mut self, key: &str, event: DockEvent) -> Option<Attention> {
         self.apply_open(key, event, SessionState::Working)
+    }
+
+    /// `subagent_phase=start|stop` updates the parent row only. A stop does not
+    /// create a row, and it does not turn a failed or closed session back on.
+    fn apply_subagent_phase(&mut self, key: &str, event: DockEvent) -> Option<Attention> {
+        let phase = event
+            .metadata
+            .get("subagent_phase")
+            .map(String::as_str)
+            .unwrap_or("");
+        if !self.sessions.contains_key(key) {
+            return None;
+        }
+        match phase {
+            "start" => {
+                if let Some(record) = self.sessions.get_mut(key) {
+                    record.open_subagents = record.open_subagents.saturating_add(1);
+                }
+                self.apply_working(key, event)
+            }
+            "stop" => {
+                let release = if let Some(record) = self.sessions.get_mut(key) {
+                    record.open_subagents = record.open_subagents.saturating_sub(1);
+                    let release = record.open_subagents == 0 && record.deferred_completion;
+                    if release {
+                        record.deferred_completion = false;
+                    }
+                    release
+                } else {
+                    false
+                };
+                if release {
+                    self.apply_terminal(
+                        key,
+                        event,
+                        SessionState::Completed,
+                        "completed",
+                        Severity::Info,
+                    )
+                } else if let Some(record) = self.sessions.get_mut(key) {
+                    update_record(record, &event);
+                    None
+                } else {
+                    None
+                }
+            }
+            _ => self.apply_working(key, event),
+        }
+    }
+
+    fn apply_completed(&mut self, key: &str, event: DockEvent) -> Option<Attention> {
+        let defer = self
+            .sessions
+            .get(key)
+            .is_some_and(|record| record.open_subagents > 0);
+        if defer {
+            if let Some(record) = self.sessions.get_mut(key) {
+                record.deferred_completion = true;
+                update_record(record, &event);
+                record.state = SessionState::Working;
+                record.attention_reason = None;
+                record.acknowledged = true;
+            }
+            return None;
+        }
+        self.apply_terminal(
+            key,
+            event,
+            SessionState::Completed,
+            "completed",
+            Severity::Info,
+        )
+    }
+
+    fn clear_deferred_completion(&mut self, key: &str) {
+        if let Some(record) = self.sessions.get_mut(key) {
+            record.deferred_completion = false;
+        }
+    }
+
+    fn clear_subagent_bookkeeping(&mut self, key: &str) {
+        if let Some(record) = self.sessions.get_mut(key) {
+            record.open_subagents = 0;
+            record.deferred_completion = false;
+        }
     }
 
     fn apply_open(
@@ -875,6 +974,8 @@ impl SessionRecord {
             occurred_at: event.occurred_at.clone(),
             terminal_id: terminal_id_from_event(event),
             liveness: liveness_from_event(event),
+            open_subagents: 0,
+            deferred_completion: false,
         }
     }
 

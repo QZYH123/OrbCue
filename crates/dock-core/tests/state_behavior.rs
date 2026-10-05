@@ -1211,3 +1211,35 @@ fn unknown_session_close_does_not_remove_the_only_row_on_that_terminal() {
     assert_eq!(result.snapshot.sessions[0].session_id, "parent-sid");
     assert_eq!(result.snapshot.sessions[0].state, SessionState::Working);
 }
+
+#[test]
+fn open_subagents_hold_one_completion_until_the_last_stop() {
+    let mut state = DockState::new();
+    state.apply(DockEvent::new("e1", EventKind::Working, "cursor", "parent"));
+    let mut start = DockEvent::new("e2", EventKind::Working, "cursor", "parent");
+    start
+        .metadata
+        .insert("subagent_phase".to_owned(), "start".to_owned());
+    state.apply(start);
+    let held = state.apply(DockEvent::new(
+        "e3",
+        EventKind::Completed,
+        "cursor",
+        "parent",
+    ));
+    assert!(held.attention.is_none());
+    assert_eq!(held.snapshot.sessions[0].state, SessionState::Working);
+
+    let mut stop = DockEvent::new("e4", EventKind::Working, "cursor", "parent");
+    stop.metadata
+        .insert("subagent_phase".to_owned(), "stop".to_owned());
+    let released = state.apply(stop);
+    assert_eq!(released.snapshot.sessions[0].state, SessionState::Completed);
+    assert!(released.attention.is_some());
+
+    let mut grok = DockState::new();
+    grok.apply(DockEvent::new("g1", EventKind::Working, "grok", "grok-s"));
+    let done = grok.apply(DockEvent::new("g2", EventKind::Completed, "grok", "grok-s"));
+    assert_eq!(done.snapshot.sessions[0].state, SessionState::Completed);
+    assert!(done.attention.is_some());
+}

@@ -1371,13 +1371,22 @@ fn cursor_hook_specs() -> &'static [HookSpec] {
         hook("beforeSubmitPrompt"),
         hook("afterAgentResponse"),
         hook("stop"),
+        hook("subagentStart"),
+        hook("subagentStop"),
         hook("sessionEnd"),
     ];
     SPECS
 }
 
 fn cursor_unbounded_events() -> &'static [&'static str] {
-    &["sessionStart", "afterAgentResponse", "stop", "sessionEnd"]
+    &[
+        "sessionStart",
+        "afterAgentResponse",
+        "stop",
+        "subagentStart",
+        "subagentStop",
+        "sessionEnd",
+    ]
 }
 
 fn cursor_hook_entry(hook: &Path, spec: &HookSpec) -> Value {
