@@ -1412,16 +1412,25 @@ fn pi_connect_writes_a_local_extension_and_refuses_a_foreign_file() {
     assert!(text.contains("getCwd"));
     assert!(text.contains("\"hook\", \"pi\""));
     assert!(text.contains("reason === \"quit\""));
+    assert!(text.contains("sendQuit"));
+    assert!(text.contains("sendQuitSync"));
+    assert!(text.contains("detached"));
     assert!(text.contains(&orb.to_string_lossy().to_string()));
     assert!(!text.contains("tool_call"));
     assert!(!text.contains("settings.json"));
     assert!(!agent_dir.join("settings.json").exists());
     assert!(!agent_dir.join("auth.json").exists());
 
-    fs::remove_file(&extension).unwrap();
-    let records = manager.records();
-    assert_eq!(records[0].method, ConnectionMethod::PiHook);
-    assert!(extension.is_file(), "repair must recreate the extension");
+    fs::write(
+        &extension,
+        "// OrbCue generated Pi extension.\nexport default function () {}\n",
+    )
+    .unwrap();
+    let _ = manager.records();
+    assert!(
+        fs::read_to_string(&extension).unwrap().contains("sendQuit"),
+        "repair must rewrite an extension that does not wait on quit"
+    );
 
     let foreign = "export default function mine() {}\n";
     fs::write(&extension, foreign).unwrap();

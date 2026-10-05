@@ -2118,6 +2118,9 @@ fn pi_extension_is_current(path: &Path, orb: &Path) -> bool {
         && text.contains("ui_prompt_start")
         && text.contains("getSessionId")
         && text.contains("getCwd")
+        && text.contains("sendQuit")
+        && text.contains("sendQuitSync")
+        && text.contains("detached")
 }
 
 fn pi_extension_orb_literal(orb: &Path) -> String {
@@ -2140,13 +2143,42 @@ fn pi_extension_source(orb: &Path) -> String {
 
 const PI_EXTENSION_TEMPLATE: &str = r#"// OrbCue generated Pi extension.
 // Forwards lifecycle only. It does not send prompts, questions, commands, or file contents.
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 
 const ORB = __ORB_JSON__
 let outcome = "completed"
 let running = false
 
+// A dead terminal makes Pi call process.exit without session_shutdown.
+// One exit hook covers that path. Quit still waits in the handler below.
+function exitSlot() {
+  const root = globalThis
+  const key = Symbol.for("orbcue.pi.close")
+  if (root[key]) return root[key]
+  const slot = { active: null, closed: false }
+  root[key] = slot
+  process.on("exit", () => {
+    if (slot.closed) return
+    const active = slot.active
+    if (!active || !active.sessionID) return
+    slot.closed = true
+    sendQuitSync(active.sessionID, active.cwd)
+  })
+  return slot
+}
+
+function remember(ctx) {
+  const sessionID = sessionIdOf(ctx)
+  if (!sessionID) return
+  const cwd = cwdOf(ctx)
+  exitSlot().active = {
+    sessionID,
+    cwd: cwd && cwd.length <= 256 ? cwd : undefined,
+  }
+}
+
 export default function (pi) {
+  exitSlot()
   pi.on("session_start", (_event, ctx) => {
     outcome = "completed"
     running = false
@@ -2177,12 +2209,70 @@ export default function (pi) {
     send(ctx, running ? "agent.started" : "session.started")
   })
   pi.on("session_shutdown", (event, ctx) => {
-    if (event && event.reason === "quit") send(ctx, "session.closed")
+    if (event && event.reason === "quit") return sendQuit(ctx)
   })
+}
+
+function sendQuit(ctx) {
+  return new Promise((resolve) => {
+    let settled = false
+    let child
+    const finish = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (child && typeof child.unref === "function") child.unref()
+      resolve()
+    }
+    const timer = setTimeout(finish, 1500)
+    try {
+      const sessionID = sessionIdOf(ctx)
+      if (!sessionID) {
+        finish()
+        return
+      }
+      const payload = { type: "session.closed", sessionID }
+      const cwd = cwdOf(ctx)
+      if (cwd && cwd.length <= 256) payload.cwd = cwd
+      const options = {
+        stdio: ["pipe", "ignore", "ignore"],
+        windowsHide: true,
+      }
+      if (process.platform !== "win32") options.detached = true
+      remember(ctx)
+      child = spawn(ORB, ["hook", "pi"], options)
+      child.on("error", finish)
+      child.on("exit", (code) => {
+        if (code === 0) exitSlot().closed = true
+        finish()
+      })
+      child.stdin.end(JSON.stringify(payload))
+    } catch {
+      finish()
+    }
+  })
+}
+
+function sendQuitSync(sessionID, cwd) {
+  try {
+    const payload = { type: "session.closed", sessionID }
+    if (cwd && cwd.length <= 256) payload.cwd = cwd
+    const options = {
+      input: JSON.stringify(payload),
+      stdio: ["pipe", "ignore", "ignore"],
+      windowsHide: true,
+      timeout: 1500,
+    }
+    if (process.platform !== "win32") options.detached = true
+    spawnSync(ORB, ["hook", "pi"], options)
+  } catch {
+    // The exit hook must not throw.
+  }
 }
 
 function send(ctx, type, outcomeValue) {
   try {
+    remember(ctx)
     const sessionID = sessionIdOf(ctx)
     if (!sessionID) return
     const payload = { type, sessionID }
