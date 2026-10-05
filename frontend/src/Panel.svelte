@@ -316,27 +316,27 @@
     {:else if page === 'connections'}
       <p class="section-intro">{phrases.intro}</p>
       {@render connectionsToolbar()}
-      {#if wslBanner}
-        <p class="error-message">{wslBanner}</p>
-      {/if}
-      {#if connectSuccess}
-        <div class="hint-banner" role="status">
-          <p>{connectSuccess}</p>
-          <div class="hint-actions">
-            <button class="text-button" onclick={() => (connectSuccess = '')} aria-label={text.dismiss}>×</button>
+      <div class="panel-body">
+        {#if wslBanner}
+          <p class="error-message">{wslBanner}</p>
+        {/if}
+        {#if connectSuccess}
+          <div class="hint-banner" role="status">
+            <p>{connectSuccess}</p>
+            <div class="hint-actions">
+              <button class="text-button" onclick={() => (connectSuccess = '')} aria-label={text.dismiss}>×</button>
+            </div>
           </div>
-        </div>
-      {/if}
-      {#if showDetectingPlaceholder(inventory, inventoryRefreshing)}
-        <div class="empty compact"><span>…</span><p>{text.checkingAgents}</p></div>
-      {:else if connectionAgents.length === 0}
-        <div class="empty compact"><span>○</span><p>{text.noTools}</p><small>{text.noToolsConnect}</small></div>
-      {:else}
-        <div class="panel-body">
-        {@render connectionList()}
-        </div>
-      {/if}
-      {#if connectionError}<p class="error-message">{connectionError}</p>{/if}
+        {/if}
+        {#if showDetectingPlaceholder(inventory, inventoryRefreshing)}
+          <div class="empty compact"><span>…</span><p>{text.checkingAgents}</p></div>
+        {:else if connectionAgents.length === 0}
+          <div class="empty compact"><span>○</span><p>{text.noTools}</p><small>{text.noToolsConnect}</small></div>
+        {:else}
+          {@render connectionList()}
+        {/if}
+        {#if connectionError}<p class="error-message">{connectionError}</p>{/if}
+      </div>
     {:else}
       <p class="section-intro">{text.settingsIntro}</p>
       <div class="panel-body">

@@ -715,7 +715,13 @@ button { font: inherit; }
   font-size: 10px;
 }
 .error-message {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 4.8em;
+  margin: 0 0 8px;
   padding: 9px 11px;
+  overflow: auto;
+  overflow-wrap: anywhere;
   border-radius: var(--radius-ctrl);
   color: var(--err-fg);
   font-size: 10px;
@@ -732,7 +738,10 @@ button { font: inherit; }
   background: var(--backdrop);
 }
 .confirm-dialog {
+  display: flex;
+  flex-direction: column;
   width: min(324px, 100%);
+  max-height: calc(100% - 8px);
   margin: 0;
   padding: var(--dialog-pad);
   overflow: hidden;
@@ -741,6 +750,11 @@ button { font: inherit; }
   border-radius: var(--dialog-radius);
   background: var(--dialog-bg);
 }
+.confirm-dialog .error-message,
+.confirm-dialog .preview-block {
+  flex: 1 1 auto;
+}
+.confirm-dialog .dialog-actions { flex: 0 0 auto; }
 .confirm-dialog h2 { margin: 0 0 10px; font-size: 15px; font-weight: var(--weight); }
 .confirm-dialog p { margin: 7px 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .confirm-dialog code {

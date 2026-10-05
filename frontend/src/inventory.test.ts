@@ -45,6 +45,11 @@ describe('inventory display', () => {
     expect(wslDockErrorBanner(withError)).toBe(
       'WSL 侧 orb 未就绪：wslpath failed (exit status: 1)',
     );
+    const dumped = `cannot parse WSL dock JSON: ${'{"method":"PiHook"}'.repeat(40)}`;
+    const banner = wslDockErrorBanner({ discovered: [], connected: [], wsl_error: dumped });
+    expect(banner?.startsWith('WSL 侧 orb 未就绪：cannot parse')).toBe(true);
+    expect(banner?.endsWith('…')).toBe(true);
+    expect(banner!.length).toBeLessThan(dumped.length);
     expect(wslDockErrorBanner(empty)).toBeNull();
     expect(wslDockErrorBanner({ discovered: [], connected: [], wsl_error: '  ' })).toBeNull();
   });

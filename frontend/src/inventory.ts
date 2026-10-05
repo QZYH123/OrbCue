@@ -18,12 +18,15 @@ export function sideLabel(side: AgentSide): string {
   return side === 'wsl' ? 'WSL' : 'Windows';
 }
 
+const WSL_BANNER_LIMIT = 160;
+
 export function wslDockErrorBanner(inventory: AgentInventory, lang: Lang = 'zh'): string | null {
   const raw = inventory.wsl_error?.trim();
   if (!raw) {
     return null;
   }
-  return copyOf(lang).wslOrbNotReady(raw);
+  const brief = raw.length > WSL_BANNER_LIMIT ? `${raw.slice(0, WSL_BANNER_LIMIT - 1)}…` : raw;
+  return copyOf(lang).wslOrbNotReady(brief);
 }
 
 /** Agents whose CLI command differs from the agent name shown in the UI. */
