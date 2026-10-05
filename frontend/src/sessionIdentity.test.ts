@@ -173,6 +173,30 @@ describe('presentSessionSections', () => {
     ]);
   });
 
+  it('uses one folder label when the same directory has a trailing slash', () => {
+    const sections = presentSessionSections(
+      [
+        {
+          source: 'cursor',
+          session_id: 'c',
+          project_path: '/home/qingz/projects/OrbCue',
+        },
+        {
+          source: 'grok',
+          session_id: 'g',
+          project_path: '/home/qingz/projects/OrbCue/',
+        },
+      ],
+      '/home/qingz',
+    );
+    expect(sections).toHaveLength(1);
+    expect(sections[0]?.label).toBe('OrbCue');
+    expect(sections[0]?.rows.map((row) => `${row.title} ${row.index}`)).toEqual([
+      'Cursor 01',
+      'Grok 01',
+    ]);
+  });
+
   it('keeps colliding folder names distinguishable via the shortened path', () => {
     const sections = presentSessionSections(
       [

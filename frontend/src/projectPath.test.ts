@@ -59,4 +59,28 @@ describe('groupSessionsByProject', () => {
     expect(groups[0]?.label).toBe('其他');
     expect(groups[0]?.sessions[0]?.project_path).toBeNull();
   });
+
+  it('merges a trailing separator into the same directory', () => {
+    const groups = groupSessionsByProject([
+      { id: 'a', project_path: '/home/qingz/projects/OrbCue' },
+      { id: 'b', project_path: '/home/qingz/projects/OrbCue/' },
+      { id: 'c', project_path: 'C:\\repo\\' },
+      { id: 'd', project_path: 'C:\\repo' },
+    ]);
+    expect(groups.map((group) => group.key)).toEqual([
+      '/home/qingz/projects/OrbCue',
+      'C:\\repo',
+    ]);
+    expect(groups[0]?.sessions.map((session) => session.id)).toEqual(['a', 'b']);
+  });
+
+  it('keeps a root path out of the empty group', () => {
+    const groups = groupSessionsByProject([
+      { id: 'root', project_path: '/' },
+      { id: 'win', project_path: '\\' },
+      { id: 'none', project_path: null },
+    ]);
+    expect(groups.map((group) => group.key)).toEqual(['/', '\\', '']);
+    expect(groups.at(-1)?.label).toBe('其他');
+  });
 });

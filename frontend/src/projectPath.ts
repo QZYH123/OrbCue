@@ -26,11 +26,12 @@ export function groupSessionsByProject<T extends { project_path?: string | null 
   for (const session of sessions) {
     const path = session.project_path;
     if (path) {
-      const existing = groups.get(path);
+      const key = projectGroupKey(path);
+      const existing = groups.get(key);
       if (existing) {
         existing.push(session);
       } else {
-        groups.set(path, [session]);
+        groups.set(key, [session]);
       }
     } else {
       other.push(session);
@@ -49,6 +50,13 @@ export function groupSessionsByProject<T extends { project_path?: string | null 
     result.push({ key: OTHER_KEY, label: otherLabel, sessions: other });
   }
   return result;
+}
+
+/** Same directory with or without a trailing separator shares one group. A root path stays its own key. */
+function projectGroupKey(path: string): string {
+  const trimmed = path.trim();
+  const stripped = trimmed.replace(/[\\/]+$/, '');
+  return stripped || trimmed;
 }
 
 function foldHome(path: string, home?: string): string {
